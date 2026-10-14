@@ -1,0 +1,48 @@
+#!/bin/sh
+set -e
+
+state_dir=${BIANBU_POSTRM_STATE_DIR:-/var/lib/bianbu-agent-runtime}
+profile_dir=${BIANBU_POSTRM_PROFILE_DIR:-/var/lib/bianbu-agent-profiles}
+etc_dir=${BIANBU_POSTRM_ETC_DIR:-/etc/bianbu-agent}
+run_dir=${BIANBU_POSTRM_RUN_DIR:-/run/bianbu/agent-runtime}
+systemd_dir=${BIANBU_POSTRM_SYSTEMD_DIR:-/etc/systemd/system}
+service_user_dir=${BIANBU_POSTRM_SERVICE_USER_DIR:-/etc/bianbu-agent-runtime}
+
+cleanup_transaction_state() {
+    # The published system Agent declaration is regenerated on the next start,
+    # so neither the current root nor the retired in-state tree is kept.
+    rm -rf -- "$profile_dir" "$state_dir/profiles"
+    # active-users was written by the retired install-time restart path; drop
+    # it together with the state this generation still owns.
+    rm -f -- "$state_dir/active-users" "$state_dir/desktop-user" \
+        "$state_dir/registered-manifest.sha256"
+    rmdir -- "$state_dir" 2>/dev/null || true
+    # 运行身份的文件是安装时生成的配置：包被移除后它只会在重装时被重写，
+    # 留着会让下一个版本带着已经不存在的用户启动。
+    rm -f -- "$systemd_dir/bianbu-agent-runtime.service.d/10-service-user.conf"
+    rmdir -- "$systemd_dir/bianbu-agent-runtime.service.d" 2>/dev/null || true
+    rm -f -- "$service_user_dir/service-user"
+    rmdir -- "$service_user_dir" 2>/dev/null || true
+}
+
+purge_package_state() {
+    cleanup_transaction_state
+    rm -rf -- "$etc_dir"
+    rm -rf -- "$run_dir"
+    rmdir -- "$(dirname -- "$run_dir")" 2>/dev/null || true
+}
+
+case "$1" in
+    remove)
+        cleanup_transaction_state
+        ;;
+    purge)
+        purge_package_state
+        ;;
+    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

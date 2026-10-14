@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+
+python3 -m pytest -q debian/tests/test_provision_user.py

@@ -1,0 +1,130 @@
+#!/bin/sh
+set -eu
+
+data_root=/var/lib/bianbu-agent-runtime
+security_agent_id=com.bianbu.runtime
+manifest=/usr/share/bianbu-agent-runtime/security-manifest/$security_agent_id
+registrar=/usr/lib/bianbu-agent-runtime/register-security-manifest.py
+resetter=/usr/lib/bianbu-agent-runtime/reset-security-binding.py
+runtime_token=/usr/lib/bianbu-agent-runtime/runtime-admin-token.py
+state_file=$data_root/registered-manifest.sha256
+
+fail() {
+    printf '%s\n' "bianbu-agent-runtime: $*" >&2
+    exit 1
+}
+
+# This runs on the device, never from the package transaction: the Runtime units
+# depend on it, so an image that was only unpacked on a build host gets its
+# securityd membership, /run state and signed manifest published here.
+[ "$(id -u)" = 0 ] || fail "device registration must run as root"
+[ -x "$registrar" ] || fail "Security manifest registrar is missing"
+for name in manifest.toml manifest.toml.sig pubkey.hex; do
+    [ -s "$manifest/$name" ] || fail "signed Security Runtime manifest is incomplete: $manifest/$name"
+done
+
+# securityd owns the group the Runtime needs; nothing can be registered without it.
+getent group bianbu-security >/dev/null 2>&1 \
+    || fail "bianbu-security group is missing; install bianbu-agent-securityd first"
+
+# The package transaction normally creates these, but an image that was only
+# unpacked somewhere else must still be able to start, so the device path makes
+# the accounts it depends on exist instead of inheriting the build host's.
+if ! getent group bianbu-runtime >/dev/null 2>&1; then
+    addgroup --system bianbu-runtime >/dev/null 2>&1 \
+        || fail "cannot create the bianbu-runtime group"
+fi
+if ! getent group bianbu-agent >/dev/null 2>&1; then
+    addgroup --system bianbu-agent >/dev/null 2>&1 \
+        || fail "cannot create the bianbu-agent group"
+fi
+if ! getent passwd bianbu-runtime >/dev/null 2>&1; then
+    adduser --system --ingroup bianbu-runtime --home "$data_root" \
+        --no-create-home --shell /usr/sbin/nologin bianbu-runtime >/dev/null 2>&1 \
+        || fail "cannot create the bianbu-runtime account"
+fi
+
+if ! adduser bianbu-runtime bianbu-security >/dev/null 2>&1; then
+    # adduser returns non-zero when membership already exists on some Debian
+    # releases.  Verify the result instead of silently starting a Runtime that
+    # cannot open /run/bianbu/securityd.sock.
+    security_gid=$(getent group bianbu-security | cut -d: -f3)
+    id -G bianbu-runtime 2>/dev/null | tr ' ' '\n' | grep -qx "$security_gid" \
+        || fail "cannot add bianbu-runtime to bianbu-security"
+fi
+
+# Live state below /run exists only while the Runtime runs, so it is recreated
+# on every activation instead of being baked into an image.
+install -d -m 0770 -o root -g bianbu-security /run/bianbu /run/bianbu/network-learning
+install -d -m 2770 -o root -g bianbu-security /run/bianbu/syscall-audit
+# The 'bianbu' group belongs to the OEM first-boot installer, not to this
+# package: it does not exist yet inside a firmware chroot and is created later on
+# the device while calamares provisions the interactive account.  Wait a bounded
+# time so the register job outlives that first-boot race instead of failing and
+# leaving the Runtime (which Requires this unit) unable to start.
+if ! getent group bianbu >/dev/null 2>&1; then
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        sleep 2
+        getent group bianbu >/dev/null 2>&1 && break
+    done
+fi
+getent group bianbu >/dev/null 2>&1 \
+    || fail "bianbu group is missing; cannot prepare the AgentMemory registry"
+getent group bianbu-agent >/dev/null 2>&1 \
+    || fail "bianbu-agent group is missing; reinstall bianbu-agent-runtime"
+install -d -m 2770 -o root -g bianbu /run/bianbu/agent-runtime
+install -d -m 2770 -o root -g bianbu-agent /run/bianbu/agent-runtime/memory-registry
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/bianbu-agent-runtime.conf >/dev/null 2>&1 || true
+
+# The token is generated during the package transaction; repair it here so an
+# image that was only unpacked on a build host still starts with an operator
+# token.  The helper preserves an existing secret.
+install -d -m 0750 -o root -g bianbu-runtime /etc/bianbu-agent
+if [ -x "$runtime_token" ]; then
+    /usr/bin/python3.14 "$runtime_token" --ensure || fail "cannot prepare the Runtime admin token"
+fi
+
+# A freshly installed securityd may need a short moment to claim the system-bus
+# name before the synchronous D-Bus reset call.
+systemctl start bianbu-securityd.service >/dev/null 2>&1 || true
+
+digest=$(sha256sum "$manifest/manifest.toml" "$manifest/manifest.toml.sig" "$manifest/pubkey.hex" \
+    | sha256sum | cut -d' ' -f1)
+if [ -f "$state_file" ] && [ "$(sed -n '1p' "$state_file")" = "$digest" ]; then
+    # Same generation: only repair a registration that went missing (Security
+    # database reset, restored image, first boot after an offline install).
+    /usr/bin/python3.14 "$registrar" "$manifest" \
+        --expected-agent-id "$security_agent_id" --if-missing \
+        || fail "securityd did not confirm the installed Runtime manifest; refusing to start"
+else
+    # A new generation must not inherit the previous caller binding, otherwise
+    # commit_runtime_start keeps resolving the retired process identity.
+    reset=1
+    for _ in 1 2 3 4 5; do
+        if /usr/bin/python3.14 "$resetter" "$security_agent_id" package-upgrade; then
+            reset=0
+            break
+        fi
+        sleep 1
+    done
+    [ "$reset" = 0 ] || fail "securityd is unavailable; refusing to start the Runtime"
+    /usr/bin/python3.14 "$registrar" "$manifest" --expected-agent-id "$security_agent_id" \
+        || fail "securityd rejected the installed Runtime manifest"
+fi
+
+install -d -m 0750 -o bianbu-runtime -g bianbu-runtime "$data_root"
+# A retired generation recorded the login users it had restarted here; the
+# device start path no longer restarts them, so drop the stale bookkeeping.
+rm -f -- "$data_root/active-users"
+printf '%s\n' "$digest" >"$state_file.new"
+mv -f "$state_file.new" "$state_file"
+# The register unit runs before the Runtime, so resolving the service user here
+# makes a first boot use the real device identity instead of the packaged
+# bianbu-runtime fallback that an image build had to leave behind.
+/usr/lib/bianbu-agent-runtime/configure-runtime-service-user
+# The drop-in just written changes User= for the Runtime unit that follows this
+# job; reload the manager so the Runtime actually starts with the device user
+# instead of the packaged fallback.
+systemctl daemon-reload >/dev/null 2>&1 || true
+
+printf '%s\n' "bianbu-agent-runtime: Security Runtime manifest published ($security_agent_id)"

@@ -1,0 +1,16 @@
+[Unit]
+Description=Bianbu Agent Runtime device registration
+Documentation=file:/usr/share/doc/bianbu-agent-runtime/README.Debian
+After=bianbu-securityd.service
+Wants=bianbu-securityd.service
+Before=bianbu-agent-runtime.service bianbu-agent-network-learning.service
+
+[Service]
+Type=oneshot
+# Publishes the installed signed Runtime manifest and prepares the live state
+# the Runtime needs.  The Runtime units pull this in, so the package itself
+# never has to reach securityd while it is being unpacked on a build host.
+ExecStart=/usr/lib/bianbu-agent-runtime/register-runtime-manifest
+TimeoutStartSec=240
+Restart=on-failure
+RestartSec=5s

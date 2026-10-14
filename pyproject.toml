@@ -1,0 +1,93 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bianbu-agent"
+version = "0.1.162"
+description = "Bianbu Agent Web Console backed by pinned tools and LangGraph"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+  "aiosqlite>=0.20,<1",
+  "cffi; sys_platform == 'linux' and platform_machine == 'riscv64'",
+  "cryptography; sys_platform == 'linux' and platform_machine == 'riscv64'",
+  "fastapi>=0.115,<1",
+  "httpx==0.28.1",
+  "langchain-openai>=0.3,<2",
+  "langgraph>=1,<2",
+  "langgraph-checkpoint-sqlite>=2,<4",
+  "markupsafe==2.1.3; sys_platform == 'linux' and platform_machine == 'riscv64'",
+  "orjson; sys_platform == 'linux' and platform_machine == 'riscv64'",
+  "ormsgpack; sys_platform == 'linux' and platform_machine == 'riscv64'",
+  "python-multipart>=0.0.20,<1",
+  "jsonschema>=4.23,<5",
+  "packaging>=24,<27",
+  "openai==2.24.0",
+  "prompt_toolkit==3.0.52",
+  "psutil==7.2.2",
+  "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
+  "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
+  "pyyaml==6.0.3",
+  "requests==2.33.0",
+  "ruamel-yaml-clib; sys_platform == 'linux' and platform_machine == 'riscv64'",
+  "ruamel.yaml==0.18.17",
+  "sqlite-vec; sys_platform == 'linux' and platform_machine == 'riscv64'",
+  "tiktoken; sys_platform == 'linux' and platform_machine == 'riscv64'",
+  "uuid-utils; sys_platform == 'linux' and platform_machine == 'riscv64'",
+  "uvicorn>=0.34,<1",
+  "zstandard>=0.25.0",
+  "langchain>=1,<2",
+  "mcp>=1.27,<2",
+]
+
+[project.scripts]
+bianbu-agent = "bianbu_agent.cli.main:main"
+
+[dependency-groups]
+dev = [
+  "pillow>=10,<13",
+  "playwright>=1.51,<2",
+  "pytest>=8.3,<10",
+  "pytest-asyncio>=0.25,<2",
+]
+
+[tool.uv]
+required-environments = [
+  "sys_platform == 'linux' and platform_machine == 'riscv64'",
+]
+
+[[tool.uv.index]]
+name = "spacemit"
+url = "https://git.spacemit.com/api/v4/projects/33/packages/pypi/simple"
+explicit = true
+
+[[tool.uv.index]]
+name = "tuna"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
+
+[tool.uv.sources]
+cffi = [{ index = "spacemit", marker = "sys_platform == 'linux' and platform_machine == 'riscv64'" }]
+cryptography = [{ index = "spacemit", marker = "sys_platform == 'linux' and platform_machine == 'riscv64'" }]
+markupsafe = [{ index = "spacemit", marker = "sys_platform == 'linux' and platform_machine == 'riscv64'" }]
+orjson = [{ index = "spacemit", marker = "sys_platform == 'linux' and platform_machine == 'riscv64'" }]
+ormsgpack = [{ index = "spacemit", marker = "sys_platform == 'linux' and platform_machine == 'riscv64'" }]
+pillow = [{ index = "spacemit", marker = "sys_platform == 'linux' and platform_machine == 'riscv64'" }]
+playwright = [{ index = "spacemit", marker = "sys_platform == 'linux' and platform_machine == 'riscv64'" }]
+psutil = [{ index = "spacemit", marker = "sys_platform == 'linux' and platform_machine == 'riscv64'" }]
+pyyaml = [{ index = "spacemit", marker = "sys_platform == 'linux' and platform_machine == 'riscv64'" }]
+ruamel-yaml-clib = [{ index = "spacemit", marker = "sys_platform == 'linux' and platform_machine == 'riscv64'" }]
+sqlite-vec = [{ index = "spacemit", marker = "sys_platform == 'linux' and platform_machine == 'riscv64'" }]
+tiktoken = [{ index = "spacemit", marker = "sys_platform == 'linux' and platform_machine == 'riscv64'" }]
+uuid-utils = [{ index = "spacemit", marker = "sys_platform == 'linux' and platform_machine == 'riscv64'" }]
+zstandard = [{ index = "spacemit", marker = "sys_platform == 'linux' and platform_machine == 'riscv64'" }]
+
+[tool.hatch.build.targets.wheel]
+packages = [
+  "bianbu_agent",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]

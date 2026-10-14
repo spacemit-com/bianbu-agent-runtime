@@ -1,0 +1,8 @@
+# null preserves the Worker/Sandbox socket chosen by the SDK/environment.
+socket_path: null
+timeout_seconds: 2.0
+recall_top_k: 5
+recall_max_chars: 4000
+# consumer-side pollution gate (MEM-INT-08-02); set false to inject recalled
+# records exactly as the Memory service returned them.
+injection_guard: true

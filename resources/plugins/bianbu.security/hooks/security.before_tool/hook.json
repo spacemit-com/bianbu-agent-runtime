@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "exec \"${RUNTIME_PYTHON}\" \"$PLUGIN_ROOT/scripts/before_tool.py\"",
+            "timeout": 35.0
+          }
+        ]
+      }
+    ]
+  },
+  "parallel": true
+}

@@ -1,0 +1,61 @@
+#!/bin/sh
+# 退役桌面图标清理。
+#
+# 0.1.125 起包不再往登录用户桌面放图标，随后连应用菜单项与启动器本身也退役了（控制台
+# 按端口打开）。桌面上留下的副本要么指向已删除的启动器、要么只是没有菜单项的孤儿，
+# 必须清掉，否则用户会以为这个改动没生效。副本有两种名字：退役安装器按显示名写成
+# `Bianbu Agent.desktop`，从开始菜单复制到桌面（文件管理器复制）得到的是 desktop
+# 文件名 `bianbu-agent.desktop`。
+#
+# 升级时执行的是**旧包的** prerm，所以清理只能放在新包自己的脚本里：postinst 在
+# configure 时跑（覆盖升级），prerm 在 remove 时跑（覆盖卸载）。两处都调用这个脚本，
+# 实现只有一份。
+#
+# 判定「原样」用包内那份退役入口 `retired-bianbu-agent.desktop`：它是退役前安装到
+# /usr/share/applications 的同一份字节，且自加入以来内容从未变过，所以每个历史版本
+# 自动装出来的副本都能匹配。只删除逐字节相同的普通文件：用户改过的不碰，符号链接也
+# 不跟随。
+set -u
+
+template=${BIANBU_DESKTOP_ICON_TEMPLATE:-/usr/lib/bianbu-agent-runtime/retired-bianbu-agent.desktop}
+[ -f "$template" ] || exit 0
+
+service_user_file=${BIANBU_SERVICE_USER_FILE:-/etc/bianbu-agent-runtime/service-user}
+desktop_user_file=${BIANBU_DESKTOP_USER_FILE:-/var/lib/bianbu-agent-runtime/desktop-user}
+
+for marker in "$service_user_file" "$desktop_user_file"; do
+    [ -r "$marker" ] || continue
+    user=$(sed -n '1p' "$marker")
+    entry=$(getent passwd "$user" || true)
+    uid=$(printf '%s\n' "$entry" | cut -d: -f3)
+    home=$(printf '%s\n' "$entry" | cut -d: -f6)
+    case "$uid:$home" in
+        ''*:|*[!0-9]*:*|*:|*:/) continue ;;
+    esac
+    # 离线安装与测试可以在拿不到设备家目录的机器上指定要检查的目录。
+    home=${BIANBU_DESKTOP_ICON_HOME:-$home}
+    [ -d "$home" ] || continue
+    # 旧版本用 xdg-user-dir 取桌面目录，所以用户改过名字的桌面也要能找到：读
+    # ~/.config/user-dirs.dirs 里的 XDG_DESKTOP_DIR，再回落到两个常见名字。
+    xdg_desktop=
+    dirs_file=$home/.config/user-dirs.dirs
+    if [ -r "$dirs_file" ]; then
+        xdg_desktop=$(sed -n 's/^XDG_DESKTOP_DIR="\(.*\)"$/\1/p' "$dirs_file" | sed -n '1p')
+        case "$xdg_desktop" in
+            '$HOME'*) xdg_desktop=$home${xdg_desktop#'$HOME'} ;;
+            /*) ;;
+            *) xdg_desktop= ;;
+        esac
+    fi
+    for desktop in "$xdg_desktop" "$home/Desktop" "$home/桌面"; do
+        [ -n "$desktop" ] || continue
+        for name in 'Bianbu Agent.desktop' 'bianbu-agent.desktop'; do
+            target="$desktop/$name"
+            if [ -f "$target" ] && [ ! -L "$target" ] && cmp -s -- "$target" "$template"; then
+                rm -f -- "$target"
+            fi
+        done
+    done
+done
+
+exit 0

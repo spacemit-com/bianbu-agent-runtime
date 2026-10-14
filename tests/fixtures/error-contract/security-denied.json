@@ -1,0 +1,20 @@
+{
+  "name": "security-denied",
+  "description": "明确的安全拒绝。用户必须看到原因与定位信息，且界面不能鼓励原样重试。",
+  "error": {
+    "code": "security_denied",
+    "message": "[bianbu-security] 能力 network.access 未授权或已撤销",
+    "retryable": false,
+    "details": {
+      "tool": "web_search",
+      "capability": "network.access",
+      "scope": "https://api.example.com",
+      "risk_level": "L2",
+      "decision": "BLOCK",
+      "reason": "能力 network.access 未授权或已撤销",
+      "degraded": false,
+      "terminate_run": false
+    }
+  },
+  "ui_detail_keys": ["tool", "capability", "scope", "risk_level"]
+}

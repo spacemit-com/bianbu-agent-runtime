@@ -1,0 +1,84 @@
+[Unit]
+Description=Bianbu Agent Runtime
+Documentation=file:/usr/share/doc/bianbu-agent-runtime/README.Debian
+After=network-online.target bianbu-securityd.service bianbu-agent-runtime-register.service bianbu-agent-network-learning.service
+Wants=network-online.target bianbu-agent-network-learning.service
+Requires=bianbu-securityd.service bianbu-agent-runtime-register.service
+
+[Service]
+Type=simple
+# 系统级服务：整个设备一份，随 multi-user.target 开机启动，与谁登录无关。
+# 运行身份是设备用户（安装时解析并写进 /etc/bianbu-agent-runtime/service-user，
+# 由 postinst 生成的 drop-in 覆盖这里的默认值）。用设备用户而不是专用系统账号，
+# 是因为 host Worker 要以真实用户身份工作：家目录、文件资源、sudo/PAM 都依赖它。
+# 没有设备用户（在镜像 chroot 里安装）时回落到独立的 bianbu-runtime 账号，
+# 服务仍能启动，但 host Worker 不再拥有用户级权限。
+User=bianbu-runtime
+SupplementaryGroups=bianbu-security bianbu-agent bianbu-admin bianbu
+UMask=0077
+WorkingDirectory=~
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=BIANBU_RUNTIME_MODE=production
+Environment=BIANBU_RUNTIME_MANAGED=1
+Environment=BIANBU_RUNTIME_SYSTEM_SERVICE=1
+Environment=BIANBU_RUNTIME_SYSTEM_UNIT=bianbu-agent-runtime.service
+Environment=BIANBU_SECURITY=1
+Environment=BIANBU_RUNTIME_SECURITY=required
+Environment=BIANBU_SECURITY_CLIENT_DIR=/usr/lib/bianbu-securityd/client
+Environment=BIANBU_SEC_UDS=/run/bianbu/securityd.sock
+Environment=BIANBU_RUNTIME_SECURITY_ID=com.bianbu.runtime
+Environment=BIANBU_AGENT_ID=com.bianbu.runtime
+Environment=BIANBU_RUNTIME_ROLE=control
+Environment=BIANBU_AGENT_MEMORY_REGISTRY_DIR=/run/bianbu/agent-runtime/memory-registry
+Environment=BIANBU_RUNTIME_SERVICE_USER=bianbu-runtime
+Environment=BIANBU_AGENT_MEMORY_ACCOUNT_ID=bianbu-runtime
+Environment=BIBIT_LLAMA_SERVER_BIN=/usr/bin/llama-server
+Environment=BIANBU_AGENT_MEMORY_REGISTRATION=1
+# securityd 按 FR-SBX-02 默认给每个 Worker 2 GiB MemoryMax 和 1 核 CPUQuota。
+# 单板设备没有需要保护的其它租户：内存上限会把长会话 OOM kill
+# （历史缺陷：Worker cgroup OOM 归因），1 核配额则让 Hook 子进程、
+# engine 构建和工具调用在 8 核板子上排队。打包的 unit 显式关掉这两个上限。
+# 要恢复限额就把值改成尺寸/百分比（如 2G、200%），或删掉对应行回落到策略值。
+Environment=BIANBU_WORKER_MEMORY_MAX=off
+Environment=BIANBU_WORKER_CPU_QUOTA=off
+ExecStartPre=+/usr/bin/install -d -m 2770 -o root -g bianbu /run/bianbu/agent-runtime
+ExecStartPre=+/usr/bin/install -d -m 2770 -o root -g bianbu-agent /run/bianbu/agent-runtime/memory-registry
+ExecStartPre=+/usr/bin/install -d -m 2770 -o root -g bianbu-security /run/bianbu/syscall-audit
+ExecStartPre=+/usr/bin/install -d -m 0770 -o root -g bianbu-security /run/bianbu/network-learning
+# Reinstall the packaged trust declaration only after Security registration was cleared.
+ExecStartPre=+/usr/bin/python3.14 -I /usr/lib/bianbu-agent-runtime/register-security-manifest.py /usr/share/bianbu-agent-runtime/security-manifest/com.bianbu.runtime --expected-agent-id com.bianbu.runtime --if-missing
+ExecStartPre=/usr/lib/bianbu-agent-runtime/runtime-user-entrypoint provision
+ExecStartPre=+/usr/lib/bianbu-agent-runtime/venv/bin/python /usr/lib/bianbu-agent-runtime/provision-system-agent.py --user ${BIANBU_RUNTIME_SERVICE_USER} --template /usr/share/bianbu-agent-runtime/default-profile/starter-agent.yaml
+ExecStartPre=/usr/lib/bianbu-agent-runtime/runtime-user-entrypoint provision
+ExecStart=/usr/lib/bianbu-agent-runtime/runtime-user-entrypoint serve
+Restart=on-failure
+RestartSec=2s
+KillMode=control-group
+TimeoutStopSec=20s
+# Host Workers run as the login user and may use sudo after normal PAM/sudoers
+# authentication. Sandbox Workers still drop every capability in bwrap.
+NoNewPrivileges=false
+RestrictSUIDSGID=false
+# Deliberately no PrivateTmp=/ProtectSystem=/LockPersonality= and no
+# ReadWritePaths= here. Worker scopes inherit them from this unit, and every
+# mount-related property counts, ReadWritePaths= included: systemd creates the
+# private mount namespace for the whole cgroup tree as soon as one is set. What
+# a session Agent then finds when it probes itself is a private mount namespace,
+# one seccomp filter (systemd implements LockPersonality with seccomp) and /usr,
+# /etc mounted read-only, and it reads that as "I am sandboxed" and refuses
+# privileged work it could do with sudo. The memory registry stays writable
+# through its 2770 root:bianbu-agent mode and the Runtime's SupplementaryGroups
+# membership, not through a remount. The bwrap backend keeps its own tmpfs,
+# mount namespace and seccomp profile, so sandbox isolation is unchanged.
+# Workers launched in scopes inherit irreversible memory protections from this
+# service. Host tools such as Node/Chromium need JIT executable memory; enforce
+# per-Worker policy in Security rather than disabling JIT for every expert.
+MemoryDenyWriteExecute=false
+TasksMax=256
+# 这里刻意不设 MemoryMax：本 unit 的 cgroup 只覆盖控制面，而长会话加 Console
+# 轮询在单板上会正常涨过 2 GiB，限额把一次负载尖峰变成无限重启，见
+# 历史缺陷记录（session log store 全量 hydrate OOM）。每 Worker 的
+# 上限由 Security 在各自的 scope 上施加，见上面的 BIANBU_WORKER_MEMORY_MAX。
+
+[Install]
+WantedBy=multi-user.target

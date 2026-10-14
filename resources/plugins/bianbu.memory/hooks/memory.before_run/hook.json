@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "hooks": {
+    "BeforeRun": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "exec \"${RUNTIME_PYTHON}\" \"$PLUGIN_ROOT/scripts/before_run.py\"",
+            "timeout": 5,
+            "on_timeout": "skip"
+          }
+        ]
+      }
+    ]
+  },
+  "parallel": true
+}

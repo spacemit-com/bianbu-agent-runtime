@@ -1,0 +1,2202 @@
+bianbu-agent-runtime (0.1.163) resolute-porting; urgency=medium
+
+  * Stop declaring security state in the Agent editor. The starter Agent no
+    longer ships a `permissions` block or `metadata.execution.requested_mode`,
+    and the Expert editor drops the capability policy table, the JSON policy
+    panel, the network scope, the personal-data policy and the host/sandbox
+    selector. A new Expert is simply host + yolo until an operator configures
+    it in the security console. `metadata.runtime.requested_mode` and
+    `metadata.execution.requested_mode` are rejected as retired.
+  * Derive the Worker execution boundary from the Agent's security settings.
+    `_requested_execution_mode` always returns `auto` and the supervisor asks
+    securityd; a Worker only runs sandboxed once a read, write, network or
+    syscall setting is declared. A new Expert therefore starts on the host.
+  * Register only missing tool policies. `ensure_capabilities` reads the
+    existing rows and registers what securityd has not seen, so restarting the
+    Runtime never rolls back an operator's tightening. The DLP policy sync is
+    gone with it; DLP rows belong to the security console.
+  * Move the security permission settings onto their own console page. The
+    read and write scopes are include + exclude pairs and the execution mode is
+    shown read-only as the derived result. The syscall blacklist page states
+    that nothing is restricted by default.
+  * `RUNTIME_MANIFEST_VERSION` advances because the packaged Agent package
+    changed and securityd rejects a manifest rollback.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 14 Oct 2026 20:45:00 +0800
+
+bianbu-agent-runtime (0.1.162) resolute-porting; urgency=medium
+
+  * Default every tool policy to `allow`. Capability management shipped with
+    `ask` as the built-in default, so a fresh install prompted for nearly every
+    tool. The signed manifest now declares `allow` for all 34 runtime tools,
+    Agent registration falls back to `allow` for selected tools and MCP
+    servers, and the bundled security plugin uses the same fallback for
+    unmapped tools. Operators still tighten individual tools in the console.
+    `RUNTIME_MANIFEST_VERSION` advances because the manifest body changed and
+    securityd rejects a rollback.
+  * Move the syscall denylist onto its own security page. It is a kernel
+    seccomp table, not a filesystem or network scope, so the native console
+    gains a dedicated tab instead of burying it among the permission groups.
+  * Remove the "policy check" debug panel from the native console; the tool
+    policy column already shows the effective decision.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 14 Oct 2026 18:20:00 +0800
+
+bianbu-agent-runtime (0.1.161) resolute-porting; urgency=medium
+
+  * Declare the Runtime framework in the signed manifest. The manifest never
+    said which framework's tool catalog it belongs to, so securityd could not
+    scope the console capability list and returned the runtime and hermes tools
+    together (81) for `com.bianbu.runtime`. It now emits
+    `framework = "runtime"` in `[agent]`, so a registered `com.bianbu.runtime`
+    lists exactly the 34 runtime tools. The development manifest shares the
+    same generator and inherits the field. `RUNTIME_MANIFEST_VERSION` advances
+    because securityd rejects a manifest rollback.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 14 Oct 2026 15:10:00 +0800
+
+bianbu-agent-runtime (0.1.160) resolute-porting; urgency=medium
+
+  * Emit the three-state tool policy in the packaged Runtime manifest. The
+    signed manifest still declared the retired four-dimensional capability
+    model (domain / risk level / confirm strategy), so securityd rejected the
+    whole package and the device registration unit retried forever, leaving
+    the Runtime unable to reach AGENT_READY. The manifest now carries one
+    allow / ask / deny row per runtime tool, matching securityd's authoritative
+    catalog one for one, and drops the token budget the Runtime no longer
+    enforces.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 14 Oct 2026 14:05:00 +0800
+
+bianbu-agent-runtime (0.1.159) resolute-porting; urgency=medium
+
+  * Own the approval interrupt decision. Tool approval failed every Run with
+    `'_DynamicSecurityHITL' object has no attribute '_should_interrupt'`:
+    `ApprovalMiddleware` delegated the decision to
+    `HumanInTheLoopMiddleware._should_interrupt`, a hook LangChain only grew in
+    1.3, while the riscv64 lock still resolves 1.2.18, whose `after_model`
+    calls the hook without defining it. The middleware now decides itself: no
+    predicate means the entry interrupts, and a predicate reads the tool call
+    off the request, so `when` behaves identically on both versions.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 14 Oct 2026 13:20:00 +0800
+
+bianbu-agent-runtime (0.1.158) resolute-porting; urgency=medium
+
+  * Adopt the three-state tool policy in the security console. Capability
+    management carried four dimensions (domain, risk level, confirm strategy
+    and scope) that mostly restated what the tool name already implies; it is
+    now one dimension, the tool itself, with three states: allow, ask and
+    deny.
+  * Rebuild the security page around that model with four tabs: agents,
+    capabilities, DLP and audit. The capability page shows a policy per tool
+    plus the five security permission groups (readable range, writable range,
+    network access, syscall denylist and custom JSON); the DLP page uses the
+    same three states plus ``mask`` and drops the risk column; YOLO mode stays
+    and asks for confirmation before it disables the controls.
+  * Scope the tool catalog per framework, so an agent bound to the Runtime
+    runtime shows runtime tools and one bound to hermes shows hermes tools.
+  * Derive the agent editor policy rows from the checked tools, so the form
+    saves exactly the rows it shows. It previously rendered 34 rows and
+    persisted 9 because the display list and the save list were built from
+    different inputs.
+  * Remove the token budget feature end to end: TokenMeter, MeterTokens,
+    GetTokenBudget, SetTokenBudget, TokenBudget and TokenExceeded, along with
+    the runtime token guard and its two test modules.
+  * Security denial cards carry ``tool`` and ``policy`` details instead of the
+    retired ``capability``, ``scope`` and ``risk_level`` fields.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 14 Oct 2026 12:05:00 +0800
+
+bianbu-agent-runtime (0.1.157) resolute-porting; urgency=medium
+
+  * Retire the automatic execution mode. The console expert form no longer
+    offers "Automatic (security policy)": ``metadata.execution.requested_mode``
+    accepts ``host`` or ``sandbox`` only, a record that still carries ``auto``
+    runs in host mode, and the Worker supervisor never forwards the retired
+    value to securityd.
+  * Keep the packaged profiles, the API guide and the startup guide at the two
+    accepted modes, and keep rewriting a device config that still says
+    ``auto`` to the packaged default on upgrade.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 12 Oct 2026 13:05:00 +0800
+
+bianbu-agent-runtime (0.1.156) resolute-porting; urgency=medium
+
+  * Default every Agent to host execution mode. Agents, the API and the
+    console expert form no longer fall back to the automatic security-policy
+    mode, so an Agent that states no `requested_mode` runs in host mode;
+    `auto` stays available as an explicit choice.
+  * Carry that default into an existing user config. The packaged profile is
+    written once, so a device that still carries the retired `auto` mode would
+    have kept the old behaviour; the provisioner now follows the packaged
+    value for a `requested_mode` that is still `auto`, and archives the
+    previous config under `backups/package-upgrade/`.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 12 Oct 2026 12:40:00 +0800
+
+bianbu-agent-runtime (0.1.155) resolute-porting; urgency=medium
+
+  * Keep the Session transcript header in a zstd frame of its own. Harness's
+    reader requires the first frame to be exactly one header line and refuses
+    anything else as corrupt, but the transcript compressed the header together
+    with the first append batch. The first append now writes the header frame
+    and the batch frame back to back inside one temporary file that is linked
+    into place, so the atomic commit and the idempotent retry byte comparison
+    stay as they were and a metadata-only reader only decodes frame one.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Sat, 10 Oct 2026 22:00:00 +0800
+
+bianbu-agent-runtime (0.1.154) resolute-porting; urgency=medium
+
+  * Write the transcript in the three row shapes DeepSeek Harness uses: one
+    immutable header row, one row per event, and packed `text-chunks` /
+    `reasoning-chunks` rows that stand for a whole run of streaming deltas.
+    Packing rebuilds `seq = seq0 + i` and accumulates `dt`, so the logical log
+    stays exact while a token-per-row message collapses to one row; a run of
+    fewer than three deltas, or non-monotonic times, stays one row per event.
+    An unknown event or packed row is now rejected unless it declares
+    `ignorable`, instead of silently dropping an event this build cannot
+    rebuild, and `tool-call-chunks` is deliberately not written because a tool
+    call arrives whole and has no losslessly sliceable text stream.
+  * Drop the retired Session mounts from the Worker policy. Removing the
+    checkpointer deleted `sessions/checkpoints`, but an un-upgraded securityd
+    still declared it as a writable Worker mount and the Runtime refuses to
+    spawn a Worker whose policy names a path that does not exist, so every Run
+    failed with `worker_rpc_error`. The control plane owns the Session log and
+    a Worker only reads it through the read-only data root, so every
+    `sessions/` mount is dropped while the Worker policy is augmented.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Sat, 10 Oct 2026 20:05:00 +0800
+
+bianbu-agent-runtime (0.1.153) resolute-porting; urgency=medium
+
+  * Let the console attach any file or a whole directory, and warn instead of
+    blocking when the model cannot read images. Attachments were image-only,
+    and a model without vision was refused at upload time and again on prompt.
+    The composer now offers an upload-file and an upload-folder entry, a single
+    file keeps the magic-byte check so its stored suffix matches the bytes,
+    every other file is typed by extension into video/file, and a directory is
+    stored under one uuid root and reported with its file count. The prompt
+    note names each workspace path and the Tool that opens it: read_image for
+    images, read_file or search_files for files, search_files or terminal for
+    a directory. Availability is now a warning, not a gate: GET
+    /sessions/{id}/vision still answers whether some configured model can read
+    an image and the console shows it next to the input, but the upload and
+    prompt routes accept the bytes either way. Uploads are limited to 10 MiB
+    per image, 64 MiB per file and 2000 files / 256 MiB per directory, with
+    relative paths resolved under the stored root.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Sat, 10 Oct 2026 15:10:00 +0800
+
+bianbu-agent-runtime (0.1.149) resolute-porting; urgency=medium
+
+  * Let the console attach an image, and give the Agent a way to read it. The
+    composer already drew an attachment preview and a send path, but nothing
+    could put a file into it, and no model could read an image at all: the
+    prompt pipeline carries text, and a provider record has no field for the
+    input modalities of its model. Availability is now decided from an
+    explicit `capability-vision` model record first and the model name family
+    second, both before the user picks a file and again on upload, so a model
+    that cannot read images answers with the product sentence instead of
+    failing later. An uploaded image is stored in the Agent workspace and
+    announced by path, and the new `read_image` tool reads it with a vision
+    model. Uploads are limited to 10 MiB and to png/jpeg/webp/gif by magic
+    bytes rather than by the client's content type.
+  * Give a device-local model its own request clock. The model client timeout
+    is a network deadline, and applied to 127.0.0.1 it measures the device's
+    own prompt prefill: on K3 a local Qwen3VL-4B server spent 109 s encoding a
+    64x64 image and the image reading tool failed with provider_timeout after
+    120 s, discarding an answer the model had already produced. A Provider
+    record may now set `request_timeout_seconds` explicitly, a loopback Base
+    URL defaults to fifteen minutes, and a network endpoint keeps two minutes.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Fri, 09 Oct 2026 15:20:00 +0800
+
+bianbu-agent-runtime (0.1.148) resolute-porting; urgency=medium
+
+  * Report a lifecycle and the tools for every installed MCP server. The
+    Worker only enumerated the servers an Agent selects, and its capability
+    catalog drops the rest, so a server that was installed but not selected
+    stayed `not_loaded` with an empty tool list and no reason -- the state an
+    operator could not explain. The installed catalog is the honest list, and
+    the preparation manager already answers for each of them.
+  * Prepare a server published by any reload. An install publishes through a
+    plain reload, but the Worker only re-ran the installed catalog for an
+    explicit refresh, so a freshly added server was started by nobody and
+    waited for the next Worker restart.
+  * Keep the Console watching an MCP server after a mutation. An install
+    answers from the Control catalog while the Worker may still be rebuilding
+    its Generation, so the page showed `not_loaded` right after a successful
+    install and then stopped looking.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 30 Sep 2026 21:30:00 +0800
+
+bianbu-agent-runtime (0.1.147) resolute-porting; urgency=medium
+
+  * Stop promising the host APM self-provisioning recipe to Workers that
+    cannot run APM. A sandboxed Worker mounts the Agent data root read-only
+    and gets no writable HOME, so `apm list`, `apm search` and `apm install`
+    all fail there; the Power Dependencies section now reports the missing
+    Power by exact name and the command the user has to run on the device,
+    while host Workers keep the recipe. The using-apm Skill and its
+    self-provision reference describe the same boundary.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 30 Sep 2026 20:00:00 +0800
+
+bianbu-agent-runtime (0.1.146) resolute-porting; urgency=medium
+
+  * Open the composer's `/` Skill list on the first keystroke. The Skill
+    catalog is fetched on demand, and the loader dropped its result whenever
+    the menu happened to be closed -- the state an empty catalog leaves it in
+    -- so the first `/` after a page load showed nothing and the user had to
+    type it twice. The list also now redraws with the picker when the console
+    language changes, since it writes the same localized Skill names.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 30 Sep 2026 18:00:00 +0800
+
+bianbu-agent-runtime (0.1.145) resolute-porting; urgency=medium
+
+  * Redraw the expert editor's Tool, Skill, Plugin and MCP panels when the
+    console language changes. The labels already follow Power format v2
+    (`name_zh` / `name_en`), but the editor only picked the new language up on
+    reopen. The fetched capability catalog is now kept in memory, so a switch
+    redraws the panels without re-fetching and without dropping the draft
+    selection.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 30 Sep 2026 16:30:00 +0800
+
+bianbu-agent-runtime (0.1.144) resolute-porting; urgency=medium
+
+  * Read and write Agent records in Power format v2. `schema_version: 2` adds
+    `name_en` and `description_zh` next to the existing display fields, and the
+    Runtime now accepts version 1 or 2 while always writing version 2, so an
+    Agent installed from the AgentHub/APM catalog round-trips unchanged. The
+    new fields flow through agent.yaml, the agent stores, the REST API, the CLI
+    and the Console expert form; the Console picks the display name and the
+    intro from the active UI language.
+
+  * Update the bundled `using-apm` skill to v1.5.0 and keep the
+    Runtime-specific deltas on top (Power dependency section, when skill vs.
+    MCP/plugin changes take effect, and the missing-tool gap report). The agent
+    template no longer declares `hooks`, which the manifest whitelist rejects.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 30 Sep 2026 15:00:00 +0800
+
+bianbu-agent-runtime (0.1.143) resolute-porting; urgency=medium
+
+  * Rename the Agent display field from `zh_name` to `name_zh`. The expert side
+    now uses the same display-field names as the Power format v2 Skills
+    (`name_zh`, `name_en`, `description_zh`): agent.yaml, the create and update
+    requests, AgentView, the monitoring and package views, the AgentReference
+    label and the Console expert form all carry `name_zh`, and the
+    expert-creator Skill takes `--name-zh`. The old key is rejected instead of
+    aliased, so an installed Agent package whose agent.yaml still writes
+    `zh_name` is retired at startup; rewrite it with `name_zh` to bring it back.
+    The bundled default expert and the Runtime Console move in the same release.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 30 Sep 2026 11:30:00 +0800
+
+bianbu-agent-runtime (0.1.142) resolute-porting; urgency=medium
+
+  * Stop folding every Session transcript at startup. A start rebuilt the whole
+    Run listing by decompressing and folding every transcript: on K3, 175
+    Sessions and 1.14M events held the API back for 63.7s, and listing one
+    Session re-read its entire log. Session projections now live in a persisted
+    row table (one file, replaced atomically, written fail-soft); `open()` reads
+    only that table, a Session is folded on first touch, and a row whose
+    recorded byte size still matches its transcript proves no newer frame
+    exists, so listing, tail reads and startup recovery answer from the row
+    without folding.
+  * Keep the transcript the authority. A row is a fold shortcut, never a truth:
+    a Session's first touch drops what the row seeded and refolds, a row is only
+    usable when every unit it carries is readable at its live version, and an
+    unusable or missing table falls back to the log instead of failing a start.
+  * Wake startup recovery only for Sessions the rows already know, so a lost
+    table cannot turn into a fold of every transcript again, and ask each Agent
+    id at most once per recovery pass. Agent declarations are read and parsed
+    again on every lookup and recovery asked once per Session: 179 parses, 22.1s
+    of YAML on K3.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Tue, 29 Sep 2026 17:00:15 +0800
+
+bianbu-agent-runtime (0.1.141) resolute-porting; urgency=medium
+
+  * Publish an MCP mutation without holding the catalog lock. Installing an
+    MCP server held `runtime.catalog_mutation_lock` while it awaited the
+    Worker reload, and the Worker answers a reload only after it has rebuilt
+    the affected packages. The first load of an `npx` server materialises its
+    npm package first, which takes minutes on a board, so the install request
+    never returned and the lock stayed taken: the added server never appeared
+    in any list and every later MCP install, delete or health check queued
+    behind it. The lock now only covers the catalog and filesystem decision;
+    the change is published to the Worker outside the lock, with a bounded
+    wait, and the mutation answers from the catalog it owns. A busy Worker can
+    no longer freeze the API, and a server registered by name and command is
+    visible in the MCP list immediately.
+  * Keep the failure semantics unchanged, and report the new
+    `mcp_install_not_visible` when a staged install is somehow missing from
+    the catalog instead of answering 201 for a server nobody can see.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Tue, 29 Sep 2026 14:45:00 +0800
+
+bianbu-agent-runtime (0.1.140) resolute-porting; urgency=medium
+
+  * Fix the Worker catalog failing for every builtin Tool. The 0.1.139
+    release read `spec.name_zh` for every capability, but only `SkillSpec`
+    has that field: `ToolSpec` carries `name`, `description`,
+    `input_schema` and `metadata`, and nothing else. Every builtin Tool
+    raised `AttributeError`, which failed the whole `worker.catalog` RPC, so
+    the Control view reported every MCP server as `unknown` and the Console
+    and the BiBit Runtime plugin had nothing to show but that for all of
+    them. The lookup now falls back to the spec metadata, which is where a
+    Tool can carry `name_zh` / `name_en` / `description_zh` when its Plugin
+    has them.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Tue, 29 Sep 2026 11:20:00 +0800
+
+bianbu-agent-runtime (0.1.139) resolute-porting; urgency=medium
+
+  * Show Skill names in the interface language. Skills written in Power format
+    v2 carry `schema_version: 2` with `name_zh`, `name_en` and `description_zh`
+    next to the call name. The loader and the capability views pass those
+    fields through, the Console skill picker follows the console language, and
+    a Skill written before v2, or one from a vendor package, still falls back
+    to `display_name` / `name`. Search matches both languages, so switching
+    the language never changes which Skills a query finds.
+  * Report an MCP server's lifecycle instead of one raw status. `not_loaded`
+    used to mean either "no Expert selects this server" or "the Worker never
+    loaded it", and `preparing` never said what it was doing: the first
+    `bilibili-mcp-js` install downloads 116MB and takes over a minute, while
+    the Console showed a bare `preparing` with nothing else. `MCPServerView`
+    now carries `state` (not_loaded, preparing, ready, degraded, failed,
+    stopped, unknown), the in-flight `phase` (installing, starting), `ready`
+    and `tools_count`, projected from the preparation manager, directory
+    Plugins and the Worker catalog. `status` keeps its old vocabulary so
+    existing readers do not change meaning.
+  * Stop bundling the `spacemit-power` and `superpowers` Power plugins, and
+    the `audit-guide` and `security-guide` Skill guides. They duplicated what
+    AgentHub ships and made the package carry third-party code this repository
+    does not maintain; users install them into `~/.bianbu-agent/plugins/`,
+    which already takes precedence.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Tue, 29 Sep 2026 10:40:00 +0800
+
+bianbu-agent-runtime (0.1.137) resolute-porting; urgency=medium
+
+  * Register an MCP server without starting it. AgentHub kills any Agent CLI
+    call after 30 seconds, while vendoring an npm-backed declaration needs
+    far longer: the first `bilibili-mcp-js` install downloads 116MB and takes
+    over a minute on a cold cache. `mcp add` was killed in the middle of that
+    work, leaving an empty staging directory and an unfinished install
+    transaction behind, and every later install was then refused with
+    "transaction recovery required". The command and the Console install API
+    now only write the declaration and return `preparing`; both also clear the
+    `.install-*`/`.retired-*` leftovers a killed install used to leave next to
+    a vendored tree.
+  * Prepare every installed MCP server in the background on each Worker start.
+    The new MCP preparation manager resolves an `npx` declaration to its local
+    installation (reusing a tree that is already complete), starts the server
+    once to list its tools, and reloads the Generation so the tools appear.
+    A server that is still downloading is registered as `preparing` instead of
+    making its Generation wait, a failure is reported as `unhealthy` with the
+    reason in `detail` without failing the Runtime start, and `worker.reload
+    --force` is what retries a server that failed once.
+  * Move the transient transport retry out of the MCP Plugin and reuse it for
+    the background probe, so a server whose connection is reset by a proxy is
+    retried in both places.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 28 Sep 2026 18:20:00 +0800
+
+bianbu-agent-runtime (0.1.134) resolute-porting; urgency=medium
+
+  * Stop naming the MCP servers the selected Plugins already own. Selecting the
+    `bianbu.bibit.intent` or `bianbu.memory` Plugin brings that Plugin's MCP
+    servers, Skills and Hooks into the session, so the packaged Expert declared
+    the same four servers twice: once through the Plugin and once in `mcps:`.
+    `mcps:` now lists only servers that no selected Plugin owns, which for the
+    packaged Expert is the empty list, so the Console MCP group no longer shows
+    those servers as separately chosen. The Expert still resolves to the same
+    four servers. The Agent YAML reference template, the system MCP notes and
+    the profile tests follow the same rule.
+  * Sync `pyproject.toml` and `uv.lock` with `debian/changelog`. The 0.1.132
+    and 0.1.133 release entries were written without bumping the project
+    version, so `debian/tests/validate-source-package.sh` failed on those
+    checkouts and the three version fields disagreed.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 28 Sep 2026 10:36:30 +0800
+
+bianbu-agent-runtime (0.1.132) resolute-porting; urgency=medium
+
+  * Keep `/` to the skills this Expert is not already running. Selecting a
+    Plugin brings every Skill that Plugin owns into the session, and naming a
+    Plugin member (`plugin-id/member`) materializes the same Plugin, so the
+    Console no longer offers those Skills as "temporary" ones. Until now the
+    menu still listed all of `superpowers/*` and `spacemit-power/*` for the
+    packaged Expert, which runs them from the moment the session starts.
+  * Show the temporary skills by name only. The picker rows and the slash menu
+    drop the skill description; it is neither what the user picks by nor
+    readable at a glance once the catalog holds more than a handful of Skills,
+    and every row already carries its Plugin qualifier in the name.
+  * Let a hand-typed `/skills` open the picker again. The suggestion list takes
+    Enter, so the alias selected whichever Skill happens to contain "skills"
+    (`superpowers:writing-skills` on this device) instead of opening the panel,
+    which the composer has no other button for. The exact alias now wins over
+    that row; Tab and the arrow keys still select it.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 28 Sep 2026 10:00:00 +0800
+
+bianbu-agent-runtime (0.1.131) resolute-porting; urgency=medium
+
+  * Retire the desktop launcher. The package no longer ships
+    `bianbu-agent-launcher`, `desktop-launcher.py` or a `bianbu-agent.desktop`
+    entry, and `xdg-user-dirs` and `xdg-utils` leave both Depends and the
+    development provisioning list. The old desktop file stays under
+    `/usr/lib/bianbu-agent-runtime/` only as the byte-exact reference postinst
+    uses to delete the icon an earlier release installed. The console is
+    reached over its port, so nobody needs a launcher on the desktop.
+  * Make `/` in the Console composer choose a skill and nothing else. The
+    suggestion menu lists skills the current Expert does not already have,
+    which is the whole point of "use a skill temporarily"; the hardcoded
+    `/help`, `/status`, `/skill ...` command table and its translations are
+    gone, and the input placeholder now says what `/` does. A hand-typed
+    `/skills` still opens the picker.
+  * Declare the built-in expert's capabilities instead of the `*` wildcard.
+    The packaged BibitEdgeAssistant now names the 33 built-in tools, the nine
+    bundled skills, the four MCP servers and the six plugins this package
+    ships. A wildcard deferred the meaning to whatever the Runtime happened to
+    have installed, so the Expert editor, the capability count and the "use a
+    skill temporarily" menu each had to special-case it; the declaration is now
+    the concrete list, frozen at package time and updated with the package.
+    The Agent YAML reference template under `docs/ref/` follows the same list.
+  * Show the built-in skills under their lowercase catalog ID. The five
+    bundled `SKILL.md` files drop `display_name`, so the skill picker, the
+    skill page and the Expert editor show `cli-anything-libreoffice` rather
+    than the Chinese label that file used to carry: English only, first
+    letter lowercase.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Thu, 24 Sep 2026 16:30:00 +0800
+
+bianbu-agent-runtime (0.1.130) resolute-porting; urgency=medium
+
+  * Make an MCP server installed with `bianbu-agent mcp add <name> --command
+    npx --args <package>` usable right away, which is how AgentHub installs
+    servers. The verb only wrote mcp.json before, so the first Run paid for
+    the npm download inside the 30s budget shared with tool calls and a cold
+    npx start on K3 (23.2s) could leave the generation without those tools
+    while every surface still reported success. Such declarations are now
+    installed once into `<data_dir>/mcp-runtime/<id>` through a staging
+    directory renamed into place and started as `node <script>`, and every
+    stdio declaration is started once and asked for its tools before the
+    configuration is written: a server that cannot start exits 1 with the
+    reason and installs nothing. `--no-verify` skips that check and
+    `--upgrade` replaces an installed name; `remove` drops the vendored tree
+    together with the declaration. `timeout_seconds` (30s) is now only the
+    per-call budget, and the new `startup_timeout_seconds` is what starting a
+    server waits with. The result and the API resource gained the server's
+    real state (`status`, `tools`, `detail`, `vendored`,
+    `startup_timeout_seconds`) so a failed install is visible instead of
+    reported as success.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Thu, 24 Sep 2026 12:00:00 +0800
+
+bianbu-agent-runtime (0.1.129) resolute-porting; urgency=medium
+
+  * Re-release the 0.1.128 payload (system-wide runtime service, no desktop
+    icon, stable run identity) as 0.1.129. 0.1.128 never reached the archive:
+    the binary .changes generated by the packaging job lost one byte of a
+    multi-byte character inside the changelog text, so `bianbu-dev upload`
+    failed with `UnicodeDecodeError: invalid continuation byte` at byte 650
+    of the 1343-byte file. Release commit subjects and the tag comment stay
+    ASCII so the generated changelog entry and .changes stay valid UTF-8.
+  * fix(memory): keep the registered agent identity when a tool call carries
+    no identity fields, instead of inventing default/default-agent.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 23 Sep 2026 17:08:00 +0800
+
+bianbu-agent-runtime (0.1.128) resolute-porting; urgency=medium
+
+  * Resolve the Runtime run identity once and keep it stable, and support
+    installing as root. An install performed as root directly over SSH has no
+    SUDO_USER and no non-root logname, so it could only fall back to uid 1000;
+    when that uid belongs to another account the device recorded the wrong
+    identity. It now falls back further to the lowest regular account (uid
+    1000..65533). A previously recorded identity now also wins over logname and
+    the uid fallback, because the identity belongs to the device rather than to
+    whoever ran apt, so a reinstall or upgrade always lands on the same
+    ~/.bianbu-agent. A record whose account was deleted is no longer reused -
+    that left the drop-in pointing at a non-existent user - and is re-resolved
+    instead.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 23 Sep 2026 18:10:00 +0800
+
+bianbu-agent-runtime (0.1.127) resolute-porting; urgency=medium
+
+  * Clean up the retired desktop icon from the new package's own scripts. An
+    upgrade runs the *old* package's prerm, so the cleanup 0.1.126 added there
+    never ran on the 0.1.124 -> 0.1.125 path and the icon stayed on the desktop.
+    The cleanup is now the shared, shipped script
+    /usr/lib/bianbu-agent-runtime/cleanup-retired-desktop-icon, called by
+    postinst at configure (what actually covers an upgrade) and by prerm at
+    remove/upgrade (what covers an uninstall), still removing only files that
+    are byte-identical to the packaged template and still honouring a renamed
+    XDG_DESKTOP_DIR. The rest of 0.1.125/0.1.126 is unchanged.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 23 Sep 2026 17:40:00 +0800
+
+bianbu-agent-runtime (0.1.126) resolute-porting; urgency=medium
+
+  * Removing the desktop icon now also happens on upgrade, not only on remove.
+    0.1.125 stopped installing an icon into the login user's Desktop, but a
+    device upgrading from 0.1.124 kept the copy the old package had put there,
+    which reads as "the icon is still there". prerm now cleans it for upgrade
+    and remove alike, still only when the file is byte-identical to the packaged
+    template, and also honours the XDG_DESKTOP_DIR that the retired installer
+    used (a renamed desktop directory is found as well). The rest of 0.1.125 is
+    unchanged.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 23 Sep 2026 17:10:00 +0800
+
+bianbu-agent-runtime (0.1.125) resolute-porting; urgency=medium
+
+  * One system-level Runtime per device. The per-user template unit
+    bianbu-agent-runtime@.service is replaced by bianbu-agent-runtime.service,
+    wanted by multi-user.target, so the Runtime starts at boot and no longer
+    depends on who logs in. postinst resolves the device user, records it in
+    /etc/bianbu-agent-runtime/service-user and drops in
+    /etc/systemd/system/bianbu-agent-runtime.service.d/10-service-user.conf to
+    override User= and BIANBU_RUNTIME_SERVICE_USER=; an image build that sees no
+    device user keeps the packaged bianbu-runtime default and simply does not
+    enable the unit. polkit matches the control plane by
+    subject.system_unit == bianbu-agent-runtime.service instead of decoding a
+    user name out of the instance name, and local active users may start or
+    restart the unit so the start-menu entry can open the console after boot.
+  * No desktop icon any more. The package stops copying an icon into ~/Desktop;
+    the /usr/share/applications entry stays, and prerm removes the copy an older
+    version left behind only when it is byte-identical to the packaged template.
+  * Callers can see whose Runtime they are talking to. /api/v1/runtime/status
+    reports service_user and data_dir, the console "Runtime status" panel and
+    the desktop launcher window show the run identity and data directory, and
+    debian/bianbu-agent-wrapper resolves the service account's
+    ~/.bianbu-agent/config.yaml (explicit BIANBU_AGENT_CONFIG still wins, a
+    source checkout without the record file still uses the login user). The
+    launcher falls back to the uid-derived console port when it cannot read the
+    service configuration.
+  * Console: an already configured custom-provider API key now shows
+    "Configured - enter a new value to replace" as its placeholder and an empty
+    field keeps the stored key; the MCP page lists standalone servers only and
+    points at the Plugins page, where each plugin's own MCP servers are listed
+    with live status and tool count (unknown when no snapshot is available).
+  * The starter expert selects every MCP a plugin provides ('*') instead of
+    listing them one by one.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 23 Sep 2026 16:40:00 +0800
+
+bianbu-agent-runtime (0.1.124) resolute-porting; urgency=medium
+
+  * Show security-center timestamps in the local time zone. securityd sends
+    ISO-8601 UTC, but the console printed the string as-is, so the wall clock
+    was one time zone ahead of the page (8 hours on CST boards); the same
+    column also fell back to the raw SQLite UTC form for Agents that only had
+    an installation time. The "recent activity" column now parses the value
+    (naive timestamps are UTC and get a Z), shows "just now" / "N minutes ago"
+    for the last hour and the local clock afterwards, prints "no activity yet"
+    instead of an installation timestamp, and keeps the installation time in
+    the tooltip. The syscall-audit and audit-log time columns use the same
+    local formatting.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 23 Sep 2026 15:20:00 +0800
+
+bianbu-agent-runtime (0.1.123) resolute-porting; urgency=medium
+
+  * 系统专家的 Host 模式改成默认值而不是锁：K3 上 5 个专家里只有系统 Bibit 专家
+    （com.bianbu.278200e1617c）切不动，PATCH 返回 409 `agent_mode_fixed`，其余
+    专家 host<->sandbox 都是 200。根因是 `_fixed_execution_mode` 把 starter
+    Agent 钉死成 host，接口层据此拒绝切换，视图又下发 `fixed_mode`，原生控制台
+    因此把「运行时」下拉框置灰。现在包内 Bibit 的 host 只是默认值：删除
+    `_fixed_execution_mode` 与 409 分支，不再在编辑时写回 host，视图不再下发
+    `fixed_mode`，控制台下拉框恢复可选。用户选择写在
+    `~/.bianbu-agent/agents/<id>/agent.yaml`，系统副本重发只写系统目录，不覆盖
+    用户选择。
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 23 Sep 2026 16:05:00 +0800
+
+bianbu-agent-runtime (0.1.122) resolute-porting; urgency=medium
+
+  * 回答语言不再漂：修掉"中文提问得到整段英文回答"。语言规则原本只由 Expert Soul
+    承载（一句"与用户使用的语言保持一致"），埋在以英文为主的提示词里（Skill、工具
+    描述、策略都是英文），英文工具输出一进上下文就被冲掉——K3 会话
+    session_46f8ac4e 里用户全程中文，助手第一条回复就是英文。现在
+    `## Response Language` 是 Runtime 拥有的系统提示词最后一段：中文提问中文答、
+    英文提问英文答，且覆盖工具调用之间的进度说明；工具输出、日志、代码、Skill 与
+    Memory 文本只是证据不是语言信号；混合语言按主导语言，消息没有语言信号时沿用
+    会话语言，用户显式指定语言优先。每次模型调用前还会在 system message 末尾追加
+    一句当轮提醒，只改写本次请求、不写入会话历史与轨迹。裸命令与路径不会翻转语言。
+    平台感知的最小请求预算从 480 提到 780 estimated tokens。
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 23 Sep 2026 12:20:00 +0800
+
+bianbu-agent-runtime (0.1.115) resolute-porting; urgency=medium
+
+  * 会话读热路径不再重读整份 transcript：按会话过滤的运行列表回到有界投影
+    （之前每次状态查询都要把整份会话事件重建成 RunEvent，22 万条事件的会话上
+    要 15.7 s / 约 170 MB，而调用方只读 status/request/待审批）；/history 与
+    /events 的响应体按 (会话, max_messages, before_seq, tail) 缓存，transcript
+    追加让 tail 变化即失效，同一游标只留最新一版（上限 16 条 / 32 MB）。
+    板子上 10.0.91.148 的两个前端交替轮询大会话时，缓存互相淘汰，导致每次轮询
+    都重付一遍解码，状态查询 8.8～17.2 s、历史窗口 9.4～94.2 s，常驻内存被顶到
+    1.5 GB / 限额 2 GiB 的 92%；修复后状态查询 0.002 s、历史窗口首次 4.2 s
+    之后 0.003 s（148 数据副本实测）。
+  * 详见 docs/bugs/2026-09-21-session-read-hot-paths-reread-transcript.md。
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 21 Sep 2026 17:05:00 +0800
+
+bianbu-agent-runtime (0.1.114) resolute-porting; urgency=medium
+
+  * 本版本包含 0.1.112 与 0.1.113 的内容：那两个 tag 的包没有进 archive
+    （pack job 收尾 `git push origin --all` 被之后的 main 提交挤掉，见
+    docs/bugs/2026-09-20-pack-job-push-race.md），内容顺延到本版发布。
+    其中 0.1.112 是会话历史不再全量常驻内存（长会话不再把 Runtime 在 2 GiB
+    限额下撑到 OOM），0.1.113 是 Control 内置工具的双语简介。
+  * 记忆 MCP 子进程被杀后自动重连，长寿命注册随连接续期，不再需要重启
+    Runtime 才能恢复记忆工具（docs/bugs/2026-09-21-memory-mcp-child-expiry-and-no-reconnect.md）。
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 21 Sep 2026 16:20:00 +0800
+
+bianbu-agent-runtime (0.1.113) resolute-porting; urgency=medium
+
+  * 修复 0.1.111 的漏改：Control 角色的内置工具走 BUILTIN_MODULES 单独分支，
+    那条分支没有写 summaries，于是板上 GET /api/v1/capabilities/tool 的 33 个
+    内置工具 summaries 全是空对象，控制台「工具」页与 Bibit 插件（同一接口）
+    都退回显示 docstring，中文界面上仍是中英混排且两行截断看不全。现在按工具名
+    取双语简介。
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 21 Sep 2026 16:10:00 +0800
+
+bianbu-agent-runtime (0.1.112) resolute-porting; urgency=medium
+
+  * 会话历史不再全量常驻内存：SessionLogStore.open() 之前把每个会话的全部
+    事件读进内存并常驻（_sessions 一份、Run 投影再一份），长会话会让 Control
+    进程在 2 GiB 限额下启动即被 OOM 杀死并反复重启（板子 10.0.91.148：
+    984 831 条会话事件 / 259 个 Run，峰值 1.1 GB 起步）。现在常驻只保留每个
+    会话的尾部窗口（4096 条事件），总条数单独记录；Run 投影只保留累计文本、
+    applied input、待审批动作与 dedupe key，状态/监控/列表这些热路径改用
+    合成事件，不再回读 transcript。
+  * 需要旧窗口或精确 Run 事件流时按需回读 transcript，进 LRU 预算缓存
+    （120 000 条事件）；open() 改为流式逐帧索引，峰值内存与一批事件成正比，
+    坏尾帧仍按原行为截断。
+  * 实测同一份板子数据：open() 从 20.9 s / 1110 MB 降到 21.4 s / 90 MB，
+    索引后 150 MB，14 个会话读全量历史后 301 MB；深窗口、Run 回放、
+    runs.list(session_id=…) 与原始 transcript 逐条一致。
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 21 Sep 2026 15:40:00 +0800
+
+bianbu-agent-runtime (0.1.111) resolute-porting; urgency=medium
+
+  * 工具页介绍支持中英文切换：GET /api/v1/capabilities/{kind} 的每个能力
+    新增 summaries 字段，Runtime 自有的 33 个内置工具各带 zh/en 一句话简介
+    （bianbu_agent/tools/summaries.py），用户工具、Plugin 工具和 MCP 工具
+    为空对象。
+  * 控制台「工具」页按界面语言取对应简介，卡片仍两行截断，悬浮（title）
+    显示完整文本；没有简介的工具继续显示自己的 description。
+  * Bibit 设置插件（bibit-runtime-plugin 0.1.38）同步该展示逻辑。
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 21 Sep 2026 15:15:00 +0800
+
+bianbu-agent-runtime (0.1.110) resolute-porting; urgency=medium
+
+  * 本地模型页显示具体模型名：GET /api/v1/local-models 的每个模型新增
+    artifact 字段（Gateway 注册路径里的模型文件名，如
+    glm-edge-1.5b-chat-q4_0.gguf）。bibit-intent 只报 Gateway 条目 id
+    （bibit-llm / bibit-embed），Runtime 用 Gateway 注册表把 id 解析成
+    artifact 并补上 path，读不到 Gateway 时保留 Intent 原样。
+  * 控制台「本地模型」页 LLM 分节标题由「意图识别模型」改为「大语言模型」，
+    卡片标题改渲染 artifact、拿不到时退回 name，页面不再出现 bibit-llm /
+    bibit-embed。Bibit 设置插件（bibit-runtime-plugin 0.1.37）同步该文案与
+    字段。
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 21 Sep 2026 15:20:00 +0800
+
+bianbu-agent-runtime (0.1.109) resolute-porting; urgency=medium
+
+  * 设备本地模型改成"只读转述"：新增 GET /api/v1/local-models，先读
+    bibit-intent（BIBIT_INTENT_BASE_URL，默认 http://127.0.0.1:8765）的
+    /v1/models，读不到再读 spacemit-ai-gateway（AI_GATEWAY_BASE_URL，默认
+    http://127.0.0.1:18790）的 /v1/{llm,embed}/models；响应固定
+    read_only: true、不带 actions，两个来源都不可用时返回 502 bad_gateway
+    并在消息里带上各自原因。控制台与 Bibit 设置插件的「Bibit 模型」页随之
+    改名「本地模型」并去掉下载/启动/停止/取消按钮，模型生命周期回到
+    spacemit-ai-gateway 及其包内脚本。
+  * 插件 Console 机制整体删除：插件目录不再扫描 console.py，
+    /api/v1/plugin-consoles/{plugin_id} 与 .../actions/{action} 两个路由、
+    Worker RPC 的 console.describe/invoke 一并移除；MCP 运行时描述改由
+    MCPRuntimeContribution 直接注册（Generation 的 console 字段改名
+    mcp_runtime），插件要暴露状态请使用 MCP server 或 Runtime 的只读资源。
+  * debian/control 显式声明 spacemit-ai-gateway 运行时依赖：此前只由
+    bibit-intent 间接带入，而模型文件与加载过程的所有者是 Gateway。
+  * 专家声明里的插件成员（<plugin-id>/<member>）不再被静默丢弃：写进
+    tools/skills/mcps 时会连带选中拥有它的 Plugin，skill_view 也接受
+    plugin:skill 写法。
+  * 随包 Skill 少一个：plugin-creator 删除（插件目录与清单已由 APM、控制台
+    插件管理和 Codex 侧的同名 Skill 覆盖），随包技能 10 → 9。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Mon, 21 Sep 2026 12:25:00 +0800
+
+bianbu-agent-runtime (0.1.106) resolute-porting; urgency=medium
+
+  * 轨迹页能对账了：一轮的"耗时"此前和行里显示的耗时加不起来（长会话能差出
+    几十秒）。没有记录覆盖的时间现在自己成行，并按阶段说明是启动、等待模型、
+    交接、收尾还是空档；Hook 行改按墙钟区间显示，自报耗时留在详情里对照；
+    嵌套（工具内部的 before_tool Hook）与并行（同一轮并发工具）标出来并给出
+    重叠时长；轮次头与每轮末尾直接写出"记录覆盖 + 等待 = 耗时"的合计。
+  * skill_manage 不再把用户 Skill 写进 skills/<分组>/：那个子树没有任何消费者
+    会扫，建完在技能页、技能选择器、专家技能里都看不见；现在只写
+    skills/<name>/，与能力目录和 skills_list 完全一致。
+  * superpowers 按 AgentHub v6.3.0 收进内置插件，插件内的 Skill 以
+    <插件id>:<技能名> 出现在目录、控制台搜索与技能选择器里。
+  * expert-creator 改走 Runtime agents API；plugin-creator 的脚本自己切到
+    Runtime 解释器，装完即可用（设备 /usr 只读、装不了额外依赖）。
+  * 打包侧无功能变化：新增发布指南 docs/release-guide.md，并记录
+    RUNTIME-RELEASE-001（0.1.104 的 pack job 收尾 push 竞态）。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Sun, 20 Sep 2026 15:59:17 +0800
+
+bianbu-agent-runtime (0.1.104) resolute-porting; urgency=medium
+
+  * 7 个官方 Skill 按 AgentHub 的最新版本收进内置插件 spacemit-power：
+    k3-media-pipeline、markdown-maker、riscv-porter、spacemit-k-stability、
+    spacemit-modelzoo-benchmark、vibe-coder、vpu-benchmark。装完即以
+    spacemit-power/<skill> 的限定 id 出现在技能目录里，前端按插件名也能搜到；
+    resources/skills/ 里这 7 个重复目录已删除（剩 24 个随包技能）。
+  * 插件内容取自 AgentHub 包 spacemit-power v1.0.0，逐字节一致，不在本仓改内容；
+    升级技能走重新收包，不在这里打补丁。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Sun, 20 Sep 2026 14:00:00 +0800
+
+bianbu-agent-runtime (0.1.103) resolute-porting; urgency=medium
+
+  * 打包：浏览器 CLI 抽成独立的 agent-browser 包（源码在
+    gitlab.dc.com/bianbu/ai/agent-browser），Runtime 不再在打包时编译上游 Rust
+    代码。此前每发一版都要走一次 cargo 冷编译（K3 约 44 分钟，CI 里下载 255
+    个 crate），现在只有 agent-browser 包升级时才需要编。
+    - debian/control：Build-Depends 去掉 cargo/rustc；Depends 增加
+      agent-browser (>= 0.37.1)，chromium 改由该包提供。
+    - /usr/bin/agent-browser 与 libexec 里的二进制改由 agent-browser 包所有
+      （该包对旧版 Runtime 声明 Breaks/Replaces），wrapper 逻辑原样搬过去；
+      不再随包分发 1.9 MB 的上游归档。
+  * 发布顺序：先发本版，再发 agent-browser 0.37.1。本版单独发布时设备只是保留
+    旧版 Runtime；反过来先发 agent-browser 会让装有 ≤0.1.102 的设备在 apt 解析
+    Breaks 时倾向于先移除旧 Runtime。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Sun, 20 Sep 2026 12:00:00 +0800
+
+bianbu-agent-runtime (0.1.102) resolute-porting; urgency=medium
+
+  * PDF 转 Markdown 技能修复两处：
+    - 技能脚本不再依赖 paramiko（设备上不存在，且 /usr 只读装不上），默认在本机
+      直接执行命令与文件传输，只有显式 --host 才用系统 ssh/sftp；远端密码认证缺
+      sshpass 时给出明确错误码。
+    - 预检不再把环境问题报成 APT 问题：half-installed/unpacked 等中断的 dpkg 状态
+      报 PACKAGE_BROKEN 且不再叠加重试，sudo 认证失败/只读文件系统/缺失 unit 分别
+      归到 PRIVILEGE_REQUIRED、FILESYSTEM_READ_ONLY、SERVICE_UNIT_MISSING；正文把
+      预检失败写成硬停，不许继续提交转换任务。
+  * 打包：agent-browser 的 cargo 并行度默认封顶 8，避免 CI 构建容器里 nproc 报出
+    整机核数把 14Gi 内存上限顶爆。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Fri, 18 Sep 2026 21:30:00 +0800
+
+bianbu-agent-runtime (0.1.101) resolute-porting; urgency=medium
+
+  * 浏览器工具修复：包内自带 agent-browser。以前 browser_* 只调 PATH 上的
+    agent-browser，而 Runtime 包从不安装它（K3 上的 /usr/bin/agent-browser 是
+    镜像里的 wrapper，它 exec 的 libexec/agent-browser 并不存在），于是每次调用
+    都返回 browser_unavailable。现在把上游 v0.37.1（commit 72007a6）归档与
+    cli/Cargo.lock 按 sha256 固定后随包构建，装到 libexec 并导出 /usr/bin/
+    agent-browser wrapper，chromium 提升为运行时依赖。
+  * 监控日志页修复：/api/v1/logs 以前 glob <data_dir>/logs/*.log，而设备上只有
+    logs/operational/runtime.jsonl，所以 Console 和 Bibit 插件的日志页永远是空
+    的。改为读 RuntimeLogStore 的最近 500 条，渲染成
+    `时间 [级别] logger: message 关联字段…`；空日志显式提示，两处文案改准。
+  * 插件 Skill 可临时指定：capabilities/skill 重新返回插件 Skill（限定 id
+    plugin/name，即 Run 解析用的句柄），Console 技能选择器按 `插件id:技能名`
+    展示与搜索，Bibit 侧同步。
+  * 指定技能要告诉模型：临时选中的 Skill 不再只作为普通 Skill 段注入，改为
+    `## User-Requested Skills` 段落，明确说明是本条消息用户指定的流程、优先
+    照做、不适用要说明，并给出 skill_view 能解析的限定句柄。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Fri, 18 Sep 2026 18:50:00 +0800
+
+bianbu-agent-runtime (0.1.100) resolute-porting; urgency=medium
+
+  * 修复 0.1.99 全量 pytest 的唯一红项：平台上下文加入「下载只授权获取、安装
+    必须走已授权宿主工具」的软件操作边界后，最小 Agent 的首次输入从 192 涨到
+    467 estimated tokens，而 tests/sdk/test_minimal_agent_token_budget.py 的预算
+    常量没有同步。现在按实测值抬到 480 并写清预算覆盖的是「平台身份 + 软件操作
+    边界」，边界措辞不动。
+  * 文档：补齐 Memory 注册 24 小时 TTL 续期的实机证据（同一个 Worker PID 一小时
+    续期、`last_success_at_ms` 前进 3,600,008 ms；重启后按 +24 小时重新注册），
+    以及 Hook 字节码修复在 0.1.99 实机的复核记录。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Fri, 18 Sep 2026 16:35:00 +0800
+
+bianbu-agent-runtime (0.1.99) resolute-porting; urgency=medium
+
+  * 轨迹页事件行统一成 key=value 摘要：Hook 行统一之后，剩下的通用事件行还在
+    行内重复自己的事件名（run/progress 的标题与预览同是 run/progress，
+    run/event 直接打印 {"completion_tokens":227,"prompt_tokens":31578} 这类原始
+    JSON）。现在抽出 scalarFacts 与 Hook 摘要共用，标量渲染成
+    `key=value · …`、跳过对象与 `*_id`，两条路径只有一处格式定义。
+  * 补齐 Memory 注册 24 小时 TTL 续期的实机证据：0.1.98 装到 K3 后，同一个
+    Worker PID 在两次采样之间 `last_success_at_ms` 前进 3,600,008 ms（正好
+    1 小时）且 `state=active`；Worker 重启后重新注册的 `expires_at_ms` 正好是
+    `last_success_at_ms` 加 24 小时。跨 24 小时长稳与写失败降级注入仍待补。
+  * 修复 7a703744 引入的回归：它把「下载只授权获取、安装必须走已授权宿主工具」
+    的软件操作边界加进平台上下文，却没有同步最小输入预算，全量 pytest 直接失败。
+    现在预算按实测值（467）抬到 480 并写清覆盖范围，边界措辞不动。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Fri, 18 Sep 2026 16:30:00 +0800
+
+bianbu-agent-runtime (0.1.98) resolute-porting; urgency=medium
+
+  * 轨迹页：一次提问不再显示两个「轮次」。投影按 run_id 分组，而
+    agent/inbox/spliced 这类会话级事件没有 run_id，于是自成一轮；行内预览又是
+    String(data.message)，对象直接渲染成 [object Object]。现在无 run_id 的事件
+    并入相邻的 Run（优先其后那个，末尾的并入其前那个），并新增
+    previewText/oneLine，对象不再进 String()。
+  * 轨迹页 Hook 行格式统一：类型列显示 Hook 短名（security.before_run、
+    memory.before_run），不再是一排「Hook」；行内一律是
+    「决策 · 最多 3 个标量事实 · 效果」一行摘要（ALLOW · mode=yolo、
+    route=cloud · latency_ms=0.362 · reason=chitchat、
+    context +1 · ## Memory policy…）。会话级 *_id 不进行内，stage 与 Hook point
+    相同时省略；原始 context_sections 与 metadata 仍留在右侧详情。
+  * 轨迹页事件行同样统一：有数据的会话级事件不再只显示事件名，
+    改为同一套 key=value 摘要（run/progress → phase=starting_agent、
+    run/event → Run event · usage · prompt_tokens=31578 · completion_tokens=193）。
+  * 并入 fix(agent)：区分「下载」与「在本机安装」的请求，只下载不再视为
+    授权安装、修复、配置或执行，设备变更必须走已授权的宿主安装工具，
+    不允许退回沙箱安装或终端提权。
+  * Hook 启动慢的根因是安装包不带字节码：unit 与 wrapper 都设
+    PYTHONDONTWRITEBYTECODE=1，/usr/lib 属 root 只读，构建期又把 venv 的
+    __pycache__ 删掉，于是每个 Hook 子进程、每个 Worker 进程都要把自己导入的
+    每个模块重新编译一遍。改为在安装阶段按最终布局预编译 venv
+    （compileall -s 打包根 -p /），板端实测 bibit-intent Hook 2.08s→1.04s、
+    import httpx 1.22s→0.30s、import fastapi/pydantic/uvicorn 3.30s→1.00s。
+    资源树不预编译：plugins/<id>/ 下多一个 __pycache__ 会被 installer 判为
+    非法条目并整体跳过该插件，而单独预编译 Hook 脚本测不出差别。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Fri, 18 Sep 2026 16:05:00 +0800
+
+bianbu-agent-runtime (0.1.97) resolute-porting; urgency=medium
+
+  * 修复 SKILL.md frontmatter 的伪解析导致已发布技能无法加载：loader 逐行
+    partition(":")，不接受 YAML 折叠标量（description: >- 的续行被当成非法键）
+    与嵌套块（metadata: / compatibility:）。APC 上已发布的 k3-media-pipeline
+    v0.7.0、vpu-benchmark v0.13.9、spacemit-modelzoo-benchmark v2.0.0 因此
+    在设备与独立安装两条路径下都加载失败，并且一个坏技能会挡住同一 Plugin
+    里其余 4 个正常技能。现改为按 YAML 解析（新增共享的严格 loader，
+    拒绝别名与重复键），仍只把 name/display_name/description/version 四个键
+    写进技能记录，白名单契约没有被削弱。
+  * 同一 loader 也用于 Agent manifest（从 agents/manifest.py 抽到
+    bianbu_agent/_internal/yaml_documents.py），两处不再各有一份 YAML 解析。
+  * 文档同步：plugin-manifest-spec、extension-integration-guide 与
+    bibit-intent 接口文档里的「只允许 4 个键／不是 YAML 解析器」改为
+    「按 YAML 解析、只读取 4 个键」，并记录这次推翻此前决定的原因。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Fri, 18 Sep 2026 15:20:00 +0800
+
+bianbu-agent-runtime (0.1.96) resolute-porting; urgency=medium
+
+  * 安装事务只落盘：固件/镜像构建（pbuilder、chroot、容器、CI）没有真机
+    （无 systemd、无 D-Bus、无 securityd）时 dpkg --configure 不再失败。此前
+    postinst 在安装期做 reset binding、注册签名 manifest、启动服务、探测桌面
+    用户，缺真机即 exit 1；0.1.93 加的 BIANBU_RUNTIME_SKIP_SYSTEM_INTEGRATION
+    开关构建方不会去设，等于没修。
+  * 真机安全集成整体挪到设备启动路径：新增 oneshot 单元
+    bianbu-agent-runtime-register.service 与 /usr/lib/bianbu-agent-runtime/
+    register-runtime-manifest，Runtime 与 network-learning 单元用
+    Requires=/After= 拉起它；由它授予 bianbu-security 成员身份、重建 /run/bianbu
+    运行期目录、补齐账户与 admin token，并按 registered-manifest.sha256 摘要
+    决定「同代只补缺失注册」或「换代先 reset caller binding 再注册 manifest」。
+    注册失败时 Runtime 仍 fail closed，capabilities.db 不会被删除。
+  * postinst 删除全部失败分支（无 exit 1/return 1），systemctl 与账户创建
+    全部 best-effort；preinst 删除 rollback payload 捕获与 active-users 记录
+    （安装期回滚机制一并移除），postrm 只清理桌面用户、manifest 摘要与遗留的
+    active-users，注册脚本也会顺手删掉上一代留下的 active-users。
+  * 修复 debian/rules 的构建期测试清单仍调用已删除的
+    debian/tests/test-rollback-permissions.sh：板子上因为
+    DEB_BUILD_OPTIONS=nocheck 一直没暴露。validate-source-package.sh 新增
+    「debian/rules 引用的测试必须存在且可执行」断言，防止再次漏删。
+  * 新增 debian/tests/test-offline-install.sh：静态禁止 postinst 触碰
+    securityd/systemd/`/run`，并在伪造的「无 systemd、无 securityd 组、无登录
+    用户」宿主上真实执行 postinst 函数，要求成功且 stderr 为空。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Fri, 18 Sep 2026 14:35:00 +0800
+
+bianbu-agent-runtime (0.1.95) resolute-porting; urgency=medium
+
+  * 修复文件系统级安装仍然依赖 securityd 的问题：缺少 bianbu-security 组时
+    ensure_runtime_user 直接失败，BIANBU_RUNTIME_SKIP_SYSTEM_INTEGRATION=1
+    等于无效。现在只有不跳过系统集成时才要求该组；跳过模式仍然创建
+    bianbu-runtime/bianbu-agent 账户与目录，把组成员身份留给设备上的
+    dpkg-reconfigure 补齐，并在 stderr 说明。
+  * 跳过模式下不再创建 /run/bianbu/network-learning：这是运行期状态，设备上
+    由 tmpfiles 与采集器的 ExecStartPre 重建，镜像构建既无法也不需要创建。
+  * 修复真机安装可能留下的半成品状态：AgentMemory registry 检查原本位于
+    manifest 注册之后且未处理返回值，缺少 bianbu 组会留下「已注册但服务起
+    不来、回滚 payload 已删除」；现在把它提前到 securityd 提交之前，失败即
+    回滚上一代 Runtime。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Fri, 18 Sep 2026 13:05:00 +0800
+
+bianbu-agent-runtime (0.1.94) resolute-porting; urgency=medium
+
+  * 修复高负载下 Hook 超时导致整轮对话失败、且失败原因为空的问题：命令超时现在
+    带预算与 Hook 身份（如 `Hook command timed out after 5s`），闸门包装补兜底
+    文案，`hook/result` 不再出现空 error；`hook.json` 处理器新增可选 on_timeout，
+    Memory 召回这类 best-effort 闸门 Hook 声明 skip，超时后跳过并记 WARNING，
+    本轮继续；同时给 Worker scope 补 CPUWeight=1000 下限（Security 策略未下发
+    cpu_weight 时），缓解跨 cgroup 的 CPU 争抢。
+  * 修复 Worker 触顶 cgroup 内存限额被 OOM 杀死后只剩 worker_rpc_error/EOFError
+    的问题：读取 scope 的 memory.events/peak/max，在连接中断时给出
+    worker_oom_killed 与可读原因，oom_kill 缺失但峰值贴近限额时按「疑似」归因，
+    details 带 exception/unit。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Fri, 18 Sep 2026 12:39:23 +0800
+
+bianbu-agent-runtime (0.1.93) resolute-porting; urgency=medium
+
+  * postinst 支持显式的非真机（离线）安装：pbuilder、chroot、容器或 CI 里
+    没有运行中的 systemd、没有 securityd、也没有镜像自带的 bianbu 组，
+    原先安装必然失败。现在把 securityd binding reset、manifest 注册、
+    systemd 启动与桌面用户探测抽成函数，只有显式设置
+    BIANBU_RUNTIME_SKIP_SYSTEM_INTEGRATION=1 才跳过，未设置时行为与之前一致，
+    也绝不根据 systemd 状态自动降级；跳过时仍创建用户、目录与 admin token，
+    清掉 preinst 捕获的 rollback payload，并在 stderr 明确告警。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Fri, 18 Sep 2026 12:09:05 +0800
+
+bianbu-agent-runtime (0.1.92) resolute-porting; urgency=medium
+
+  * 技能页去掉右上角「探索技能广场」外链：技能视图只保留技能清单，
+    中英文 i18n 词条 skills_hub_btn 一并删除。Bibit Runtime 插件技能页
+    同步删掉同一个入口。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Fri, 18 Sep 2026 12:10:00 +0800
+
+bianbu-agent-runtime (0.1.91) resolute-porting; urgency=medium
+
+  * 删除插件、工具、技能或 MCP 被拒时的 409 消息改成中文并写上专家显示名：
+    此前是「Plugin X is referenced by Agents: com.bianbu.278200e1617c」——
+    英文加内容哈希 ID，中文界面里读不懂也没法照着处理；现在与
+    provider_in_use 一致，形如「插件 X 正在被专家使用：Bibit端侧智能助手
+    （com.bianbu.278200e1617c）。请先在“专家”页…」。details.agent_ids 不变。
+  * agent_references() 返回 AgentReference（id/name/zh_name/label），
+    ProviderReference 一并重命名为 AgentReference：两者描述的都是专家。
+  * 系统自带插件不能卸载时，从 422 validation_error + 英文
+    「system Plugin cannot be uninstalled」改成 409 plugin_managed_by_system
+    +「插件 X 由系统包管理，随 bianbu-agent-runtime 一起安装，无法在这里卸载。」，
+    并登记到稳定错误表。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Fri, 18 Sep 2026 09:40:00 +0800
+
+bianbu-agent-runtime (0.1.90) resolute-porting; urgency=medium
+
+  * 控制台还有三处删除被拒绝时完全没有提示：MCP Server 卸载、插件删除、
+    会话删除都只判断状态码后直接 return，用户点下去像是按钮没生效。
+    三处统一走新的 explainRefusedDelete()：读 error 信封并弹只有「知道了」
+    的对话框，说明被插件/系统托管、仍被专家使用、或对象已不存在。
+  * deletePluginAdmin() 改为返回是否有删除发生，uninstallPlugin() 不再在
+    失败后把插件/工具缓存标记成已加载；deleteAgent() 的内联等价逻辑也收敛到
+    同一个 helper。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Thu, 17 Sep 2026 19:30:00 +0800
+
+bianbu-agent-runtime (0.1.89) resolute-porting; urgency=medium
+
+  * 把 Bibit Intent 的单个 159 工具 MCP 拆成 bibit-readonly / bibit-control /
+    bibit-admin 三个 MCP：manifest 分别设置 BIBIT_MCP_GROUPS，readonly 只含
+    只读查询，control 承载应用/窗口与设备操作，admin 承载安装/用户/电源等高风险
+    操作和 bibit_task_status。旧的 bibit-intent MCP 不再由 Runtime 分发。
+  * securityd 把三个新 MCP ID 与旧 bibit-intent ID 统一映射到 mcp.bibit-intent，
+    已有授权不因拆分丢失；starter-agent.yaml 暂仍显式加载三个 MCP。
+  * package-smoke 与 validate-source-package 按新 manifest 目录校验，插件契约
+    文档同步成三个 MCP 的目录结构。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Thu, 17 Sep 2026 19:00:00 +0800
+
+bianbu-agent-runtime (0.1.88) resolute-porting; urgency=medium
+
+  * 删除被专家占用的服务商时，控制台把拒绝原因写在了一个 opacity-0 的状态行里，
+    用户点删除看起来毫无反应；状态文案现在会真正显示，并区分错误（红）与提示。
+  * 删除专家失败时控制台读的是 FastAPI 的 detail 字段，拿不到 Runtime 的
+    error 信封，任何失败都会显示成「安全服务暂不可用」；现在按错误信封解析，
+    404 会显示「找不到专家 X，它可能已被删除」。
+  * 服务商清单补齐到与 Bibit 客户端一致的厂商集合：新增 Anthropic、Gemini、
+    Mistral、Groq、xAI、NVIDIA、Hugging Face、Azure OpenAI；Azure 因端点带
+    用户自己的资源名而留空 Base URL，强制用户填写。新增用例锁定控制台与
+    Runtime 目录两份清单一致，避免再次漂移。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Thu, 17 Sep 2026 18:30:00 +0800
+
+bianbu-agent-runtime (0.1.86) resolute-porting; urgency=medium
+
+  * 命令 Hook 顶层新增 prompt（本轮 Run 的用户输入原文），文档写明工具事件里的
+    request 是工具限定 ID、判断「用户在说什么」要用 prompt；Bibit Intent 的音量/
+    亮度守卫改读 prompt，之前它拿工具名做关键词匹配，"volume" 永远命中，
+    「调到1」这种没说对象的请求等于没有守卫。
+  * Worker 不再重复上报已被新一轮当作自身输入消费的 step input：上一轮结束前投递的
+    转向输入被下一轮 claim 成输入前缀后，不会再在工具轮边界被应用第二次，整轮不再以
+    worker_rpc_error（applied input is not the next-step prefix）失败；本来该有的
+    收尾文本回答也不再被吞掉。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Thu, 17 Sep 2026 18:05:00 +0800
+
+bianbu-agent-runtime (0.1.85) resolute-porting; urgency=medium
+
+  * resources/ 目录改成与安装后的 /usr/share/bianbu-agent-runtime/ 一一对应：出厂
+    profile 进 resources/default-profile/（config.yaml、starter-agent.yaml），出厂
+    Provider 进 resources/models/。打包只做一次 cp -a，starter 模板渲染和 security
+    manifest 的输入路径同步改到新位置。
+  * 出厂凭据从 deepseek 厂商记录改成自定义服务商 custom:bibit（显示名 "Bibit Built-in"，
+    端点仍是 https://api.deepseek.com/v1），起步专家默认模型 custom:bibit /
+    deepseek-flash；控制台「模型」页不再把它当成需要用户自己填 Key 的厂商模板。
+  * 出厂 Provider 与出厂专家现在可以删除：它们位于只读的包内容里，删除在用户数据目录
+    写下标记（models/.hidden/<record-id>、agents/.hidden-<agent-id>），对这台设备立即
+    失效而包字节不变；用同一 ID 重新创建、安装或同步会清掉标记。删除仍被专家引用的
+    Provider 返回 409 provider_in_use，消息里带上引用它的专家 ID 和处理办法。
+  * provision：用户层那份起步专家不再永久遮蔽出厂模板。Agent store 先读用户层并跳过
+    同 ID 的出厂包，用户层副本一旦存在，之后任何出厂更新都到不了设备；现在只在出厂
+    声明真的变化时归档用户副本，用户自己的修改保留到下一次出厂变更。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Thu, 17 Sep 2026 16:40:00 +0800
+
+bianbu-agent-runtime (0.1.84) resolute-porting; urgency=medium
+
+  * 出厂模型换成 DeepSeek：打包的 Provider 凭据从 models/minimax 换成
+    models/deepseek（https://api.deepseek.com/v1），起步专家的默认模型改成
+    deepseek-flash，签名 manifest 允许的云服务域名同步换成 api.deepseek.com。
+    源码 profile 里那份 custom:chat（api.rvcompute.com）也没有了。
+  * 已有的 config.yaml 是用户文件：provision 只在 profile 声明了 presets 而该文件
+    没有时才补这一段，其它键一律不动；补写不再要求 profile digest 变化，否则
+    "profile 已带 presets、用户配置比补齐代码更早"的设备永远补不上。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Thu, 17 Sep 2026 12:05:00 +0800
+
+bianbu-agent-runtime (0.1.83) resolute-porting; urgency=medium
+
+  * 默认能力改成设备配置：config.yaml 的 presets.tools / presets.skills 决定每个
+    专家无条件拿到哪些 Tool 与 Skill，agent.yaml 不写也生效，专家与界面都不能取消，
+    本机没装的条目跳过。出厂值仍是原来的九个工具加 using-apm，但改这份清单只需要
+    改配置，代码里不再有第二份硬编码；控制台与 Bibit 专家编辑器按能力目录的
+    preset 标记预选并锁定。
+  * 修复专家声明 APM 注册名时拿不到已安装 MCP 的问题：agent.yaml 写 nws 而本机
+    装的是 mcp.nws 时，原先专家列表会同时显示两条 MCP、缺口语义上也仍报缺失，
+    Worker 侧的能力清单还会把这个 server 整个过滤掉，模型既看不到工具也无法授权
+    调用。现在校验、materialize、API 视图、提示词里的 Power Dependencies 和 Worker
+    授权都走同一套名称解析，安装与解析也共用同一个 ID 生成函数。
+  * 安装包升级时把设备新增的 presets 段补进用户已有的 config.yaml，其余键保持
+    用户原样；用户自己写过 presets 的配置不会被覆盖。
+
+ -- Bianbu Agent <bianbu@spacemit.com>  Thu, 17 Sep 2026 11:20:00 +0800
+
+bianbu-agent-runtime (0.1.82) resolute-porting; urgency=medium
+
+  * 从 AgentHub 装的专家声明的 Skill / MCP / Plugin 在本机缺失时不再直接起不来，
+    缺口变成专家自己的待办：每个专家无条件带上 using-apm 手册，模型上下文新增
+    `## Power Dependencies` 段列出声明、可用与缺失的三类 Power（仅存在缺失项时才附
+    安装指引），运行路径（Worker 启动、每轮对话）用 `allow_capability_gap` 放行
+    缺失的 Skill / MCP / Plugin，缺 Tool 仍然拒绝；控制台人工编辑仍走严格校验。
+    `available=false` 改为由 API 的 `missing_powers` 表达缺口。
+  * 专家用 APM 给自己装完 MCP 或 Plugin 后不必再重启 Runtime：租约刷新时在无人
+    持租约的前提下比对一次非 Skill 能力的可执行签名，签名变化才重载文件后端；
+    重载失败只告警并保留旧代次，下一轮再试。
+
+ -- liudecheng <decheng.liu@spacemit.com>  Wed, 16 Sep 2026 18:58:00 +0800
+
+bianbu-agent-runtime (0.1.81) resolute-porting; urgency=medium
+
+  * 修复停止路径的真实错误被指标异常顶掉：`runtime_security_stop_total` 从未登记进
+    `RuntimeMetrics` 白名单，而 `_metric_inc()` 又把 `ValueError` 直接抛出，于是
+    `securityd stop_instance failed` 的原始原因被 `unknown runtime metric` 覆盖。
+    补登记该指标（`success` / `skipped` / `error` 现在真的能在 `GET /metrics` 上看到），
+    并让 `_metric_inc()` 永不抛出：指标对象缺失或指标自身失败只写 DEBUG 日志，不再
+    把指标问题变成业务错误。缺陷记录见 `docs/bugs/2026-09-16-stop-metric-masks-error.md`。
+  * 预热缺陷记录补上跨仓修复与实机验收：securityd 0.1.32 的单调时钟 lease 判据
+    （146 时钟注入对照：修复前 lease 被 `aborted` 后靠 Runtime 重试自愈，修复后直接
+    `committed`、无预热失败）、146/167 冒烟结果，以及仍未覆盖的冷启动验收项。
+
+ -- liudecheng <decheng.liu@spacemit.com>  Wed, 16 Sep 2026 18:45:00 +0800
+
+bianbu-agent-runtime (0.1.80) resolute-porting; urgency=medium
+
+  * 控制面 `dlp.matrix.v1` 不再读取 securityd 内部模块：PII 分类与风险等级
+    改由 Runtime 维护，生效动作只取公开的 `dlp.policy`，越界的
+    `explicit` / `source` 字段连同控制台“来源”列一起删除。
+  * 基线用例全部归零：插件包内的 Skill / Hook 只在插件视图分类、路由清单
+    补上 history 与 workspace download、严格代次的工具集合不再假设 MCP
+    贡献会替换内置工具、security 包允许集合补上三个 Runtime 自有模块。
+  * 文件管理 CLI 不再因为 `bianbu_agent.context` 顶层导入把 langchain 栈拉
+    进执行路径；文档路由索引与就绪判据、架构来源与导航契约跟上现状。
+  * 排障手册补「怎么让某个专家真的能用 sudo」检查清单与缺陷记录
+    `2026-09-16-session-sudo-blocked-by-no-new-privs.md`。
+  * 预热缺陷记录改引公开就绪契约 `GET /api/v1/runtime/status`：维护中的文档
+    不允许再出现已退役的扁平端点。
+
+ -- liudecheng <decheng.liu@spacemit.com>  Wed, 16 Sep 2026 20:10:00 +0800
+
+bianbu-agent-runtime (0.1.79) resolute-porting; urgency=medium
+
+  * 修复开机预热失败后 Agent Worker 不再重试：warm_agent() 改为按
+    runtime.control.restart_policy 退避重试（1 次首发 + 最多 5 次，退避
+    1/2/5/10/30s），重试耗尽或策略关闭时升级为 ERROR 并累加
+    runtime_worker_restarts_total{reason="warmup_failure"}；关闭时打断退避
+    等待，pool.close() 不会等满退避，被删除的 Agent 不再重试。
+  * K3 冷启动首次 NTP 校时会把墙上时钟前跳（实测 1281.5s），securityd 的
+    30s 启动 lease 因此把签发仅 1.4 秒的租约判成过期，预热失败后整机长期没有
+    Agent；现在每次重试都重新申请 lease，第一次重试即恢复。
+  * 现场分析归档到
+    docs/bugs/2026-09-16-agent-warmup-lease-expired-after-clock-step.md。
+
+ -- liudecheng <decheng.liu@spacemit.com>  Wed, 16 Sep 2026 19:10:00 +0800
+
+bianbu-agent-runtime (0.1.78) resolute-porting; urgency=medium
+
+  * 控制台 MCP 刷新收口到 MCP 栏：专家页那条旧刷新路径（依赖已不存在的
+    agents-refresh-mcp 按钮）只会静默返回，连同它专用的一批状态渲染与
+    并发去重代码一起删除；MCP 栏的刷新按钮保持自己的禁用/aria-busy 与
+    本地化状态输出。相应把 4 个随按钮搬家而失效、长期跳过的浏览器用例换成
+    两个真正走 MCP 栏按钮的用例。
+  * 排障手册补充“会话里 sudo 报 no new privileges”一节：根因是 host
+    Worker 用 no_new_privs 换 seccomp 装载资格后永久失去 setuid，修复是
+    只有沙箱后端装载过滤器，并给出 K3 上的验证命令与沙箱预期差异。
+
+ -- liudecheng <decheng.liu@spacemit.com>  Wed, 16 Sep 2026 18:20:00 +0800
+
+bianbu-agent-runtime (0.1.77) resolute-porting; urgency=medium
+
+  * 修复控制台样式表没有缓存版本号的问题：脚本一直带 assets 内容摘要，
+    样式表却始终是裸 URL，只改 CSS 的发布会让浏览器继续用旧样式。
+    样式表现与脚本共用同一摘要，摘要也只在这种只改样式的情况下变化。
+
+ -- liudecheng <decheng.liu@spacemit.com>  Wed, 16 Sep 2026 17:30:00 +0800
+
+bianbu-agent-runtime (0.1.76) resolute-porting; urgency=medium
+
+  * 修复删除会话与标题生成两处回归：
+    * 删除会话会先取消并等待在途 Run 流结束，再删掉 Run 记录；此前流在
+      记录消失后才落地，只能报未知 request_id，控制面抛出的 KeyError
+      无人回收（journal 里的 "Task exception was never retrieved"），
+      会话里还会多出一条失败的 Run。
+    * RunHandle 在所属会话已被删除时本地收尾，不再把 KeyError 冒泡。
+    * 标题生成失败不再让这条辅助 Run 失败：推理模型（MiniMax-M3）把
+      64 token 预算全花在推理上、可见回答为空时，保留确定性的回退标题并
+      让 Run 正常完成，控制台已显示的标题不再回退。
+
+ -- liudecheng <decheng.liu@spacemit.com>  Wed, 16 Sep 2026 16:45:00 +0800
+
+bianbu-agent-runtime (0.1.75) resolute-porting; urgency=medium
+
+  * 修复 host Worker 装载 seccomp 过滤器后永远无法 sudo 的回归：内核只允许
+    no_new_privs（不可撤销）或 CAP_SYS_ADMIN 的进程装载 seccomp 过滤器，而
+    no_new_privs 一旦置位就永久剥夺本进程的 setuid 提权能力，于是
+    `sudo sh -c ...` 直接报 `The "no new privileges" flag is set, which
+    prevents sudo from running as root`，pkexec/su/passwd 同样失效。
+    * host Worker 不再自装载 securityd 版本化过滤器，host 后端也不再下发
+      BIANBU_SECCOMP_AUDIT_FILTER，登录用户身份保留正常 PAM/sudoers 语义。
+    * 沙箱 Worker 行为不变：bwrap `--seccomp` 装载策略过滤器后仍叠加
+      SECCOMP_FILTER_FLAG_LOG 点亮内核审计。
+    * attestation 与 syscall collector 如实报告审计覆盖：只有真正在内核里装载
+      过过滤器的沙箱实例才声明 kernel_seccomp_log，host 实例不再按策略里是否
+      存在 profile 冒充有内核 seccomp 审计。
+    * 源码校验脚本增加「只有沙箱 Worker 允许装载审计过滤器」的静态断言，
+      不再允许 host Worker 用 no_new_privs 换取内核过滤。
+
+ -- liudecheng <decheng.liu@spacemit.com>  Wed, 16 Sep 2026 16:20:00 +0800
+
+bianbu-agent-runtime (0.1.74) resolute-porting; urgency=medium
+
+  * 修复 MiniMax 把工具参数按位置传（如 `["all"]`）后整个会话被 HTTP 400
+    `invalid params` 卡死的问题：LangChain 会把这批调用放进
+    `invalid_tool_calls` 不执行，却在请求体里照常发给 provider，于是历史里
+    出现「声明 N 个工具调用、只回 N-1 个结果」，每个后续 Run 都被拒绝。
+    * provider 出站请求保证工具调用与工具结果一一配对：未执行的调用补一条
+      「未执行」结果（区分参数非法与 Run 中断），并丢弃无对应调用的孤立结果。
+    * dangling 修复覆盖 `invalid_tool_calls`，历史在下一轮 Run 自愈。
+  * 会话标题不再因模型把 `<think>` 推理内联在 `content` 里而生成失败：先剥离
+    推理标记与控制字符，再取首行可见文本。
+  * 随本版一并发布 main 上已修好的 Worker scope 授权回归：polkit 规则不再要求
+    调用方的 `no_new_privileges`（父 unit 为了 host Worker 的 sudo/PAM 语义已经
+    设成 false），只按 systemd 单元识别调用方，装包重启后 Worker 能正常启动。
+
+ -- liudecheng <decheng.liu@spacemit.com>  Wed, 16 Sep 2026 17:00:00 +0800
+
+bianbu-agent-runtime (0.1.69) resolute-porting; urgency=medium
+
+  * 固化 nws HTTPS MCP 安装命令与全局/用户 MCP 列表回归测试。
+
+ -- liudecheng <decheng.liu@spacemit.com>  Wed, 16 Sep 2026 10:00:00 +0800
+
+bianbu-agent-runtime (0.1.68) resolute-porting; urgency=medium
+
+  * 扩展 bianbu-agent mcp 命令，支持 stdio 参数与环境变量、远端 HTTP/SSE、Bearer/API Key 和 OAuth 登录续期。
+  * 凭据写入用户私有 ~/.hermes/.env，MCP 配置只保留环境变量引用。
+
+ -- liudecheng <decheng.liu@spacemit.com>  Tue, 15 Sep 2026 20:00:00 +0800
+
+bianbu-agent-runtime (0.1.67) resolute-porting; urgency=medium
+
+  * 补齐 0.1.66 之后 K3 实测发现的两处缺口，并把它们固化成回归测试：
+    * 每个 MCP 调用必须带 `_meta["bianbu/host"]` 的 session/run/agent/account
+      四个字段。Memory 这类按会话落证据的服务端拿不到它就只能按空会话写入。
+    * 记忆工具改名成 MCP 限定名（`bianbu.memory/memory/memory`）之后，
+      `remove` 仍要挂上静态审批谓词；securityd 开与关两个分支都断言，
+      避免破坏性操作在没有审批的情况下静默执行。
+
+ -- liudecheng <decheng.liu@spacemit.com>  Tue, 15 Sep 2026 18:25:00 +0800
+
+bianbu-agent-runtime (0.1.66) resolute-porting; urgency=medium
+
+  * Bianbu Memory 插件不再贡献目录 Tool，四个工具改由插件自带的 MCP Server
+    提供：`mcps/memory/mcp.json` 用 Runtime venv 的解释器启动
+    `bianbu_agent_sdk.memory.mcp_server`。实现随 bianbu-agent-memory 的
+    Python SDK 分发，Runtime 只分发 MCP 定义与权限配置，工具语义、JSON 结果
+    契约保持不变。
+  * stdio MCP 子进程由 Runtime 注入 AgentMemory 寻址环境
+    （`BIANBU_AGENT_MEMORY_SOCKET` 等），与命令 Hook 走同一个 memoryd 与
+    account；manifest 仍不能声明这些字段。
+  * MCP Server 的身份与上下文改由 Runtime 提供：Worker 的直系子进程拿到
+    Control 侧注册 broker（`BIANBU_MEMORY_REGISTRATION_SOCKET`，与命令 Hook
+    同一套），每次 `tools/call` 的 `_meta["bianbu/host"]` 携带
+    session/run/agent/account。判权仍在 memoryd，`_meta` 只作作用域提示。
+  * `memory.before_run` 不再注入其它 Runtime 会话的状态与标题，只注入
+    memoryd 召回的用户偏好与习惯。模型需要早前对话时按需调用
+    `session_search`，其它会话内容不再预置进 prompt。
+  * AgentMemory 的能力名随 MCP ID 变为 `mcp.bianbu.memory/memory`
+    （data / L2 / once_per_session），`mcp.bianbu.memory` 退休。
+    `memory` 的 `remove` 仍要求人工审批：securityd 判权之后由静态谓词兜底，
+    服务器自己签一次性确认令牌。
+
+ -- liudecheng <decheng.liu@spacemit.com>  Tue, 15 Sep 2026 17:00:00 +0800
+
+bianbu-agent-runtime (0.1.65) resolute-porting; urgency=medium
+
+  * Remove a leftover call to the deleted ensure_bibit_runtime_permissions
+    helper.  0.1.64 configured the package with exit status 127 and left it
+    half configured, so this revision is superseded and must not be installed.
+  * Guard that regression at the source contract level: debian/postinst must
+    not mention Bibit at all.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Wed, 16 Sep 2026 00:20:00 +0800
+
+bianbu-agent-runtime (0.1.64) resolute-porting; urgency=medium
+
+  * Stop touching the bibit-intent package's own directories.  The Runtime
+    package no longer creates, chowns or grants write access to
+    /opt/bibit-intent/models and /opt/bibit-intent/runtime: those paths,
+    their ownership and the model lifecycle belong to the bibit-intent
+    package and to its FastAPI (/v1/models).  Dropping the ExecStartPre
+    repair and the ReadWritePaths entries also removes a group-based grant
+    that never reached an already running desktop session.
+  * Leave Bibit model provisioning to bibit-intent in go.sh instead of
+    running its download scripts as root.
+  * Follow the resource layout migration in the starter profile packaging
+    test (resources/assets/starter-agent.yaml).
+
+ -- liudecheng <decheng.liu@spacemit.com>  Tue, 15 Sep 2026 23:55:00 +0800
+
+bianbu-agent-runtime (0.1.63) resolute-porting; urgency=medium
+
+  * Hand every Bibit Intent edge failure to the Runtime model instead of
+    answering the user that the edge result is unconfirmed. A failed edge
+    request now reports route=cloud with reason=edge_error and
+    edge_error_type, cancels a submitted run first, and tells the model to
+    verify the current state before repeating anything with side effects.
+  * Own /opt/bibit-intent/models and /opt/bibit-intent/runtime by the login
+    user rather than root:bianbu-agent. A group added while installing never
+    reaches an already running desktop session, so the user-level
+    bibit-intent units could not read the model store, blocked in start-pre,
+    and left 127.0.0.1:8765 down.
+  * Report a failing Bibit edge service on the Console model page instead of
+    presenting the Runtime as unavailable, and include the service base URL
+    in the plugin error message.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Tue, 15 Sep 2026 23:20:00 +0800
+
+bianbu-agent-runtime (0.1.62) resolute-porting; urgency=medium
+
+  * Create the published system Agent package directory read-only for the
+    Runtime user on the first publication. mkdir() applies the process umask
+    and the packaged unit runs with UMask=0077, so the 0755 argument left a
+    0700 directory and the Runtime refused to start until a later publication
+    happened to widen it again.
+  * Report an unreadable Agent declaration as such instead of claiming
+    agent.yaml is missing, so a directory-permission failure is visible.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Tue, 15 Sep 2026 22:10:00 +0800
+
+bianbu-agent-runtime (0.1.61) resolute-porting; urgency=medium
+
+  * Publish the system starter Agent declaration under
+    /var/lib/bianbu-agent-profiles instead of the Runtime's private 0750 data
+    directory. The Runtime user and sandboxed Workers could not traverse the
+    old location, so an upgrade left the service unable to start.
+  * Create that root as root:root 0755 on install, drop the retired in-state
+    tree, and remove both on purge.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Tue, 15 Sep 2026 21:10:00 +0800
+
+bianbu-agent-runtime (0.1.60) resolute-porting; urgency=medium
+
+  * Improve network-policy failure diagnostics using the effective Worker
+    startup snapshot, including provider-domain guidance for deny-all and
+    whitelist enforcement.
+  * Keep managed Worker Security UDS operation independent of dbus-python by
+    loading D-Bus only for control-plane calls.
+  * Bound Bibit local-service connection setup while preserving uncertain
+    execution cancellation and no-replay safeguards.
+  * Add regression coverage for network policy errors, Worker identity and
+    Bibit timeout behavior.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Tue, 15 Sep 2026 13:00:00 +0800
+
+bianbu-agent-runtime (0.1.59) resolute-porting; urgency=medium
+
+  * Keep the reason an Agent Worker did not start, and the reason security
+    registration failed.  Those three production paths answered with a fixed
+    "could not start" / "registration failed" text and no log, which is the
+    same evidence loss the Console proxy just lost.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Tue, 15 Sep 2026 10:05:00 +0800
+
+bianbu-agent-runtime (0.1.58) resolute-porting; urgency=medium
+
+  * Keep the reason a Plugin Console failed.  ``operations.py`` used to turn
+    every Console exception into a log-less 503 ``worker_unavailable``, so the
+    only evidence of a failing Console disappeared.  A Console error the Worker
+    reported is now a 502 ``plugin_console_failed`` carrying its own message, a
+    less specific RPC failure keeps its text in the 503, and both are logged;
+    the same logging and message pass-through is added to the capability
+    catalog read and the package-activation failure.
+  * `bianbu.bibit.intent` declares version 1.0.0: the Plugin has not shipped a
+    release yet, so the packaged manifest no longer claims 1.1.0.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Tue, 15 Sep 2026 04:10:00 +0800
+
+bianbu-agent-runtime (0.1.57) resolute-porting; urgency=medium
+
+  * Stop reading the two retired declaration shapes.  An Agent names built-in
+    Tools only: a Tool an MCP server contributes is selected by naming the
+    server under ``mcps``, so a selector that names an MCP tool ID is now a
+    validation error instead of a tolerated no-op, and the availability
+    projection and the Control catalog agree with that contract.
+  * Keep one launch-mode field: ``metadata.execution.requested_mode``.  The
+    retired ``metadata.runtime.requested_mode`` section is rejected on write
+    instead of being read back, so no record has to be migrated on edit.
+  * Delete the helpers that only existed for those two reads:
+    ``catalog_dependencies.active_mcp_tool_ids`` and the MCP-tool merge in the
+    Control validation generation.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Tue, 15 Sep 2026 03:30:00 +0800
+
+bianbu-agent-runtime (0.1.56) resolute-porting; urgency=medium
+
+  * Delete the compatibility that read past an Agent declaration a retired
+    Runtime published.  The system profile directory is package-owned, so the
+    privileged publisher now reconciles it on every start: a package left by an
+    older generation is deleted, and the published declaration is rewritten, so
+    no read path has to guess a format.  The user directory keeps self-healing:
+    a record the current contract rejects is retired into `.staging/` with a
+    warning when it is read or when the control plane starts.
+  * Remove the retired pieces that only existed to migrate an older layout:
+    `resource-layout-version`, the `legacy-user-agents` archive, the
+    `agents.system_migration` helper, and `provisioning.ensure_starter_agent`.
+    A source checkout now republishes the system starter on every start instead
+    of short-circuiting on the marker file.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Tue, 15 Sep 2026 20:00:00 +0800
+
+bianbu-agent-runtime (0.1.55) resolute-porting; urgency=medium
+
+  * Skip an unloadable system Agent declaration instead of failing startup.
+    A profile directory outlives the Runtime that published it and the Runtime
+    cannot rewrite a root-owned profile in place, so a record written by a
+    retired generation (an Agent that still declared `hooks`, for example)
+    stopped the process from starting with "unsupported agent fields".  The
+    record is now named in the log and treated as absent, exactly like an
+    unloadable user record, so a source checkout can start against its own
+    leftover profile.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Tue, 15 Sep 2026 13:05:00 +0800
+
+bianbu-agent-runtime (0.1.54) resolute-porting; urgency=medium
+
+  * Retire standalone Hook packages: Hooks are Plugin members only.  The
+    `hooks/` data root, `hook_dirs` configuration, Hook package lifecycle
+    commands and the Hook package API kind are gone.  A Plugin contributes its
+    Hooks as package members, and an Agent activates them by selecting the
+    Plugin; the Console capability catalog still lists the loaded Hooks with
+    their Plugin owner and reports them as not Agent-assignable.
+  * Retire user Agent records that declare a `hooks` field.  Control startup
+    moves such a record into `staging` and names it in the log, so the
+    directory no longer has to be read past and the packaged Agent of the same
+    ID becomes effective again.
+  * Let `debian/provision-user.py` prune a leftover `hooks/` root together
+    with the other retired empty trees.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Tue, 15 Sep 2026 12:20:00 +0800
+
+bianbu-agent-runtime (0.1.53) resolute-porting; urgency=medium
+
+  * Name the recovery step when `plugin remove` meets a Plugin directory
+    written by a retired generation.  Quarantine verifies what it moves, so
+    such a package cannot be dropped through the CLI by design; the parse
+    error alone did not say that the directory has to be deleted by hand.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Tue, 15 Sep 2026 03:05:00 +0800
+
+bianbu-agent-runtime (0.1.52) resolute-porting; urgency=medium
+
+  * Let `agent show`, `agent verify` and `agent remove` address an Agent by
+    the display name `agent create` was given.  `create` generates the ID, so
+    asking about the name the user typed answered `null` even though the
+    Agent existed.  An exact ID still wins, and an ambiguous name is refused
+    with the candidate IDs instead of picking one arbitrarily.
+  * Let `plugin members` take an optional Plugin name, matching the rest of
+    the resource commands instead of reporting a usage error.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Tue, 15 Sep 2026 02:40:00 +0800
+
+bianbu-agent-runtime (0.1.51) resolute-porting; urgency=medium
+
+  * Prune a retired profile root that holds nothing but empty directories.
+    A profile written by an older generation can keep a `cache/` skeleton
+    alive (an empty `cache/agent-json-migration/`, for example) long after
+    the writer is gone, and dropping only the root left it in place.  The
+    retired roots `runs/`, `session-logs/` and `cache/` are now walked
+    bottom-up and removed only while they are empty, so real content keeps
+    the whole branch.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Tue, 15 Sep 2026 02:10:00 +0800
+
+bianbu-agent-runtime (0.1.50) resolute-porting; urgency=medium
+
+  * Stop creating the profile `cache/` root.  Its last writers were the
+    retired on-disk format migrations, so nothing in the Runtime writes it
+    any more: it is no longer a required directory, a plain start leaves no
+    empty `cache/` behind, and `provision-user.py` drops a leftover one while
+    it is empty.  A host that needs a cache directory creates its own.
+  * Delete the last trace of the retired Agent JSON migration.  The Worker
+    environment no longer carries `BIANBU_AGENT_MIGRATION_LOCK_PATH` on
+    either the host or the bwrap backend, and `provision-user.py` drops an
+    empty `.agent-json-migration.lock` that an older generation left at the
+    profile root.
+  * Correct the guides that still listed `runs/`, `hooks/`, `tools/` and
+    `cache/` as part of a fresh data directory.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Tue, 15 Sep 2026 01:30:00 +0800
+
+bianbu-agent-runtime (0.1.49) resolute-porting; urgency=medium
+
+  * Report the Agent that a packaged declaration owns as a system Agent.  A
+    user record that cannot be loaded is not an override, so the packaged
+    content and its avatar stay effective; previously such a record made the
+    system Bibit expert look like an editable user expert whose deletion then
+    failed as a system Agent.
+  * Repaint the expert page when a refresh wins a superseded one.  The Agent
+    list is fetched by both the chat bootstrap and the expert view; when the
+    view's own request lost the race, the state arrived but nothing rendered
+    it, leaving the page empty until a manual reload.
+  * Drop the retired Hook catalog page from the Console.  Hooks are installed
+    with the Plugin that owns them, so the navigation entry, its strings, its
+    renderer and its catalog fetch are gone.
+  * Update the browser contract tests for the current contracts: the Home
+    creates extension roots on demand, capability packages are Skills (Tool
+    packages were removed), Agent selections are validated against the
+    installed inventory, and the Agent editor saves the whole selection.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Mon, 14 Sep 2026 23:45:00 +0800
+
+bianbu-agent-runtime (0.1.48) resolute-porting; urgency=medium
+
+  * Count an unloadable user Agent record as absent on every read path, not only
+    while listing declarations.  The 0.1.46/0.1.47 fixes covered Agent
+    discovery, but `/api/v1/agents` still answered `422 validation_error`, the
+    expert page reported the Runtime as unavailable, and avatar lookups failed
+    whenever a record written by an earlier generation (for example
+    `hooks: []`) shadowed the packaged Agent of the same ID: the avatar path
+    validated that record and let its error escape.  Agent reads now share one
+    reader that skips such a record with a warning, falls back to the packaged
+    declaration and its avatar, and a later edit retires the record instead of
+    failing.
+  * Correct the guides that still described retired behaviour: `mcp
+    install/show/verify` (removed in 0.1.45), the `plugins/<mcp-id>/mcp.json`
+    migration into `mcps/`, the `manifest_store.py` JSON migration, and the
+    claim that an empty `hooks: []` is simply ignored.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Tue, 15 Sep 2026 00:10:00 +0800
+
+bianbu-agent-runtime (0.1.47) resolute-porting; urgency=medium
+
+  * Treat an unloadable user Agent record as absent everywhere it is read, not
+    only while listing declarations.  Session recovery loads each referenced
+    Agent by ID during application startup, so reading one retired record (for
+    example `hooks: []`) still aborted startup with `Runtime startup failed`
+    after the 0.1.45 upgrade.  Such a record now counts as missing, which lets
+    the packaged declaration of the same Agent take over and lets the Runtime
+    recover Sessions that reference it.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Mon, 14 Sep 2026 23:05:00 +0800
+
+bianbu-agent-runtime (0.1.46) resolute-porting; urgency=medium
+
+  * Keep the Runtime running when one user Agent record cannot be loaded.  A
+    record written by an earlier generation (for example `hooks: []`, retired
+    with the Plugin-owned Hook contract) made Agent discovery raise, so
+    `runtime.start()` failed and the whole service was down after an upgrade.
+    Such a record is now skipped with a warning, which also stops it from
+    shadowing the packaged declaration of the same Agent; a symbolic link is
+    still rejected as an attack instead of being skipped.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Mon, 14 Sep 2026 22:40:00 +0800
+
+bianbu-agent-runtime (0.1.45) resolute-porting; urgency=medium
+
+  * Remove the compatibility layer for retired first-party formats.  The
+    Runtime no longer migrates data written by earlier generations: the
+    `session-logs/` transcript root, the per-Agent JSON records (and their
+    `cache/agent-json-migration` backup), the standalone MCP package that used
+    to live directly under `plugins/`, and the legacy project-provider claim in
+    the Model store are gone.  A file or record in one of those formats is now
+    left untouched instead of being rewritten, so an upgrade cannot silently
+    reinterpret user data.
+  * Tighten the Agent and Plugin contracts that those formats depended on.
+    `plugin.yaml` and `agent.yaml` reject the retired keys (`agent.hooks`,
+    `agent.model` as a bare string, legacy `plugins` absence), an Agent
+    selection is never `None`, and the API no longer reports the
+    `legacy_plugin_selection` projection field.  Hooks, Tools and Skills are
+    selected only through the Plugin that owns them.
+  * Remove the package-oriented `bianbu-agent mcp install/show/verify`
+    subcommands, the MCP legacy-plugin migration, the `PluginManager.snapshot`
+    alias, the `CompressionSettingsProvider` settings-file argument and the
+    retired standalone Intent MCP that package provisioning used to preserve.
+    An Agent that declares no model still uses the model the SDK injected as
+    its default, while a hand-written Provider record in the retired
+    project-provider shape is no longer adopted: only a read-only packaged
+    record may be shadowed by the project pair.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Mon, 14 Sep 2026 22:10:00 +0800
+
+bianbu-agent-runtime (0.1.44) resolute-porting; urgency=medium
+
+  * Ignore a capability Inventory file that carries no managed schema.  A
+    stale zero-byte `inventory.sqlite3` (or one left by a retired writer) made
+    every capability read fail with `invalid capability Inventory`, so
+    `/api/v1/agents` answered 422 and the Console reported the Runtime as
+    unavailable on K3.  Missing, empty and schema-less files now read as an
+    empty Inventory; a file that holds the schema but cannot be read still
+    fails, and the Runtime logs the file it ignored.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Mon, 14 Sep 2026 21:05:00 +0800
+
+bianbu-agent-runtime (0.1.43) resolute-porting; urgency=medium
+
+  * Redefine the Plugin package contract.  `plugin.yaml` now carries identity
+    only: `schema_version`, `name`, `version` and the optional `description`,
+    `dependencies`, `config_schema` and `entrypoint`.  What a package provides
+    is the package itself, so `tools/`, `skills/`, `hooks/`, `mcps/` and an
+    optional `console.py` are scanned instead of declared.  The `id` key is
+    renamed to `name`, and `sdk_version`, `permissions` and `contributions` are
+    removed; unknown keys are rejected rather than interpreted, so there is
+    nothing left to keep in sync between a manifest and a directory.  Host
+    compatibility is now the `schema_version` the Runtime implements, which
+    removes the second version range and the approval gate.
+  * Drop the `apc-plugin.json` fallback and the marketplace package reader.
+    Another agent's manifest is no longer used for identity or for a Skill
+    closure, and a package that still ships one is rejected as an unsupported
+    entry, so every publisher ships this contract's own `plugin.yaml`.
+  * Remove the Plugin permission model.  Installing a Plugin is the trust
+    decision, so a package's Hooks may deny or transform a Run without an
+    approved-permission set.  `PluginPermission`, `HookContribution.permissions`
+    and the permission fields of the Plugin API views are gone.
+  * Report Plugin member IDs qualified by their owner in `plugin members`, and
+    point a qualified ID handed to `skill show`, `skill verify`, `skill remove`
+    or `mcp show`/`verify` at that command instead of failing a bare
+    directory-name check.
+  * Keep bundled Audit, Bibit Intent, Memory and Security Plugins on the new
+    contract, and align the plugin-creator Skill, the CLI guide and the
+    extension guides with it.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Mon, 14 Sep 2026 20:25:00 +0800
+
+bianbu-agent-runtime (0.1.41) resolute-porting; urgency=medium
+
+  * Stop printing the retired `hooks` field in `bianbu-agent agent list` and
+    `agent show`.  The CLI emitted the stored AgentSpec, so a declaration that
+    can no longer carry a Hook selection still showed `"hooks": []`; the
+    projection now matches the Agent contract, where Hooks come with the Plugin
+    an Agent selects.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Mon, 14 Sep 2026 17:40:00 +0800
+
+bianbu-agent-runtime (0.1.40) resolute-porting; urgency=medium
+
+  * Report Plugin-provided Hooks as non-assignable in the Control catalog.
+    Hooks stopped being an Agent-level selection in 0.1.39, but the Control
+    projection still exported `assignable: true` while the Worker projection
+    said `false`, so the Hook page kept promising "configurable in an Expert".
+    Both paths now agree, and an Agent still activates a Hook by selecting the
+    Plugin that provides it.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Mon, 14 Sep 2026 17:20:00 +0800
+
+bianbu-agent-runtime (0.1.39) resolute-porting; urgency=medium
+
+  * Read installed Plugins through one tolerant entry point.  A directory that
+    is not a valid Plugin no longer fails the whole catalog: `plugin list`, the
+    Inventory scan and the Worker generation skip it with a warning, so system
+    Plugins stay visible.  Redirectable entries (symbolic links, escaping paths,
+    reserved ownership metadata) still fail the read instead of being skipped.
+  * Support marketplace Plugin packages.  A package published by the Agent
+    Power Manager keeps another Agent's `plugin.yaml` and its `apc-plugin.json`
+    index next to it; the Runtime now reads that index for identity, version and
+    the Skill closure instead of rejecting the package.  Plugin IDs accept a
+    single lowercase token (`superpowers`) as well as namespaced ones.
+  * Discover hand-placed Skill directories.  A `skills/<name>/SKILL.md` dropped
+    into the data directory is listed, shown, verified and removed from its own
+    content, without writing SDK ownership metadata into it.
+  * Drop the `hook` CLI resource.  Hooks ship with Plugins, so the standalone
+    Hook package commands are gone.
+  * Remove Hook selection from Agents.  `agent.yaml` no longer carries a
+    `hooks` field (a legacy empty list is dropped, a non-empty list is
+    rejected), `agent create --hook` and the Agent API `hooks` field are gone,
+    and an Agent activates a Hook by selecting the Plugin that provides it.
+    The Hook catalog keeps listing loaded Hooks with their owning Plugin.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Mon, 14 Sep 2026 16:45:00 +0800
+
+bianbu-agent-runtime (0.1.38) resolute-porting; urgency=medium
+
+  * Project MCP tool payloads onto the published `/api/v1/mcp-servers`
+    contract.  Server-declared MCP annotations (`read_only`, `destructive`,
+    `requires_approval`, `mcp_annotations`) stay in the Worker ToolSpec
+    metadata for the approval policy, but they rode along inside the tool view
+    and made the listing answer 422 with one validation error per annotated
+    tool, so a healthy server could not show its tools.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Mon, 14 Sep 2026 15:17:54 +0800
+
+bianbu-agent-runtime (0.1.37) resolute-porting; urgency=medium
+
+  * Size the Control-to-Worker unix socket streams by the RPC protocol limit
+    instead of the asyncio default of 64 KiB.  A packaged capability catalog
+    (skills, hooks, built-in tools plus a large MCP tool list) already exceeds
+    that, so reading `worker.catalog` raised "Separator is not found, and chunk
+    exceed the limit".  Control swallowed the error, so `/api/v1/mcp-servers`
+    reported every server as `unknown` with an empty tool list and the Bibit MCP
+    page showed no tools even for healthy servers.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Mon, 14 Sep 2026 15:10:13 +0800
+
+bianbu-agent-runtime (0.1.36) resolute-porting; urgency=medium
+
+  * Fix the Bibit model console on packaged installs: the host-side Plugin
+    Console is loaded from the Plugin root the Runtime actually discovered
+    (system resources, configured roots, then the user profile) instead of a
+    hard-coded `<data_dir>/plugins` copy that stopped existing in 0.1.34. The
+    console API answered 422 "Plugin root is not a directory" to both the
+    descriptor and the model actions.
+  * Fold transcripts written by older Runtimes from the retired
+    `session-logs/<id>/session.jsonl.zstd` root into
+    `sessions/<id>/session.jsonl.zstd` on startup, so upgraded sessions keep
+    their history instead of only metadata.
+  * Prune empty extension roots (`hooks/`, `mcps/`, `plugins/`, `skills/`,
+    `tools/`) on every start, not only when the packaged profile changed.
+  * Package the default Agent template as `resources/assets/starter-agent.yaml`
+    instead of a second top-level definition directory.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Mon, 14 Sep 2026 15:05:00 +0800
+
+bianbu-agent-runtime (0.1.35) resolute-porting; urgency=medium
+
+  * Retire Tool package installation: Tools are built-in Runtime code, so the
+    CLI `tool` resource, the user Tool root and its empty directory are gone,
+    the Control catalog no longer lists user Tool code, and MCP is the only
+    external capability channel.
+  * Fold the harness event log into `sessions/` (`<id>.json` plus
+    `<id>/session.jsonl.zstd`) and stop publishing the legacy `runs/` and
+    `session-logs/` roots; user profiles only drop them while empty.
+  * Fix "受控 Agent 启动失败：Worker hello timeout" by naming the Worker
+    `--config` the way its sandbox sees it, so a host-mode Worker no longer
+    receives a host checkout path it cannot open.
+  * Let the Runtime load the Security client on interpreters whose ABI differs
+    from the distro dbus-python: the client's distro dependencies are published
+    through a private import root, and the token quota preflight, session
+    budget read and token metering fall back to the system-Python bridge
+    instead of failing every Run.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Mon, 14 Sep 2026 13:14:00 +0800
+
+bianbu-agent-runtime (0.1.34) resolute-porting; urgency=medium
+
+  * Read the Session history window through a folded display read model at
+    /api/v1/sessions/{id}/history, so a long conversation no longer stalls the
+    Runtime event loop: a 45k-event Session now renders in ~200 ms instead of
+    ~2.9 s while unrelated requests stay responsive.
+  * Keep the raw /api/v1/sessions/{id}/events window and its contiguous seq as
+    the gap-recovery contract, and slice Session transcripts by seq instead of
+    scanning them.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Mon, 14 Sep 2026 12:20:00 +0800
+
+bianbu-agent-runtime (0.1.33) resolute-porting; urgency=medium
+
+  * Repair the source development launchers: stop the running Runtime through the
+    supported stop API and provision the starter Agent from the configuration file.
+  * Point go.sh at config/development.yaml, export the packaged resource root, and
+    take over packaged Runtime instances and sudo password prompts.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Mon, 14 Sep 2026 11:05:00 +0800
+
+bianbu-agent-runtime (0.1.32) resolute-porting; urgency=medium
+
+  * Separate packaged system resources from user overrides; load built-in agents,
+    models, and grouped tools from Runtime code.
+  * Migrate bundled plugin hooks to external JSON commands and remove hook factories.
+  * Remove the session goal feature from the Runtime API and Console.
+  * Preserve packaged starter and skill resources when user overrides are edited.
+  * Configure memory plugin clients through plugin config and retire the plugin console API.
+  * Keep the dbus ABI fallback in the packaged security plugin.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Sun, 13 Sep 2026 12:10:00 +0800
+
+bianbu-agent-runtime (0.1.31) resolute-porting; urgency=medium
+
+  * Prioritize skill names over description matches in the temporary picker.
+
+ -- liudecheng <decheng.liu@spacemit.com>  Sat, 12 Sep 2026 14:40:00 +0800
+
+bianbu-agent-runtime (0.1.30) resolute-porting; urgency=medium
+
+  * Rework the memory.before_run injection: replace unconditional recent-turn
+    injection with one-line session status, strengthen the memory application
+    policy with explicit historical-data boundaries, and write a fire-and-forget
+    task_started watermark at run start for in-execution session visibility.
+  * Stop installing bianbu-agent-memory from APT in the source-checkout
+    startup script; memory is provisioned separately.
+  * Require bianbu-agent-memory (>= 0.1.7) for the paired SDK contract.
+
+ -- qinyanli <yanli.qin@spacemit.com>  Sat, 12 Sep 2026 00:30:00 +0800
+
+bianbu-agent-runtime (0.1.29) resolute-porting; urgency=medium
+
+  * Select plugin capabilities as bundles and preserve legacy expert selections.
+  * Support plugin command Hooks with JSON I/O and bounded process lifetime.
+  * Ship Bibit Intent MCP inside its Runtime plugin and remove standalone Hook UI.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Fri, 11 Sep 2026 18:35:00 +0800
+
+bianbu-agent-runtime (0.1.28) resolute-porting; urgency=medium
+
+  * Merge Worker MCP state into the Control installation catalog.
+  * Refresh capability files before new Runs and preserve active leases.
+  * Enable all installed capabilities for the built-in Bibit expert.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Fri, 11 Sep 2026 17:45:00 +0800
+
+bianbu-agent-runtime (0.1.27) resolute-porting; urgency=medium
+
+  * Include resolved model identity in the Agent Profile system prompt.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Fri, 11 Sep 2026 17:10:00 +0800
+
+bianbu-agent-runtime (0.1.26) resolute-porting; urgency=medium
+
+  * Preserve authoritative Worker execution context in stdio MCP children.
+  * Reject manifest mode overrides and retain nested MCP sandbox markers.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Fri, 11 Sep 2026 15:56:14 +0800
+
+bianbu-agent-runtime (0.1.25) resolute-porting; urgency=medium
+
+  * Bound model output to 25 percent of context and align compaction budgets.
+  * Resolve missing model capacity from a sourced internal model catalog.
+  * Apply shared limits to agent, SDK, summary and title model calls.
+  * Ship Bibit Intent MCP as a read-only system-wide capability.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Fri, 11 Sep 2026 14:42:07 +0800
+
+bianbu-agent-runtime (0.1.23) resolute-porting; urgency=medium
+
+  * Keep bounded incremental recovery across empty and timed-out model turns.
+  * Resume saved model steps without replaying tools; retain cancellation.
+  * Show durable recovery progress and retract incomplete streamed answers.
+  * Report output exhaustion without exposing model reasoning.
+  * Preserve model settings instead of guessing reasoning parameters by alias.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Fri, 11 Sep 2026 11:20:00 +0800
+
+bianbu-agent-runtime (0.1.20) resolute-porting; urgency=medium
+
+  * Admit first inputs without waiting for cold Worker startup.
+  * Publish startup progress and preserve cancellation before dispatch.
+  * Warm the selected expert when a new session opens.
+  * Avoid loading the HTTP application in Worker factories.
+  * Serve the global capability catalog from Control without starting a Worker.
+  * Add generation-safe Skill and MCP updates with deferred removal cleanup.
+  * Preserve unavailable expert references and isolate MCP load failures.
+  * Forward Bibit model Console operations to its HTTP service without loading
+    Bibit implementation code or owning model processes in a Worker.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Thu, 10 Sep 2026 15:00:00 +0800
+
+bianbu-agent-runtime (0.1.19) resolute-porting; urgency=medium
+
+  * Avoid proactive compression when the provider context capacity is unknown.
+  * Keep emergency overflow recovery and reserve room after compaction.
+  * Budget complete requests, including fixed prompts and retained tool groups.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Thu, 10 Sep 2026 11:00:00 +0800
+
+bianbu-agent-runtime (0.1.17) resolute-porting; urgency=medium
+
+  * Apply expert model edits and standalone skills without Worker restarts.
+  * Select context budgets automatically and support continuous tool runs.
+  * Remove obsolete configuration UI and complete built-in YOLO accounting.
+  * Mark Host Workers for desktop launches in the user desktop namespace.
+  * Keep compression and streamed tool arguments active in long agent runs.
+  * Retry empty model responses and allow Host tools to use JIT execution.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Wed, 09 Sep 2026 17:03:38 +0800
+
+bianbu-agent-runtime (0.1.16) resolute-porting; urgency=medium
+
+  * Preserve streaming progress while generating tool arguments.
+  * Bound context summaries independently and continue with local fallback.
+  * Retry empty model turns instead of reporting successful completion.
+  * Retain DeepSeek tool-chain reasoning and reduce effort on exhausted retries.
+  * Include the provider capture streaming fix from main.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Wed, 09 Sep 2026 18:30:00 +0800
+
+bianbu-agent-runtime (0.1.14) resolute-porting; urgency=medium
+
+  * Return expert creation without waiting for Worker startup.
+  * Warm only system Bibit in the background after control startup.
+  * Start other experts on demand and keep idle Workers out of reload.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Wed, 09 Sep 2026 10:25:00 +0800
+
+bianbu-agent-runtime (0.1.13) resolute-porting; urgency=medium
+
+  * Keep resource management and service startup CLI commands only.
+  * Manage files without Worker startup, package execution or eager validators.
+  * Document all commands and verify response time on K3.
+  * Fix session ownership and apply Tool removal immediately.
+  * Advance the Runtime manifest without changing Security dependencies.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Tue, 08 Sep 2026 23:36:42 +0800
+
+bianbu-agent-runtime (0.1.12) resolute-porting; urgency=medium
+
+  * Remove user Bibit duplicates during system expert provisioning.
+  * Rebind existing conversations to the retained system Bibit.
+  * Prefer the system Bibit when starting new conversations.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Tue, 08 Sep 2026 23:25:15 +0800
+
+bianbu-agent-runtime (0.1.11) resolute-porting; urgency=medium
+
+  * Apply expert Host/sandbox selections and pin installed Bibit to Host.
+  * Report actual Worker mode and roll back failed configuration changes.
+  * Expose approve/reject choices for token budget approvals.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Tue, 08 Sep 2026 22:49:10 +0800
+
+bianbu-agent-runtime (0.1.10) resolute-porting; urgency=medium
+
+  * Add durable same-session goals, automatic continuation and Worker reports.
+  * Add /goal commands and goal status controls to the Web console.
+  * Preserve explicit resume after restart and isolate stale goal results.
+  * Consume quota approval once across subsequent tool-approval resumes.
+  * Add news search filters and downloadable HTML reports in the Console.
+  * Allow offline report citation links in the app validator.
+  * Advance the Runtime manifest; remove service dependency version floors.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Tue, 08 Sep 2026 17:00:00 +0800
+
+bianbu-agent-runtime (0.1.0+systemd33) resolute-porting; urgency=medium
+
+  * Avoid loading Runtime and model dependencies for CLI help and version.
+  * Add project stop, actionable errors and a complete CLI usage guide.
+  * Preserve project configuration selection through the packaged wrapper.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Mon, 07 Sep 2026 21:00:00 +0800
+
+bianbu-agent-runtime (0.1.0+systemd32) resolute-porting; urgency=medium
+
+  * Complete Agent package tool development and real CLI acceptance.
+  * Isolate installed tool modules from staging and other Agent packages.
+  * Preserve active graph Session/Run context for approval checks.
+  * Leave unreleased Security interface experiments out of this build.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Mon, 07 Sep 2026 17:20:00 +0800
+
+bianbu-agent-runtime (0.1.0+systemd31) resolute-porting; urgency=medium
+
+  * Route plugin consoles through the explicitly selected Agent Worker.
+  * Mount dedicated operational logs and protect persisted credentials.
+  * Keep mandatory platform identity concise for newly created Agents.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Mon, 07 Sep 2026 15:22:24 +0800
+
+bianbu-agent-runtime (0.1.0+systemd30) resolute-porting; urgency=medium
+
+  * Integrate system-owned Bibit, conversation expert mentions, platform
+    context, public Skills and Agent workflow/logging drafts.
+  * Advance the Runtime trust-anchor version beyond K3's installed 1.2.9.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Mon, 07 Sep 2026 14:00:00 +0800
+
+bianbu-agent-runtime (0.1.0+systemd29) resolute-porting; urgency=medium
+
+  * Integrate the existing Agent project CLI workflow acceptance draft.
+  * Add correlated, queryable and redacted operational logs for Agents, Runs,
+    plugin generations and provider requests.
+  * Drop the canceled D-Bus lifecycle adapter and additional Tool SDK facade.
+  * RT-24 and RT-25 acceptance remains in progress; this is not a release gate.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Mon, 07 Sep 2026 18:30:00 +0800
+
+bianbu-agent-runtime (0.1.0+systemd27) resolute-porting; urgency=medium
+
+  * Canonicalize the development securityd home path before exporting it, preventing securityd path-policy rejection during Worker startup.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Fri, 04 Sep 2026 12:30:00 +0800
+
+bianbu-agent-runtime (0.1.0+systemd26) resolute-porting; urgency=medium
+
+  * Remove the global default Agent and bind every Session to an explicit
+    randomly identified Agent.
+  * Provision a persistent random starter Agent for source and Debian installs.
+  * Remove the unfinished self-evolution controls from the web console.
+  * Store Bibit models under /opt/bibit-intent and grant the Runtime service
+    narrowly scoped access to its model and runtime directories.
+  * Adopt securityd's digest-free Runtime lease contract and signed fixed
+    entrypoint manifest schema.
+  * Isolate source-checkout security identity from the packaged Runtime and
+    remove obsolete sample network policy.
+  * Require the digest-free securityd protocol and keep seccomp stdin
+    forwarding compatible with systemd transient scopes.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Thu, 03 Sep 2026 18:30:00 +0800
+
+bianbu-agent-runtime (0.1.0+systemd24) resolute-porting; urgency=medium
+
+  * Remove package, configuration and policy digests from the coordinated
+    Runtime/Security Worker launch protocol.
+  * Keep signed manifest entrypoints, one-shot leases and process attestation
+    as the Worker startup trust boundary.
+  * Store models downloaded from the Bibit console in the shared
+    /opt/bibit-intent/models directory used by Bibit model services.
+  * Grant the per-user Runtime service narrowly scoped write access to the
+    shared Bibit model directory.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Thu, 03 Sep 2026 19:30:00 +0800
+
+bianbu-agent-runtime (0.1.0+systemd21) resolute-porting; urgency=medium
+
+  * Fix development Runtime and securityd startup configuration, including
+    consistent Agent IDs and valid Worker config paths.
+  * Keep model, Agent, plugin and built-in Tool data visible to the Worker
+    data root so conversations and the Tool management catalog work after
+    deployment.
+  * Add an AI-executable Runtime and security troubleshooting guide covering
+    startup, response, capability catalog and production safeguards.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Thu, 03 Sep 2026 13:10:00 +0500
+
+bianbu-agent-runtime (0.1.0+systemd20) resolute-porting; urgency=medium
+
+  * Clear existing per-user Runtime data before starting a newly configured
+    package generation.
+  * Restart every enabled per-user Runtime instance after package upgrades by
+    reading the concrete multi-user target symlinks instead of relying on
+    systemctl list-unit-files, which omits template instances on K3.
+  * Require the latest K3 repository builds of bianbu-agent-memory,
+    bianbu-agent-securityd and bibit-intent.
+  * Raise the bibit-intent dependency floor to 0.1.7 after the K3 repository
+    candidate advanced.
+  * Require bianbu-agent-securityd 0.1.8 for logical Agent lifecycle APIs.
+  * Keep logical Agent registration out of managed Workers so sandbox Workers
+    use only their lease-bound Security UDS transport.
+  * Register every logical Agent directly through securityd 0.1.8 without an
+    Agent signature, including the packaged default Agent.
+  * Declare the default Agent's complete runtime capability set in agent.yaml so
+    replace-sync does not depend on permissions left by a signed package record.
+  * Advance the signed Runtime manifest generation to 1.2.1 after logical Agent
+    registration could replace the installed generation with v1.2.0.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Fri, 28 Aug 2026 16:48:00 +0800
+
+bianbu-agent-runtime (0.1.0+systemd19) resolute-porting; urgency=medium
+
+  * Run one system-managed Runtime instance per login user.
+  * Store each user's configuration, credentials, sessions and workspace
+    below that user's ~/.bianbu-agent directory.
+  * Start only the current user's instance from the desktop launcher and bind
+    Worker scopes to the matching systemd template instance.
+  * Remove the machine-global desktop config conffile from package upgrades.
+  * Advance the signed Runtime manifest generation to 0.1.18.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Fri, 28 Aug 2026 15:50:00 +0800
+
+bianbu-agent-runtime (0.1.0+systemd18) resolute-porting; urgency=medium
+
+  * Add the unified Agent project init, check, build, install, run, logs,
+    status and uninstall development workflow.
+  * Disable the Web Console administrator token gate for packaged production
+    deployments while retaining the dormant authentication implementation.
+  * Keep the first submitted user message ahead of streamed assistant output
+    across initial history, mux and prompt-response races.
+  * Depend on the independently packaged Bibit Intent service and document the
+    model-only post-install setup used on K3.
+  * Advance the signed Runtime manifest generation to 0.1.17 for upgrades
+    from hosts that already trust generation 0.1.16.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Fri, 28 Aug 2026 15:31:12 +0800
+
+bianbu-agent-runtime (0.1.0+systemd17) resolute-porting; urgency=medium
+
+  * Add the session trajectory view and live event timeline to the WebUI.
+  * Adopt the V0.5 expert configuration for the packaged default Agent.
+  * Preserve package file modes in transactional rollback so a rejected
+    Security Runtime manifest cannot leave scripts or manifests inaccessible.
+  * Advance the signed Runtime manifest generation to 0.1.16 for upgrades
+    from hosts that already trust generation 0.1.15.
+  * Add a regression test covering rollback permission preservation.
+
+ -- duancheng <cheng.duan@spacemit.com>  Fri, 28 Aug 2026 11:10:00 +0800
+
+bianbu-agent-runtime (0.1.0+systemd16) resolute-porting; urgency=medium
+
+  * Adopt committed session event logs and live streams, and keep the WebUI
+    waiting, reasoning and elapsed-time states consistent during active Runs.
+  * Decouple the Bibit intent plugin from its embedded library and start the
+    external intent service from the Runtime launcher.
+  * Distinguish local directory-plugin tools from MCP tools using explicit
+    source metadata so bianbu.memory operations map to data.memory.
+  * Preserve tool source and Run context through security approval, execution
+    hooks and approval recovery so once-per-session trust is reused safely.
+  * Keep metadata-less qualified tool names on the conservative MCP path.
+
+ -- duancheng <cheng.duan@spacemit.com>  Thu, 27 Aug 2026 15:16:02 +0500
+
+bianbu-agent-runtime (0.1.0+systemd15) resolute-porting; urgency=medium
+
+  * Stream committed session events to the WebUI immediately and preserve
+    terminal event state across refreshes.
+  * Harden the system Runtime startup path and provision protected management
+    credentials during package installation.
+  * Add security profiles and synchronize the Bibit Agent package updates.
+
+ -- duancheng <cheng.duan@spacemit.com>  Thu, 27 Aug 2026 10:59:58 +0500
+
+bianbu-agent-runtime (0.1.0+systemd14) resolute-porting; urgency=medium
+
+  * Provision a protected Runtime management API credential during package
+    installation so production management pages do not fail with 503.
+  * Add an operator command to retrieve or rotate the Runtime admin token.
+
+ -- duancheng <cheng.duan@spacemit.com>  Thu, 27 Aug 2026 12:00:00 +0500
+
+bianbu-agent-runtime (0.1.0+systemd13) resolute-porting; urgency=medium
+
+  * Add regression coverage for installed Security client path discovery.
+  * Resolve the installed Security client under both the current package
+    layout and the historical path so upgrades cannot fail closed on a
+    valid installation.
+  * Make the desktop launcher consume the packaged system URL configuration
+    without starting a second per-user Runtime.
+  * Route direct system-service Worker output to journald and provide the
+    user's D-Bus environment when stopping legacy user units during upgrades.
+  * Fail closed when the dedicated Runtime user cannot join bianbu-security.
+
+ -- duancheng <cheng.duan@spacemit.com>  Thu, 27 Aug 2026 11:30:00 +0500
+
+bianbu-agent-runtime (0.1.0+systemd10) resolute-porting; urgency=medium
+
+  * Run the control plane as the dedicated bianbu-runtime system user with
+    bianbu-security supplementary access instead of a per-user systemd unit.
+  * Add an audited Security binding reset during package upgrades and require
+    bianbu-agent-securityd 0.1.6 or newer.
+  * Keep Worker processes inside the Runtime service cgroup and support boot
+    startup without a user systemd bus.
+
+ -- duancheng <cheng.duan@spacemit.com>  Wed, 26 Aug 2026 16:00:00 +0500
+
+bianbu-agent-runtime (0.1.0+systemd9) resolute-porting; urgency=medium
+
+  * Bound Worker socket names for Linux AF_UNIX pathname compatibility.
+  * Advance signed Runtime manifest generation and allow packaged cloud domains.
+  * Harden Security Runtime startup and integrate the managed Worker with Agent Memory.
+
+ -- Decheng Liu <cheng.duan@spacemit.com>  Wed, 26 Aug 2026 07:33:09 +0500
+
+bianbu-agent-runtime (0.1.0+systemd8) resolute-porting; urgency=medium
+
+  * Bound long Worker instance socket names for Linux AF_UNIX compatibility.
+
+ -- Decheng Liu <cheng.duan@spacemit.com>  Tue, 25 Aug 2026 23:58:00 +0800
+
+bianbu-agent-runtime (0.1.0+systemd7) resolute-porting; urgency=medium
+
+  * Advance the signed Runtime manifest generation after the previous host
+    acceptance manifest so upgrades cannot be rejected as rollbacks.
+  * Keep long Security Agent instance IDs within the AF_UNIX socket pathname limit.
+
+ -- Decheng Liu <cheng.duan@spacemit.com>  Tue, 25 Aug 2026 23:35:00 +0800
+
+bianbu-agent-runtime (0.1.0+systemd6) resolute-porting; urgency=medium
+
+  * Declare OpenFST runtime and build dependencies for the Bibit intent plugin.
+  * Use a numeric Security Runtime manifest version for rollback protection.
+  * Allow the packaged MiniMax and Bibit cloud domains in the signed Runtime policy.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Tue, 25 Aug 2026 22:20:00 +0800
+
+bianbu-agent-runtime (0.1.0+systemd4) resolute-porting; urgency=medium
+
+  * Register the managed Worker with Agent Memory using the Runtime Agent id.
+  * Depend on the public Memory package and enable the packaged registration path.
+  * Make package upgrades reload the per-user systemd manager before startup.
+  * Allow development Worker fallback while bianbu-securityd is unavailable.
+  * Increase the K3 Worker handshake timeout for cold starts.
+  * Replace and back up package-managed Agents and profile components.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Sun, 23 Aug 2026 13:14:09 +0800
+
+bianbu-agent-runtime (0.1.0+systemd2) resolute-porting; urgency=medium
+
+  * Build the K3 package with Python 3.13 and bootstrap uv from Nexus.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Fri, 14 Aug 2026 17:55:39 +0800
+
+bianbu-agent-runtime (0.1.0+systemd1) resolute-porting; urgency=medium
+
+  * Add the bianbu-agent-runtime systemd user service and managed defaults.
+  * Preserve legacy user data and back up overwritten packaged components.
+  * Keep the console available without a model and guide users through setup.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Fri, 14 Aug 2026 16:00:00 +0800
+
+bianbu-agent-runtime (0.1.0+desktop1) resolute-porting; urgency=medium
+
+  * Add application-menu and per-user desktop launchers.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Thu, 13 Aug 2026 10:00:00 +0800
+
+bianbu-agent-runtime (0.1.0) resolute-porting; urgency=medium
+
+  * Package the locked Bianbu Agent runtime for offline installation.
+
+ -- Decheng Liu <decheng.liu@spacemit.com>  Wed, 12 Aug 2026 17:05:00 +0800

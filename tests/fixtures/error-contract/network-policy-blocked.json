@@ -1,0 +1,17 @@
+{
+  "name": "network-policy-blocked",
+  "description": "网络策略拦下了到模型服务的连接。处置是改配置，不是重试。",
+  "error": {
+    "code": "network_policy_blocked",
+    "message": "无法连接到模型服务：当前 Agent 已禁止所有外网访问，无法连接模型服务 api.example.com。下一步：打开“安全控制中心 → 配置中心 → 网络策略”，改为允许访问或白名单模式；保存后重启此 Agent 再重试。",
+    "retryable": false,
+    "details": {
+      "agent_id": "agent.demo",
+      "provider_host": "api.example.com",
+      "network_mode": "deny_all",
+      "domains": [],
+      "action": "add_provider_host_to_whitelist_and_restart_agent"
+    }
+  },
+  "ui_detail_keys": ["provider_host", "network_mode"]
+}

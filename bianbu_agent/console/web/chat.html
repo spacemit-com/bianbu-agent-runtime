@@ -1,0 +1,1255 @@
+<!DOCTYPE html>
+<html lang="zh" class="">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bianbu Agent Console</title>
+    <link rel="icon" href="assets/favicon.ico" type="image/x-icon">
+    <!-- Vendored third-party assets (no external CDN dependency).
+         See channel/web/static/vendor/README.md for sources & versions. -->
+    <link rel="stylesheet" href="assets/vendor/fontawesome/css/all.min.css">
+    <link rel="stylesheet" href="assets/vendor/fonts/inter/inter.css">
+    <script src="assets/vendor/tailwind/tailwind.min.js"></script>
+    <script src="assets/vendor/markdown-it/markdown-it.min.js"></script>
+    <link id="hljs-light" rel="stylesheet" href="assets/vendor/highlightjs/styles/github.min.css">
+    <link id="hljs-dark" rel="stylesheet" href="assets/vendor/highlightjs/styles/github-dark.min.css" disabled>
+    <script src="assets/vendor/highlightjs/highlight.min.js"></script>
+    <script src="assets/vendor/highlightjs/languages/python.min.js"></script>
+    <script src="assets/vendor/highlightjs/languages/javascript.min.js"></script>
+    <script src="assets/vendor/highlightjs/languages/java.min.js"></script>
+    <script src="assets/vendor/highlightjs/languages/go.min.js"></script>
+    <script src="assets/vendor/highlightjs/languages/bash.min.js"></script>
+    <script>
+    tailwind.config = {
+        darkMode: 'class',
+        theme: {
+            extend: {
+                fontFamily: {
+                    sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+                    mono: ['"JetBrains Mono"', '"Fira Code"', 'Consolas', 'monospace'],
+                },
+                colors: {
+                    primary: {
+                        50: '#EDFDF3', 100: '#D4FAE2', 200: '#ABF4C7', 300: '#74E9A4',
+                        400: '#4ABE6E', 500: '#35A85B', 600: '#228547', 700: '#1C6B3B',
+                        800: '#1A5532', 900: '#16462A',
+                    }
+                },
+                animation: {
+                    'pulse-dot': 'pulseDot 1.4s infinite ease-in-out both',
+                }
+            }
+        }
+    }
+    </script>
+    <link rel="stylesheet" href="assets/css/console.css?v={{BIANBU_ASSET_VERSION}}">
+    <!-- Apply theme/lang before first paint to avoid flash of unstyled content.
+         This runs synchronously in <head> so the correct class is on <html>
+         before any CSS or body rendering occurs. -->
+    <script>
+    // Map an arbitrary locale string (zh-CN, en-US, fr ...) to 'zh' / 'en',
+    // or '' when unrecognized so callers can fall through to the next source.
+    window.__bianbuNormalizeLang__ = function(raw) {
+        if (!raw) return '';
+        var v = String(raw).trim().toLowerCase().replace('_', '-');
+        if (v === 'auto') return '';
+        if (v.indexOf('zh') === 0) return 'zh';
+        if (v.indexOf('en') === 0) return 'en';
+        return '';
+    };
+    // Browser-only preference wins locally; config.yaml supplies the product
+    // default for browsers that have not selected their own language.
+    window.__bianbuResolveLang__ = function() {
+        return window.__bianbuNormalizeLang__(localStorage.getItem('bianbu_lang'))
+            || window.__bianbuNormalizeLang__(window.__BIANBU_DEFAULT_LANG__)
+            || window.__bianbuNormalizeLang__(navigator.language || (navigator.languages && navigator.languages[0]))
+            || 'zh';
+    };
+    (function() {
+        // Server-rendered product default from SDK config.yaml.
+        window.__BIANBU_DEFAULT_LANG__ = {{BIANBU_DEFAULT_LANG}};
+        var theme = localStorage.getItem('bianbu_theme') || 'dark';
+        if (theme === 'dark') document.documentElement.classList.add('dark');
+        document.documentElement.setAttribute('lang', window.__bianbuResolveLang__());
+    })();
+    </script>
+</head>
+<body class="h-screen overflow-hidden bg-gray-50 dark:bg-[#111111] text-slate-800 dark:text-slate-200 font-sans">
+
+    <div id="app" class="flex h-screen">
+
+        <!-- ================================================================ -->
+        <!-- SIDEBAR                                                          -->
+        <!-- ================================================================ -->
+        <aside id="sidebar" class="fixed inset-y-0 left-0 z-50 w-52 bg-white dark:bg-[#0A0A0A] text-slate-500 dark:text-neutral-400 flex flex-col
+                                    border-r border-slate-200 dark:border-white/10
+                                    transform -translate-x-full lg:relative lg:translate-x-0
+                                    transition-transform duration-300 ease-in-out">
+            <!-- Logo -->
+            <div class="flex items-center gap-3 px-5 h-14 border-b border-slate-200 dark:border-white/10 flex-shrink-0">
+                <img src="assets/logo.jpg" alt="Bianbu Agent" class="w-8 h-8 rounded-lg flex-shrink-0">
+                <div class="flex flex-col min-w-0">
+                    <span class="text-slate-900 dark:text-white font-semibold text-sm truncate">Bianbu Agent</span>
+                    <span class="text-slate-500 dark:text-neutral-500 text-xs" data-i18n="console">控制台</span>
+                </div>
+            </div>
+
+            <!-- Navigation -->
+            <nav class="flex-1 overflow-y-auto py-4 px-3 space-y-1">
+                <!-- Chat Group -->
+                <div class="menu-group open" data-group="chat">
+                    <button class="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-neutral-500 hover:text-slate-800 dark:hover:text-neutral-300 cursor-pointer transition-colors duration-150">
+                        <i class="fas fa-chevron-right text-[10px] chevron"></i>
+                        <span data-i18n="nav_chat">对话</span>
+                    </button>
+                    <div class="menu-group-items pl-2">
+                        <a class="sidebar-item active flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-all duration-150 hover:bg-slate-100 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-neutral-200 text-[14px]"
+                           data-view="chat">
+                            <i class="fas fa-message item-icon text-xs w-5 text-center"></i>
+                            <span data-i18n="menu_chat">对话</span>
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Management Group -->
+                <div class="menu-group open" data-group="manage">
+                    <button class="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-neutral-500 hover:text-slate-800 dark:hover:text-neutral-300 cursor-pointer transition-colors duration-150">
+                        <i class="fas fa-chevron-right text-[10px] chevron"></i>
+                        <span data-i18n="nav_manage">管理</span>
+                    </button>
+                    <div class="menu-group-items pl-2">
+                        <a class="sidebar-item flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-all duration-150 hover:bg-slate-100 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-neutral-200 text-[14px]"
+                           data-view="agents">
+                            <i class="fas fa-user-astronaut item-icon text-xs w-5 text-center"></i>
+                            <span data-i18n="menu_agents">专家</span>
+                        </a>
+                        <a class="sidebar-item flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-all duration-150 hover:bg-slate-100 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-neutral-200 text-[14px]"
+                           data-view="models">
+                            <i class="fas fa-microchip item-icon text-xs w-5 text-center"></i>
+                            <span data-i18n="menu_models">模型</span>
+                        </a>
+                        <a class="sidebar-item flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-all duration-150 hover:bg-slate-100 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-neutral-200 text-[14px]"
+                           data-view="bibit-models">
+                            <i class="fas fa-server item-icon text-xs w-5 text-center"></i>
+                            <span data-i18n="menu_bibit_models">本地模型</span>
+                        </a>
+                        <a class="sidebar-item flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-all duration-150 hover:bg-slate-100 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-neutral-200 text-[14px]"
+                           data-view="tools">
+                            <i class="fas fa-wrench item-icon text-xs w-5 text-center"></i>
+                            <span data-i18n="menu_tools">工具</span>
+                        </a>
+                        <a class="sidebar-item flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-all duration-150 hover:bg-slate-100 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-neutral-200 text-[14px]"
+                           data-view="mcp">
+                            <i class="fas fa-network-wired item-icon text-xs w-5 text-center"></i>
+                            <span data-i18n="menu_mcp">MCP</span>
+                        </a>
+                        <a class="sidebar-item flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-all duration-150 hover:bg-slate-100 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-neutral-200 text-[14px]"
+                           data-view="skills">
+                            <i class="fas fa-bolt item-icon text-xs w-5 text-center"></i>
+                            <span data-i18n="menu_skills">技能</span>
+                        </a>
+                        <a class="sidebar-item flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-all duration-150 hover:bg-slate-100 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-neutral-200 text-[14px]"
+                           data-view="plugins">
+                            <i class="fas fa-plug item-icon text-xs w-5 text-center"></i>
+                            <span data-i18n="menu_plugins">插件</span>
+                        </a>
+                        <a class="sidebar-item flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-all duration-150 hover:bg-slate-100 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-neutral-200 text-[14px]"
+                           data-view="security">
+                            <i class="fas fa-shield-halved item-icon text-xs w-5 text-center"></i>
+                            <span data-i18n="menu_security">安全</span>
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Monitor Group -->
+                <div class="menu-group open" data-group="monitor">
+                    <button class="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-neutral-500 hover:text-slate-800 dark:hover:text-neutral-300 cursor-pointer transition-colors duration-150">
+                        <i class="fas fa-chevron-right text-[10px] chevron"></i>
+                        <span data-i18n="nav_monitor">监控</span>
+                    </button>
+                    <div class="menu-group-items pl-2">
+                        <a class="sidebar-item flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-all duration-150 hover:bg-slate-100 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-neutral-200 text-[14px]"
+                           data-view="agent-top">
+                            <i class="fas fa-chart-simple item-icon text-xs w-5 text-center"></i>
+                            <span data-i18n="menu_agent_top">Agent Top</span>
+                        </a>
+                        <a class="sidebar-item flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-all duration-150 hover:bg-slate-100 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-neutral-200 text-[14px]"
+                           data-view="runtime-monitor" onclick="navigateTo('runtime-monitor'); loadRuntimeStatusView(true); return false;">
+                            <i class="fas fa-diagram-project item-icon text-xs w-5 text-center"></i>
+                            <span data-i18n="menu_runtime_status">Runtime 状态</span>
+                        </a>
+                        <button type="button" class="sidebar-item w-full text-left flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-all duration-150 hover:bg-slate-100 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-neutral-200 text-[14px]"
+                           data-view="api-capture">
+                            <i class="fas fa-satellite-dish item-icon text-xs w-5 text-center"></i>
+                            <span data-i18n="menu_api_capture">API Capture</span>
+                        </button>
+                        <a class="sidebar-item flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-all duration-150 hover:bg-slate-100 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-neutral-200 text-[14px]"
+                           data-view="logs">
+                            <i class="fas fa-terminal item-icon text-xs w-5 text-center"></i>
+                            <span data-i18n="menu_logs">日志</span>
+                        </a>
+                    </div>
+                </div>
+
+            </nav>
+
+            <!-- Sidebar Footer -->
+            <div class="px-4 py-3 border-t border-slate-200 dark:border-white/10 flex-shrink-0">
+                <div class="flex items-center gap-2 text-xs text-slate-400 dark:text-neutral-600">
+                    <i class="fas fa-circle text-[6px] text-primary-400"></i>
+                    <a id="sidebar-version"
+                       href="https://github.com/zhayujie/chatgpt-on-wechat/releases"
+                       target="_blank" rel="noopener noreferrer"
+                       class="hover:text-primary-400 transition-colors duration-150 cursor-pointer"></a>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Mobile Overlay -->
+        <div id="sidebar-overlay" class="fixed inset-0 bg-black/50 z-40 hidden lg:hidden cursor-pointer" onclick="toggleSidebar()"></div>
+
+        <!-- ================================================================ -->
+        <!-- SESSION PANEL (collapsible)                                      -->
+        <!-- ================================================================ -->
+        <aside id="session-panel" class="session-panel hidden">
+            <div class="session-panel-header">
+                <span class="session-panel-title" data-i18n="session_history">历史会话</span>
+                <button class="session-panel-close" onclick="toggleSessionPanel()" title="Close">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="session-new-chat-control">
+                <button id="history-new-chat-btn" class="session-panel-new" onclick="startNewChatFromButton(event)">
+                    <i class="fas fa-plus"></i>
+                    <span data-i18n="new_chat">新对话</span>
+                </button>
+                <div id="chat-agent-menu" class="chat-agent-menu hidden">
+                    <div class="chat-agent-menu-header">
+                        <span data-i18n="agents_choose">选择专家</span>
+                        <button type="button" onclick="event.stopPropagation();navigateTo('agents');closeChatAgentMenu()"
+                                data-i18n="agents_manage">管理</button>
+                    </div>
+                    <div id="chat-agent-menu-list" class="chat-agent-menu-list"></div>
+                </div>
+            </div>
+            <div id="session-list" class="session-list"></div>
+        </aside>
+
+        <!-- Mobile overlay for session panel (click to close) -->
+        <div id="session-panel-overlay" class="session-panel-overlay hidden" onclick="closeSessionPanel()"></div>
+
+        <!-- ================================================================ -->
+        <!-- MAIN CONTENT                                                     -->
+        <!-- ================================================================ -->
+        <div id="main-content" class="flex-1 flex flex-col min-w-0 h-screen">
+            <!-- Top Header -->
+            <header class="h-14 flex items-center gap-3 px-4 border-b border-slate-200 dark:border-white/10 bg-white dark:bg-[#1A1A1A] flex-shrink-0 z-10">
+                <!-- Mobile menu toggle -->
+                <button id="menu-toggle" class="lg:hidden p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-white/10 cursor-pointer transition-colors duration-150"
+                        onclick="toggleSidebar()">
+                    <i class="fas fa-bars text-slate-600 dark:text-slate-300"></i>
+                </button>
+
+                <!-- Session panel toggle -->
+                <button id="session-toggle-btn" class="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-white/10 cursor-pointer transition-colors duration-150"
+                        onclick="toggleSessionPanel()">
+                    <i class="fas fa-clock-rotate-left text-slate-500 dark:text-slate-400"></i>
+                </button>
+
+                <!-- Breadcrumb (hidden on mobile) -->
+                <div class="hidden lg:flex items-center gap-2 text-sm min-w-0">
+                    <span id="breadcrumb-group" class="text-slate-400 dark:text-slate-500 truncate" data-i18n="nav_chat">对话</span>
+                    <i class="fas fa-chevron-right text-[10px] text-slate-300 dark:text-slate-600"></i>
+                    <span id="breadcrumb-page" class="font-medium text-slate-700 dark:text-slate-200 truncate" data-i18n="menu_chat">对话</span>
+                </div>
+
+                <div id="session-token-usage"
+                     class="hidden text-xs text-slate-400 dark:text-slate-500 whitespace-nowrap"
+                     aria-live="polite"></div>
+
+                <div class="flex-1"></div>
+
+                <!-- Language Selector (dropdown) -->
+                <div id="lang-selector" class="relative">
+                    <button id="lang-toggle" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium
+                                                     text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10
+                                                     cursor-pointer transition-colors duration-150"
+                            onclick="toggleLangMenu(event)">
+                        <i class="fas fa-globe text-xs"></i>
+                        <span id="lang-label">EN</span>
+                        <i class="fas fa-chevron-down text-[10px] opacity-60"></i>
+                    </button>
+                    <div id="lang-menu" class="hidden absolute right-0 mt-1 min-w-[120px] py-1 rounded-lg z-50
+                                               bg-white dark:bg-slate-800 shadow-lg ring-1 ring-black/5 dark:ring-white/10">
+                        <button class="lang-menu-item w-full text-left px-3 py-1.5 text-sm text-slate-600 dark:text-slate-300
+                                       hover:bg-slate-100 dark:hover:bg-white/10 cursor-pointer" data-lang="zh"
+                                onclick="selectLanguage('zh')">简体中文</button>
+                        <button class="lang-menu-item w-full text-left px-3 py-1.5 text-sm text-slate-600 dark:text-slate-300
+                                       hover:bg-slate-100 dark:hover:bg-white/10 cursor-pointer" data-lang="en"
+                                onclick="selectLanguage('en')">English</button>
+                    </div>
+                </div>
+
+                <!-- Theme Toggle -->
+                <button id="theme-toggle" class="p-2 rounded-lg text-slate-500 dark:text-slate-400
+                                                  hover:bg-slate-100 dark:hover:bg-white/10
+                                                  cursor-pointer transition-colors duration-150"
+                        onclick="toggleTheme()">
+                    <i id="theme-icon" class="fas fa-moon"></i>
+                </button>
+
+                <!-- Unfinished destinations stay visible but intentionally inert. -->
+                <span id="docs-link" class="p-2 rounded-lg text-slate-500 dark:text-slate-400"
+                      title="Documentation" aria-label="Documentation">
+                    <i class="fas fa-book text-base"></i>
+                </span>
+
+                <span id="website-icon" class="p-2 rounded-lg text-slate-500 dark:text-slate-400"
+                      title="Website" aria-label="Website">
+                    <i class="fas fa-home text-base"></i>
+                </span>
+
+                <span id="github-icon" class="p-2 rounded-lg text-slate-500 dark:text-slate-400"
+                      title="GitHub" aria-label="GitHub">
+                    <i class="fab fa-github text-lg"></i>
+                </span>
+
+            </header>
+
+            <!-- Content Area -->
+            <div id="content-area" class="flex-1 overflow-hidden">
+
+                <!-- ====================================================== -->
+                <!-- VIEW: Chat                                              -->
+                <!-- ====================================================== -->
+                <div id="view-chat" class="view active relative">
+                    <div id="conversation-view-tabs" class="conversation-view-tabs" role="tablist"
+                         aria-label="Conversation view">
+                        <button id="conversation-tab-chat" type="button" role="tab"
+                                aria-selected="true" aria-controls="chat-messages"
+                                class="conversation-view-tab active" data-i18n="conversation_chat">对话</button>
+                        <button id="conversation-tab-trajectory" type="button" role="tab"
+                                aria-selected="false" aria-controls="trajectory-view" tabindex="-1"
+                                class="conversation-view-tab" data-i18n="conversation_trajectory">轨迹</button>
+                    </div>
+                    <!-- Messages -->
+                    <div id="chat-messages" class="flex-1 overflow-y-auto" role="tabpanel"
+                         aria-labelledby="conversation-tab-chat">
+                        <!-- Welcome Screen -->
+                        <div id="welcome-screen" class="flex flex-col items-center justify-center h-full px-6 pb-16" style="padding-top: 6vh">
+                            <img src="assets/logo.jpg" alt="Bianbu Agent" class="w-16 h-16 rounded-2xl mb-6 shadow-lg shadow-primary-500/20">
+                            <h1 id="welcome-title" class="text-2xl font-bold text-slate-800 dark:text-slate-100 mb-3">Bianbu Agent</h1>
+                            <p id="welcome-subtitle" class="text-slate-500 dark:text-slate-400 text-center max-w-lg mb-10 leading-relaxed"
+                               data-i18n-html="welcome_subtitle">我可以帮你解答问题、管理计算机、创造和执行技能，并使用<br>长期记忆提供连续服务</p>
+
+                            <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 w-full max-w-2xl">
+                                <div class="example-card group bg-white dark:bg-[#1A1A1A] border border-slate-200 dark:border-white/10 rounded-xl p-4
+                                            cursor-pointer hover:border-primary-300 dark:hover:border-primary-600 hover:shadow-md transition-all duration-200">
+                                    <div class="flex items-center gap-2 mb-2">
+                                        <div class="w-7 h-7 rounded-lg bg-blue-50 dark:bg-blue-900/30 flex items-center justify-center">
+                                            <i class="fas fa-folder-open text-blue-500 text-xs"></i>
+                                        </div>
+                                        <span class="font-medium text-sm text-slate-700 dark:text-slate-200" data-i18n="example_sys_title">系统管理</span>
+                                    </div>
+                                    <p class="text-sm text-slate-500 dark:text-slate-400 leading-relaxed" data-i18n="example_sys_text">查看工作空间里有哪些文件</p>
+                                </div>
+                                <div class="example-card group bg-white dark:bg-[#1A1A1A] border border-slate-200 dark:border-white/10 rounded-xl p-4
+                                            cursor-pointer hover:border-primary-300 dark:hover:border-primary-600 hover:shadow-md transition-all duration-200">
+                                    <div class="flex items-center gap-2 mb-2">
+                                        <div class="w-7 h-7 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 flex items-center justify-center">
+                                            <i class="fas fa-code text-emerald-500 text-xs"></i>
+                                        </div>
+                                        <span class="font-medium text-sm text-slate-700 dark:text-slate-200" data-i18n="example_code_title">编程助手</span>
+                                    </div>
+                                    <p class="text-sm text-slate-500 dark:text-slate-400 leading-relaxed" data-i18n="example_code_text">搜索AI资讯并生成可视化网页报告</p>
+                                </div>
+                                <div class="example-card group bg-white dark:bg-[#1A1A1A] border border-slate-200 dark:border-white/10 rounded-xl p-4
+                                            cursor-pointer hover:border-primary-300 dark:hover:border-primary-600 hover:shadow-md transition-all duration-200">
+                                    <div class="flex items-center gap-2 mb-2">
+                                        <div class="w-7 h-7 rounded-lg bg-rose-50 dark:bg-rose-900/30 flex items-center justify-center">
+                                            <i class="fas fa-puzzle-piece text-rose-500 text-xs"></i>
+                                        </div>
+                                        <span class="font-medium text-sm text-slate-700 dark:text-slate-200" data-i18n="example_skill_title">技能系统</span>
+                                    </div>
+                                    <p class="text-sm text-slate-500 dark:text-slate-400 leading-relaxed" data-i18n="example_skill_text">查看所有支持的工具和技能</p>
+                                </div>
+                                <div class="example-card group bg-white dark:bg-[#1A1A1A] border border-slate-200 dark:border-white/10 rounded-xl p-4
+                                            cursor-pointer hover:border-primary-300 dark:hover:border-primary-600 hover:shadow-md transition-all duration-200"
+                                     data-send="/help">
+                                    <div class="flex items-center gap-2 mb-2">
+                                        <div class="w-7 h-7 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+                                            <i class="fas fa-terminal text-slate-500 text-xs"></i>
+                                        </div>
+                                        <span class="font-medium text-sm text-slate-700 dark:text-slate-200" data-i18n="example_web_title">指令中心</span>
+                                    </div>
+                                    <p class="text-sm text-slate-500 dark:text-slate-400 leading-relaxed" data-i18n="example_web_text">查看全部命令</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <section id="trajectory-view" class="trajectory-view hidden" role="tabpanel"
+                             aria-labelledby="conversation-tab-trajectory">
+                        <header class="trajectory-toolbar">
+                            <label class="trajectory-search-wrap">
+                                <i class="fas fa-search" aria-hidden="true"></i>
+                                <input id="trajectory-search" type="search" role="searchbox"
+                                       data-i18n-placeholder="trajectory_search"
+                                       placeholder="搜索轨迹">
+                            </label>
+                            <button id="trajectory-load-older" type="button" class="trajectory-load-older hidden"
+                                    data-i18n="trajectory_load_older">加载更早轨迹</button>
+                        </header>
+                        <div class="trajectory-workspace">
+                            <div id="trajectory-ledger" class="trajectory-ledger"
+                                 aria-label="Trajectory ledger"></div>
+                            <aside id="trajectory-inspector" class="trajectory-inspector hidden"
+                                   aria-live="polite"></aside>
+                        </div>
+                    </section>
+
+                    <!-- Scroll-to-bottom FAB -->
+                    <button id="scroll-to-bottom-btn"
+                            class="hidden absolute right-5 bottom-[80px] z-10
+                                   w-9 h-9 rounded-full shadow-lg
+                                   bg-white dark:bg-[#2A2A2A] border border-slate-200 dark:border-white/15
+                                   text-slate-500 dark:text-slate-400 hover:text-primary-500 dark:hover:text-primary-400
+                                   flex items-center justify-center cursor-pointer transition-all duration-200
+                                   hover:shadow-xl hover:scale-105"
+                            onclick="_autoScrollEnabled = true; scrollChatToBottom(true);">
+                        <i class="fas fa-chevron-down text-sm"></i>
+                    </button>
+
+                    <!-- Chat Input -->
+                    <div class="flex-shrink-0 border-t border-slate-200 dark:border-white/10 bg-white dark:bg-[#1A1A1A] px-4 py-3">
+                        <div class="max-w-3xl mx-auto">
+                            <div id="model-setup-required"
+                                 class="hidden mb-3 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 px-4 py-3"
+                                 role="alert">
+                                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                    <div class="min-w-0">
+                                        <strong class="block text-sm text-amber-900 dark:text-amber-100"
+                                                data-i18n="model_setup_title">默认 Agent 尚未配置模型</strong>
+                                        <p class="mt-1 text-xs leading-5 text-amber-800 dark:text-amber-200"
+                                           data-i18n="model_setup_steps">请先添加服务商并填写 API Key，再为默认 Agent 选择模型。配置完成前不能聊天。</p>
+                                    </div>
+                                    <div class="flex flex-wrap gap-2 flex-shrink-0">
+                                        <button id="model-setup-provider" type="button"
+                                                onclick="openModelProviderSetup()"
+                                                class="px-3 py-2 rounded-lg border border-amber-400 dark:border-amber-600 text-amber-900 dark:text-amber-100 text-xs font-medium hover:bg-amber-100 dark:hover:bg-amber-900/50"
+                                                data-i18n="model_setup_provider">配置服务商</button>
+                                        <button id="model-setup-agent" type="button"
+                                                onclick="openActiveAgentModelSetup()"
+                                                class="px-3 py-2 rounded-lg bg-primary-500 hover:bg-primary-600 text-white text-xs font-medium"
+                                                data-i18n="model_setup_agent">选择模型</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div id="active-agent-bar" class="active-agent-bar hidden"
+                                 role="button" tabindex="0"
+                                 data-i18n-title="agents_switch_mention" title="输入 @ 切换专家"
+                                 onclick="startExpertMention()"
+                                 onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();startExpertMention();}">
+                                <span id="active-agent-avatar">🤖</span>
+                                <div>
+                                    <small data-i18n="agents_chatting_with">当前主 Agent</small>
+                                    <strong id="active-agent-name"></strong>
+                                </div>
+                                <small class="active-agent-mention-hint" data-i18n="agents_switch_mention">输入 @ 切换专家</small>
+                                <span class="active-agent-lock"><i class="fas fa-lock"></i><span data-i18n="agents_bound">已绑定</span></span>
+                            </div>
+                            <div id="selected-skills" class="selected-skills hidden"
+                                 aria-live="polite"
+                                 data-i18n-aria-label="skill_picker_selected_skills"
+                                 aria-label="下一条消息临时使用的技能"></div>
+                            <!-- Attachment preview bar -->
+                            <div id="attachment-preview" class="attachment-preview hidden"></div>
+                            <p id="composer-notice" class="composer-notice hidden" role="status"></p>
+                            <div class="flex items-center gap-2 relative">
+                                <div id="slash-menu" class="slash-menu hidden"></div>
+                                <div id="skill-picker" class="skill-picker hidden"
+                                     role="dialog" aria-modal="false"
+                                     aria-labelledby="skill-picker-title">
+                                    <div class="skill-picker-header">
+                                        <strong id="skill-picker-title" data-i18n="skill_picker_title">临时使用技能</strong>
+                                        <button id="skill-picker-close" type="button"
+                                                data-i18n-aria-label="skill_picker_close"
+                                                aria-label="关闭技能选择器">×</button>
+                                    </div>
+                                    <input id="skill-picker-search" type="search"
+                                           autocomplete="off"
+                                           data-i18n-placeholder="skill_picker_search"
+                                           placeholder="搜索全部可用技能">
+                                    <div id="skill-picker-status" class="skill-picker-status"></div>
+                                    <div id="skill-picker-list" role="listbox"
+                                         aria-multiselectable="true"></div>
+                                </div>
+                                <div class="flex-1 min-w-0 relative flex items-center">
+                                    <textarea id="chat-input"
+                                              class="w-full px-4 py-[10px] rounded-xl border border-slate-200 dark:border-slate-600
+                                                     bg-slate-50 dark:bg-white/5 text-slate-800 dark:text-slate-100
+                                                     placeholder:text-slate-400 dark:placeholder:text-slate-500
+                                                     focus:outline-none focus:ring-0 focus:border-primary-600
+                                                     text-sm leading-relaxed"
+                                              rows="1"
+                                              data-i18n-placeholder="input_placeholder"
+                                              placeholder="输入消息，@ 切换专家，/ 临时使用技能"></textarea>
+                                </div>
+                                <!-- The picker is anchored to the button it belongs
+                                     to, so it opens directly above the clip. -->
+                                <div class="relative flex-shrink-0">
+                                    <button id="attach-btn"
+                                            class="w-10 h-10 flex items-center justify-center rounded-lg
+                                                   text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/10
+                                                   disabled:opacity-40 disabled:cursor-not-allowed
+                                                   cursor-pointer transition-colors duration-150"
+                                            type="button"
+                                            data-i18n-title="tip_attach"
+                                            data-i18n-aria-label="tip_attach"
+                                            aria-label="添加附件"
+                                            title="添加附件">
+                                        <i class="fas fa-paperclip text-sm"></i>
+                                    </button>
+                                    <div id="attach-menu" class="attach-menu hidden">
+                                        <button id="attach-file-option" type="button" class="attach-menu-item">
+                                            <i class="fas fa-file-arrow-up"></i>
+                                            <span data-i18n="attach_menu_file">上传文件</span>
+                                        </button>
+                                        <button id="attach-folder-option" type="button" class="attach-menu-item">
+                                            <i class="fas fa-folder-plus"></i>
+                                            <span data-i18n="attach_menu_folder">上传文件夹</span>
+                                        </button>
+                                    </div>
+                                </div>
+                                <input id="composer-file-input" type="file" class="hidden" multiple>
+                                <input id="composer-folder-input" type="file" class="hidden"
+                                       multiple webkitdirectory directory>
+                                <button id="stop-btn"
+                                        class="hidden flex-shrink-0 w-10 h-10 items-center justify-center rounded-lg
+                                               bg-red-500 text-white hover:bg-red-600
+                                               disabled:bg-slate-300 dark:disabled:bg-slate-600
+                                               disabled:cursor-not-allowed cursor-pointer transition-colors duration-150"
+                                        type="button"
+                                        data-i18n-title="stop_active"
+                                        data-i18n-aria-label="stop_active"
+                                        aria-label="停止当前任务"
+                                        title="停止当前任务">
+                                    <i class="fas fa-stop text-sm"></i>
+                                </button>
+                                <button id="send-btn"
+                                        class="flex-shrink-0 w-10 h-10 flex items-center justify-center rounded-lg
+                                               bg-primary-400 text-white hover:bg-primary-500
+                                               disabled:bg-slate-300 dark:disabled:bg-slate-600
+                                               disabled:cursor-not-allowed cursor-pointer transition-colors duration-150"
+                                        disabled>
+                                    <i class="fas fa-paper-plane text-sm"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ====================================================== -->
+                <!-- VIEW: Experts                                           -->
+                <!-- ====================================================== -->
+                <div id="view-agents" class="view">
+                    <div class="flex-1 overflow-y-auto p-6">
+                        <div class="max-w-5xl mx-auto">
+                            <div class="flex items-start sm:items-center justify-between gap-4 mb-6">
+                                <div>
+                                    <h2 class="text-xl font-bold text-slate-800 dark:text-slate-100" data-i18n="agents_title">专家</h2>
+                                    <p class="text-sm text-slate-500 dark:text-slate-400 mt-1" data-i18n="agents_desc">创建具有专属指令、模型和能力的专家</p>
+                                </div>
+                                <div class="flex flex-col items-end gap-1">
+                                    <div class="flex items-center gap-2">
+                                        <button onclick="openAgentEditor()"
+                                                class="flex-shrink-0 flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-500 hover:bg-primary-600
+                                                       text-white text-sm font-medium cursor-pointer transition-colors duration-150">
+                                            <i class="fas fa-plus text-xs"></i>
+                                            <span data-i18n="agents_create">创建专家</span>
+                                        </button>
+                                    </div>
+                                    <small id="agents-mcp-health-status" aria-live="polite" class="text-xs text-slate-500 dark:text-slate-400"></small>
+                                </div>
+                            </div>
+                            <div id="agents-loading" class="flex items-center justify-center gap-2 py-20 text-sm text-slate-400">
+                                <i class="fas fa-spinner fa-spin text-xs"></i>
+                                <span data-i18n="agents_loading">正在加载专家...</span>
+                            </div>
+                            <div id="agents-empty" class="hidden agents-empty">
+                                <div class="agents-empty-icon"><i class="fas fa-user-astronaut"></i></div>
+                                <h3 data-i18n="agents_empty_title">创建你的第一个专家</h3>
+                                <p data-i18n="agents_empty_desc">为不同任务定制身份、指令、模型、工具和技能。</p>
+                                <button onclick="openAgentEditor()">
+                                    <i class="fas fa-plus"></i><span data-i18n="agents_create">创建专家</span>
+                                </button>
+                            </div>
+                            <div id="agents-grid" class="hidden grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ====================================================== -->
+                <!-- VIEW: Tools                                             -->
+                <!-- ====================================================== -->
+                <div id="view-tools" class="view">
+                    <div class="flex-1 overflow-y-auto p-6">
+                        <div class="max-w-4xl mx-auto">
+                            <div class="mb-6">
+                                <h2 class="text-xl font-bold text-slate-800 dark:text-slate-100" data-i18n="tools_title">工具管理</h2>
+                                <p class="text-sm text-slate-500 dark:text-slate-400 mt-1" data-i18n="tools_desc">查看 Agent 可调用的内置工具及其状态</p>
+                            </div>
+                            <div>
+                                <div class="flex items-center gap-2 mb-3">
+                                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500" data-i18n="tools_section_title">内置工具</span>
+                                    <span id="tools-count-badge" class="hidden px-2 py-0.5 rounded-full text-xs bg-slate-100 dark:bg-white/10 text-slate-500 dark:text-slate-400"></span>
+                                </div>
+                                <div id="tools-empty" class="flex items-center gap-2 py-4 text-slate-400 dark:text-slate-500 text-sm">
+                                    <i class="fas fa-spinner fa-spin text-xs"></i>
+                                    <span data-i18n="tools_loading">加载工具中...</span>
+                                </div>
+                                <div id="tools-list" class="grid gap-3 sm:grid-cols-2 hidden"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ====================================================== -->
+                <!-- VIEW: Plugins                                           -->
+                <!-- ====================================================== -->
+                <div id="view-plugins" class="view">
+                    <div class="flex-1 overflow-y-auto p-6">
+                        <div class="max-w-4xl mx-auto">
+                            <div class="mb-6">
+                                <h2 class="text-xl font-bold text-slate-800 dark:text-slate-100" data-i18n="plugins_title">插件管理</h2>
+                                <p class="text-sm text-slate-500 dark:text-slate-400 mt-1" data-i18n="plugins_desc">安装和管理插件及 MCP Server</p>
+                            </div>
+                            <div class="bg-white dark:bg-[#1A1A1A] rounded-xl border border-slate-200 dark:border-white/10 p-4 mb-5">
+                                <label class="block text-sm font-medium text-slate-700 dark:text-slate-200 mb-2" for="plugin-install-source" data-i18n="plugins_install_label">本地插件目录</label>
+                                <div class="flex flex-col sm:flex-row gap-2">
+                                    <input id="plugin-install-source" type="text" class="flex-1 px-3 py-2 rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5 text-sm" data-i18n-placeholder="plugins_install_placeholder" placeholder="/absolute/path/to/plugin">
+                                    <button id="plugin-install-btn" type="button" class="px-4 py-2 rounded-lg bg-primary-500 hover:bg-primary-600 text-white text-sm font-medium" data-i18n="plugins_install">安装</button>
+                                </div>
+                                <p id="plugin-admin-status" class="text-xs mt-2 text-slate-500"></p>
+                            </div>
+                            <div id="plugins-empty" class="py-8 text-center text-sm text-slate-400" data-i18n="plugins_loading">正在加载插件...</div>
+                            <div id="plugin-admin-list" class="grid gap-4 sm:grid-cols-2"></div>
+                            <pre id="plugin-admin-details" class="hidden mt-4 overflow-x-auto rounded-lg bg-slate-50 dark:bg-black/20 p-3 text-xs"></pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ====================================================== -->
+                <!-- VIEW: Security control center (Runtime native)         -->
+                <!-- ====================================================== -->
+                <div id="view-security" class="view">
+                    <div class="flex-1 overflow-y-auto p-6"><div class="max-w-5xl mx-auto">
+                        <div class="flex items-start justify-between gap-4 mb-6"><div><h2 class="text-xl font-bold text-slate-800 dark:text-slate-100">安全控制中心</h2><p class="text-sm text-slate-500 dark:text-slate-400 mt-1">Runtime 原生控制台，策略通过 bianbu_security_client 交由 securityd 执行</p></div><div class="flex items-center gap-2"><span id="security-runtime-status" class="text-xs px-3 py-1.5 rounded-full bg-slate-100 dark:bg-white/10 text-slate-500">未连接</span><button id="security-global-refresh" type="button" class="security-button secondary">刷新</button></div></div>
+                        <div id="security-agent-context" class="security-agent-context flex items-center gap-3 mb-5 rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5 px-4 py-3"><label for="security-agent-select" class="text-sm font-medium text-slate-700 dark:text-slate-200">当前 Agent</label><select id="security-agent-select" class="security-agent-context__select min-w-56 px-3 py-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 text-sm"><option value="">加载中...</option></select><span class="text-xs text-slate-500 dark:text-slate-400">切换后将刷新当前安全页面</span></div>
+                        <div class="flex flex-wrap gap-2 border-b border-slate-200 dark:border-white/10 mb-5"><button class="security-tab px-3 py-2 text-sm border-b-2 border-primary-500 text-primary-600" data-security-tab="agents">Agent</button><button class="security-tab px-3 py-2 text-sm text-slate-500" data-security-tab="capabilities">能力管理</button><button class="security-tab px-3 py-2 text-sm text-slate-500" data-security-tab="permissions">安全权限设置</button><button class="security-tab px-3 py-2 text-sm text-slate-500" data-security-tab="syscalls">系统调用黑名单</button><button class="security-tab px-3 py-2 text-sm text-slate-500" data-security-tab="dlp">DLP/个人信息</button><button class="security-tab px-3 py-2 text-sm text-slate-500" data-security-tab="audit">审计</button></div>
+                        <section id="security-panel-syscalls" class="hidden bg-white dark:bg-[#1A1A1A] rounded-xl border border-slate-200 dark:border-white/10 p-5"><div class="security-section-heading"><div><span class="security-eyebrow">SYSCALL POLICY</span><h3>系统调用黑名单</h3><p>默认不限制：勾选即拦截，没有强制基线。改动仅对该 Agent 生效，且需重启 Worker（并进入沙箱）才装载过滤器。</p></div><div class="flex gap-2"><label class="text-xs text-slate-500">架构<select id="security-syscall-arch" class="mt-1 block px-3 py-2 rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5"><option value="x86_64">x86_64</option><option value="riscv64">riscv64</option></select></label></div></div><div id="security-syscall-list" class="security-table-wrap"></div><div class="flex items-center gap-3 mt-5"><button id="security-syscall-refresh" type="button" class="security-button secondary">刷新</button><button id="security-syscall-reset" type="button" class="security-button secondary">恢复 Agent 默认</button><button id="security-syscall-save" type="button" class="security-button">保存策略</button><span id="security-syscall-message" class="text-sm"></span></div><div class="mt-6 pt-5 border-t border-slate-200 dark:border-white/10"><div class="flex items-center justify-between"><div><h4>拦截事件审计</h4><p class="text-xs text-slate-500">仅展示独立 syscall 审计链中已校验的拒绝事件。</p></div><button id="security-syscall-audit-refresh" type="button" class="security-button secondary">刷新事件</button></div><div id="security-syscall-audit-list" class="security-table-wrap mt-3"></div></div></section>
+                        <section id="security-panel-permissions" class="hidden bg-white dark:bg-[#1A1A1A] rounded-xl border border-slate-200 dark:border-white/10 p-5"><div id="security-permission-content" class="text-sm"></div></section>
+                        <section id="security-panel-other" class="bg-white dark:bg-[#1A1A1A] rounded-xl border border-slate-200 dark:border-white/10 p-5"><div id="security-other-content" class="text-sm"></div></section>
+                    </div></div>
+                </div>
+
+                <!-- ====================================================== -->
+                <!-- VIEW: MCP                                               -->
+                <!-- ====================================================== -->
+                <div id="view-mcp" class="view">
+                    <div class="flex-1 overflow-y-auto p-6">
+                        <div class="max-w-4xl mx-auto">
+                            <div class="flex items-start justify-between gap-4 mb-6">
+                                <div>
+                                    <h2 class="text-xl font-bold text-slate-800 dark:text-slate-100" data-i18n="mcp_title">MCP Server</h2>
+                                    <p class="text-sm text-slate-500 dark:text-slate-400 mt-1" data-i18n="mcp_desc">用启动命令安装和管理 MCP Server</p>
+                                </div>
+                                <button id="mcp-refresh-button" type="button" onclick="refreshMcp()" class="shrink-0 inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 dark:border-white/10 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/5">
+                                    <i class="fas fa-rotate text-xs"></i>
+                                    <span data-i18n="agents_refresh_mcp">刷新 MCP 状态</span>
+                                </button>
+                            </div>
+                            <small id="mcp-health-status" aria-live="polite" class="block mb-4 text-xs text-slate-500 dark:text-slate-400"></small>
+                            <div class="bg-white dark:bg-[#1A1A1A] rounded-xl border border-slate-200 dark:border-white/10 p-4 mb-5">
+                                <div class="grid gap-4">
+                                    <div>
+                                        <label class="block text-sm font-medium text-slate-700 dark:text-slate-200 mb-2" for="mcp-install-name" data-i18n="mcp_name_label">名称</label>
+                                        <input id="mcp-install-name" type="text" class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5 text-sm" data-i18n-placeholder="mcp_name_placeholder" placeholder="Filesystem">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-slate-700 dark:text-slate-200 mb-2" for="mcp-install-command" data-i18n="mcp_command_label">启动命令</label>
+                                        <div class="flex flex-col sm:flex-row gap-2">
+                                            <input id="mcp-install-command" type="text" class="flex-1 px-3 py-2 rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5 text-sm font-mono" data-i18n-placeholder="mcp_command_placeholder" placeholder="npx -y @modelcontextprotocol/server-filesystem /data/projects">
+                                            <button id="mcp-install-button" type="button" onclick="installMcp()" class="px-4 py-2 rounded-lg bg-primary-500 hover:bg-primary-600 disabled:opacity-60 text-white text-sm font-medium" data-i18n="mcp_install">安装</button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <p class="text-xs mt-3 text-slate-400"><span data-i18n="mcp_example">示例</span>：<code class="select-all">npx -y @modelcontextprotocol/server-filesystem /data/projects</code></p>
+                                <p class="text-xs mt-1 text-amber-600 dark:text-amber-400" data-i18n="mcp_security_hint">命令会直接启动程序，不经过 Shell；请只安装可信来源，并限制 Filesystem MCP 可访问的目录。</p>
+                                <p id="mcp-status" class="text-xs mt-2 text-slate-500 opacity-0"></p>
+                            </div>
+                            <div id="mcp-empty" class="py-8 text-center text-sm text-slate-400" data-i18n="mcp_loading">正在加载 MCP Server...</div>
+                            <p id="mcp-plugin-owned-note" class="mt-3 text-xs text-slate-400 hidden"></p>
+                            <div id="mcp-list" class="grid gap-4 sm:grid-cols-2 hidden"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ====================================================== -->
+                <!-- VIEW: Skills                                            -->
+                <!-- ====================================================== -->
+                <div id="view-skills" class="view">
+                    <div class="flex-1 overflow-y-auto p-6">
+                        <div class="max-w-4xl mx-auto">
+                            <div class="flex items-center justify-between mb-6">
+                                <div>
+                                    <h2 class="text-xl font-bold text-slate-800 dark:text-slate-100" data-i18n="skills_title">技能管理</h2>
+                                    <p class="text-sm text-slate-500 dark:text-slate-400 mt-1" data-i18n="skills_desc">查看 Agent 技能；请在专家配置中选择启用项</p>
+                                </div>
+                            </div>
+                            <div>
+                                <div class="flex items-center gap-2 mb-3">
+                                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500" data-i18n="skills_section_title">技能</span>
+                                    <span id="skills-count-badge" class="hidden px-2 py-0.5 rounded-full text-xs bg-slate-100 dark:bg-white/10 text-slate-500 dark:text-slate-400"></span>
+                                </div>
+                                <div id="skills-empty" class="flex flex-col items-center justify-center py-12">
+                                    <div class="w-14 h-14 rounded-2xl bg-amber-50 dark:bg-amber-900/20 flex items-center justify-center mb-3">
+                                        <i class="fas fa-bolt text-amber-400 text-lg"></i>
+                                    </div>
+                                    <p class="text-slate-500 dark:text-slate-400 font-medium" data-i18n="skills_loading">加载技能中...</p>
+                                    <p class="text-sm text-slate-400 dark:text-slate-500 mt-1" data-i18n="skills_loading_desc">技能加载后将显示在此处</p>
+                                </div>
+                                <div id="skills-list" class="grid gap-4 sm:grid-cols-2"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ====================================================== -->
+                <!-- VIEW: Models                                            -->
+                <!-- ====================================================== -->
+                <div id="view-models" class="view">
+                    <div class="flex-1 overflow-y-auto p-6">
+                        <div class="max-w-4xl mx-auto">
+                            <div class="flex items-start justify-between gap-4 mb-6">
+                                <div>
+                                    <h2 class="text-xl font-bold text-slate-800 dark:text-slate-100" data-i18n="models_title">服务商</h2>
+                                    <p class="text-sm text-slate-500 dark:text-slate-400 mt-1" data-i18n="models_desc">配置 Agent 共享的模型服务凭据</p>
+                                </div>
+                                <button id="add-provider-btn" type="button" onclick="openProviderPicker()"
+                                        class="px-3 py-2 rounded-lg bg-primary-500 text-white text-sm">
+                                    <i class="fas fa-plus mr-1"></i><span data-i18n="models_add_vendor">添加服务商</span>
+                                </button>
+                            </div>
+                            <div id="models-loading" class="flex items-center gap-2 py-12 justify-center text-slate-400 dark:text-slate-500 text-sm">
+                                <i class="fas fa-spinner fa-spin text-xs"></i><span>Loading...</span>
+                            </div>
+                            <p id="models-status" class="hidden mb-4 text-sm text-red-500"></p>
+                            <div id="models-content" class="grid gap-6 hidden">
+                                <section id="providers-content" class="bg-white dark:bg-[#1A1A1A] rounded-xl border border-slate-200 dark:border-white/10 p-5">
+                                    <div id="models-providers-list" class="grid gap-3"></div>
+                                </section>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ====================================================== -->
+                <!-- VIEW: Local Models                                      -->
+                <!-- ====================================================== -->
+                <div id="view-bibit-models" class="view">
+                    <div class="flex-1 overflow-y-auto p-6">
+                        <div class="max-w-6xl mx-auto">
+                            <div class="flex items-start justify-between gap-4 mb-6">
+                                <div>
+                                    <h2 class="text-xl font-bold text-slate-800 dark:text-slate-100" data-i18n="bibit_models_title">本地模型</h2>
+                                    <p class="text-sm text-slate-500 dark:text-slate-400 mt-1" data-i18n="bibit_models_desc">设备上的本地模型由 AI Gateway 提供，本页只读显示状态。</p>
+                                </div>
+                                <button type="button" class="bibit-model-secondary-button" onclick="loadLocalModelsView(true)">
+                                    <i class="fas fa-rotate"></i><span data-i18n="bibit_models_refresh">刷新</span>
+                                </button>
+                            </div>
+
+                            <div id="bibit-models-alert" class="bibit-model-alert" role="alert" hidden></div>
+
+                            <div class="bibit-model-section-grid bibit-model-section-grid-standalone">
+                                <section class="bibit-model-section">
+                                    <div class="bibit-model-section-heading">
+                                        <div><span class="bibit-model-eyebrow">LLM</span><h3 data-i18n="bibit_models_llm">大语言模型</h3></div>
+                                        <span id="bibit-model-llm-status" class="bibit-model-service-status" aria-live="polite"></span>
+                                    </div>
+                                    <div id="bibit-model-llm-list" class="bibit-model-list"></div>
+                                </section>
+                                <section class="bibit-model-section">
+                                    <div class="bibit-model-section-heading">
+                                        <div><span class="bibit-model-eyebrow">EMBED</span><h3 data-i18n="bibit_models_embed">向量模型</h3></div>
+                                        <span id="bibit-model-embed-status" class="bibit-model-service-status" aria-live="polite"></span>
+                                    </div>
+                                    <div id="bibit-model-embed-list" class="bibit-model-list"></div>
+                                </section>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ====================================================== -->
+                <!-- VIEW: Agent Top                                         -->
+                <!-- ====================================================== -->
+                <div id="view-runtime-monitor" class="view">
+                    <div class="flex-1 overflow-y-auto p-6"><div class="max-w-6xl mx-auto">
+                        <div class="flex items-start justify-between gap-4 mb-5"><div><h2 class="text-xl font-bold text-slate-800 dark:text-slate-100" data-i18n="runtime_status_title">Runtime 状态</h2><p class="text-sm text-slate-500 dark:text-slate-400 mt-1" data-i18n="runtime_status_desc">查看 Control 进程与 Agent Worker 的运行关系</p></div><button type="button" class="agent-top-refresh" onclick="loadRuntimeStatusView(true)"><i class="fas fa-rotate"></i><span data-i18n="runtime_status_refresh">刷新</span></button></div>
+                        <div class="runtime-status-grid"><section class="agent-top-overview"><div class="agent-top-overview-heading"><div><span class="agent-top-eyebrow" data-i18n="runtime_status_overview">运行概览</span><p class="agent-top-updated"><span data-i18n="agent_top_updated">更新时间</span> <time id="runtime-status-clock">--</time></p></div><span id="runtime-status-state" class="agent-top-status idle">--</span></div><div id="runtime-status-summary" class="agent-top-stat-grid"></div></section><section class="agent-top-panel"><div class="agent-top-panel-heading"><div class="agent-top-panel-icon agent-top-panel-icon-agents"><i class="fas fa-sitemap"></i></div><div><h3 data-i18n="runtime_status_control">Control Process</h3><p data-i18n="runtime_status_control_desc">控制面进程负责 API、会话和 Worker 调度</p></div></div><div id="runtime-status-control" class="runtime-status-control"><span class="text-sm text-slate-400">Loading…</span></div></section><section class="agent-top-panel"><div class="agent-top-panel-heading"><div class="agent-top-panel-icon agent-top-panel-icon-agents"><i class="fas fa-sitemap"></i></div><div><h3 data-i18n="runtime_status_workers">Worker Pool</h3><p data-i18n="runtime_status_workers_desc">每个 Agent 对应一个受管 Worker 进程</p></div></div><div class="agent-top-table-wrap"><table class="agent-top-table"><thead><tr><th>STATUS</th><th>AGENT</th><th>PID</th><th>MODE</th><th>BACKEND</th><th>SANDBOX</th><th>GENERATION</th><th>ERROR</th></tr></thead><tbody id="runtime-status-workers"><tr><td colspan="8">Loading…</td></tr></tbody></table></div></section><p id="runtime-status-error" class="agent-top-error hidden"></p></div>
+                    </div></div>
+                </div>
+                <div id="view-agent-top" class="view">
+                    <div class="flex-1 overflow-y-auto p-6">
+                        <div class="max-w-6xl mx-auto">
+                            <div class="flex items-start justify-between gap-4 mb-5">
+                                <div>
+                                    <h2 class="text-xl font-bold text-slate-800 dark:text-slate-100" data-i18n="agent_top_title">Agent Top</h2>
+                                    <p class="text-sm text-slate-500 dark:text-slate-400 mt-1" data-i18n="agent_top_desc">实时查看 Agent、Session 与 Run 状态</p>
+                                </div>
+                                <button type="button" class="agent-top-refresh" onclick="loadAgentTopView(true)">
+                                    <i class="fas fa-rotate"></i><span data-i18n="agent_top_refresh">刷新</span>
+                                </button>
+                            </div>
+                            <div class="agent-top-dashboard">
+                                <section class="agent-top-overview">
+                                    <div class="agent-top-overview-heading">
+                                        <div>
+                                            <span class="agent-top-eyebrow" data-i18n="agent_top_overview">Overview</span>
+                                            <p class="agent-top-updated"><span data-i18n="agent_top_updated">Updated</span> <time id="agent-top-clock">--</time></p>
+                                        </div>
+                                        <span class="agent-top-live"><span></span><span data-i18n="logs_live">实时</span></span>
+                                    </div>
+                                    <div id="agent-top-summary" class="agent-top-stat-grid"></div>
+                                </section>
+                                <section class="agent-top-panel">
+                                    <div class="agent-top-panel-heading">
+                                        <div class="agent-top-panel-icon agent-top-panel-icon-agents"><i class="fas fa-user-astronaut"></i></div>
+                                        <div>
+                                            <h3 data-i18n="agent_top_agents">Agents</h3>
+                                            <p data-i18n="agent_top_agents_desc">Agent availability and workload</p>
+                                        </div>
+                                    </div>
+                                    <div class="agent-top-table-wrap">
+                                        <table class="agent-top-table">
+                                            <thead><tr>
+                                                <th>STATUS</th><th>AGENT</th><th>SESS</th><th>RUNS</th><th>ACTIVE</th><th>FAIL</th><th>LAST</th>
+                                            </tr></thead>
+                                            <tbody id="agent-top-agents"><tr><td colspan="7">Loading…</td></tr></tbody>
+                                        </table>
+                                    </div>
+                                </section>
+                                <section class="agent-top-panel">
+                                    <div class="agent-top-panel-heading">
+                                        <div class="agent-top-panel-icon agent-top-panel-icon-runs"><i class="fas fa-wave-square"></i></div>
+                                        <div>
+                                            <h3 data-i18n="agent_top_recent_runs">Recent Runs</h3>
+                                            <p data-i18n="agent_top_runs_desc">Latest execution activity</p>
+                                        </div>
+                                    </div>
+                                    <div class="agent-top-table-wrap">
+                                        <table class="agent-top-table">
+                                            <thead><tr>
+                                                <th>STATUS</th><th>RUN</th><th>AGENT</th><th>SESSION</th><th>UPDATED</th>
+                                            </tr></thead>
+                                            <tbody id="agent-top-runs"><tr><td colspan="5">Loading…</td></tr></tbody>
+                                        </table>
+                                    </div>
+                                </section>
+                                <p id="agent-top-error" class="agent-top-error hidden"></p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ====================================================== -->
+                <!-- VIEW: Provider API Capture                              -->
+                <!-- ====================================================== -->
+                <div id="view-api-capture" class="view">
+                    <div class="flex-1 overflow-y-auto p-6">
+                        <div class="max-w-6xl mx-auto space-y-5">
+                            <div>
+                                <h2 class="text-xl font-bold text-slate-800 dark:text-slate-100" data-i18n="capture_title">API Capture</h2>
+                                <p class="text-sm text-slate-500 dark:text-slate-400 mt-1" data-i18n="capture_desc">Inspect bounded LLM request and response records for one Provider.</p>
+                            </div>
+                            <section class="bg-white dark:bg-[#1A1A1A] rounded-xl border border-slate-200 dark:border-white/10 p-5 space-y-4">
+                                <div id="provider-capture-warning" role="note" class="flex gap-3 rounded-lg border border-amber-200 dark:border-amber-700/50 bg-amber-50 dark:bg-amber-900/15 px-4 py-3 text-sm text-amber-800 dark:text-amber-300">
+                                    <i class="fas fa-triangle-exclamation mt-0.5"></i>
+                                    <span data-i18n="capture_warning">Captured prompts and responses may contain sensitive content even after credentials are redacted.</span>
+                                </div>
+                                <div id="provider-capture-retention" class="text-xs text-slate-500 dark:text-slate-400" aria-live="polite"></div>
+                                <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+                                    <label class="block">
+                                        <span class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5" data-i18n="capture_provider">Provider</span>
+                                        <select id="provider-capture-provider" class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-white/5 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:border-primary-500"></select>
+                                        <span id="provider-capture-provider-status" role="status" aria-live="polite" class="block mt-1 text-xs text-slate-500 dark:text-slate-400 opacity-0"></span>
+                                    </label>
+                                    <div class="flex flex-wrap gap-2">
+                                        <button id="provider-capture-start" type="button" class="px-4 py-2 rounded-lg bg-primary-500 hover:bg-primary-600 text-white text-sm font-medium disabled:opacity-50" data-i18n="capture_start">Start capture</button>
+                                        <button id="provider-capture-stop" type="button" class="px-4 py-2 rounded-lg border border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300 text-sm font-medium disabled:opacity-50" data-i18n="capture_stop">Stop capture</button>
+                                        <button id="provider-capture-clear" type="button" class="px-4 py-2 rounded-lg border border-red-200 dark:border-red-800/60 text-red-600 dark:text-red-400 text-sm font-medium disabled:opacity-50" data-i18n="capture_clear">Clear records</button>
+                                    </div>
+                                </div>
+                                <div class="flex flex-wrap items-center gap-2 text-sm">
+                                    <span class="text-slate-500 dark:text-slate-400" data-i18n="capture_active">Active target:</span>
+                                    <strong id="provider-capture-active-target" class="text-slate-800 dark:text-slate-100"></strong>
+                                    <span id="provider-capture-status" role="status" aria-live="polite" class="text-xs text-slate-500 dark:text-slate-400"></span>
+                                </div>
+                            </section>
+                            <section class="bg-white dark:bg-[#1A1A1A] rounded-xl border border-slate-200 dark:border-white/10 overflow-hidden">
+                                <div class="px-5 py-4 border-b border-slate-200 dark:border-white/10">
+                                    <h3 class="font-semibold text-slate-800 dark:text-slate-100" data-i18n="capture_calls">Captured calls</h3>
+                                </div>
+                                <div id="provider-capture-records" class="divide-y divide-slate-200 dark:divide-white/10"></div>
+                            </section>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ====================================================== -->
+                <!-- VIEW: Logs                                              -->
+                <!-- ====================================================== -->
+                <div id="view-logs" class="view">
+                    <div class="flex-1 overflow-y-auto p-6">
+                        <div class="max-w-5xl mx-auto">
+                            <div class="flex items-center justify-between mb-6">
+                                <div>
+                                    <h2 class="text-xl font-bold text-slate-800 dark:text-slate-100" data-i18n="logs_title">日志</h2>
+                                    <p class="text-sm text-slate-500 dark:text-slate-400 mt-1" data-i18n="logs_desc">运行日志 (runtime.jsonl)</p>
+                                </div>
+                            </div>
+                            <!-- Log Terminal -->
+                            <div class="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden shadow-lg">
+                                <div class="flex items-center gap-2 px-4 py-2.5 bg-slate-800 border-b border-slate-700">
+                                    <div class="flex gap-1.5">
+                                        <span class="w-3 h-3 rounded-full bg-red-500/80"></span>
+                                        <span class="w-3 h-3 rounded-full bg-amber-500/80"></span>
+                                        <span class="w-3 h-3 rounded-full bg-emerald-500/80"></span>
+                                    </div>
+                                    <span class="text-xs text-slate-400 ml-2 font-mono">runtime.jsonl</span>
+                                    <div class="flex-1"></div>
+                                    <div class="flex items-center gap-3 mr-2">
+                                        <label class="flex items-center gap-1 cursor-pointer select-none">
+                                            <input type="checkbox" class="log-filter-cb" data-level="debug" checked>
+                                            <span class="text-xs text-slate-400">DEBUG</span>
+                                        </label>
+                                        <label class="flex items-center gap-1 cursor-pointer select-none">
+                                            <input type="checkbox" class="log-filter-cb" data-level="info" checked>
+                                            <span class="text-xs text-blue-400">INFO</span>
+                                        </label>
+                                        <label class="flex items-center gap-1 cursor-pointer select-none">
+                                            <input type="checkbox" class="log-filter-cb" data-level="warning" checked>
+                                            <span class="text-xs text-yellow-400">WARNING</span>
+                                        </label>
+                                        <label class="flex items-center gap-1 cursor-pointer select-none">
+                                            <input type="checkbox" class="log-filter-cb" data-level="error" checked>
+                                            <span class="text-xs text-red-400">ERROR</span>
+                                        </label>
+                                        <label class="flex items-center gap-1 cursor-pointer select-none">
+                                            <input type="checkbox" class="log-filter-cb" data-level="critical" checked>
+                                            <span class="text-xs text-white font-bold">CRITICAL</span>
+                                        </label>
+                                    </div>
+                                    <div class="flex items-center gap-1.5">
+                                        <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                                        <span class="text-xs text-slate-500" data-i18n="logs_live">实时</span>
+                                    </div>
+                                </div>
+                                <div id="log-output" class="p-4 overflow-y-auto font-mono text-xs leading-relaxed text-slate-300 whitespace-pre-wrap break-all" style="height: calc(100vh - 272px)">
+                                    <p class="text-slate-500" data-i18n="logs_coming_msg">正在加载最近的运行日志…</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div><!-- /content-area -->
+        </div><!-- /main-content -->
+    </div><!-- /app -->
+
+    <!-- Provider API capture detail -->
+    <div id="provider-capture-modal" class="fixed inset-0 bg-black/60 z-[210] hidden items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="provider-capture-modal-title">
+        <div class="bg-white dark:bg-[#1A1A1A] rounded-2xl border border-slate-200 dark:border-white/10 shadow-xl w-full max-w-6xl max-h-[90vh] flex flex-col overflow-hidden">
+            <div class="flex items-center justify-between gap-4 px-6 py-4 border-b border-slate-200 dark:border-white/10">
+                <div class="min-w-0">
+                    <h3 id="provider-capture-modal-title" class="font-semibold text-slate-800 dark:text-slate-100" data-i18n="capture_detail_title">Captured API call</h3>
+                    <p id="provider-capture-detail-meta" class="text-xs text-slate-500 dark:text-slate-400 mt-1 truncate"></p>
+                </div>
+                <button id="provider-capture-modal-close" type="button" class="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-white/10" data-i18n-aria-label="capture_close" aria-label="Close"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="overflow-y-auto p-6 space-y-4">
+                <p id="provider-capture-detail-status" role="status" class="text-sm text-slate-500 dark:text-slate-400"></p>
+                <p id="provider-capture-detail-truncation" class="hidden rounded-lg border border-amber-200 dark:border-amber-800/60 bg-amber-50 dark:bg-amber-900/15 px-3 py-2 text-xs text-amber-700 dark:text-amber-300"></p>
+                <div class="grid gap-4 lg:grid-cols-2">
+                    <section>
+                        <div class="flex items-center justify-between mb-2">
+                            <h4 class="text-sm font-semibold text-slate-700 dark:text-slate-200" data-i18n="capture_input">Input</h4>
+                            <button id="provider-capture-copy-input" type="button" class="text-xs text-primary-500 hover:text-primary-600" data-i18n="capture_copy">Copy</button>
+                        </div>
+                        <pre id="provider-capture-detail-input" class="min-h-48 max-h-[55vh] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-950 p-4 text-xs text-slate-200"></pre>
+                        <div class="mt-4">
+                            <h4 class="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-200" data-i18n="capture_request_friendly">Messages and tools</h4>
+                            <div id="provider-capture-detail-request-friendly" class="space-y-3"></div>
+                        </div>
+                    </section>
+                    <section>
+                        <div class="flex items-center justify-between mb-2">
+                            <h4 class="text-sm font-semibold text-slate-700 dark:text-slate-200" data-i18n="capture_output">Output</h4>
+                            <button id="provider-capture-copy-output" type="button" class="text-xs text-primary-500 hover:text-primary-600" data-i18n="capture_copy">Copy</button>
+                        </div>
+                        <pre id="provider-capture-detail-output" class="min-h-48 max-h-[55vh] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-950 p-4 text-xs text-slate-200"></pre>
+                        <div class="mt-4">
+                            <h4 class="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-200" data-i18n="capture_response_assembled">Assembled response</h4>
+                            <div id="provider-capture-detail-response-friendly" class="space-y-3"></div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirm Dialog -->
+    <div id="confirm-dialog-overlay" class="fixed inset-0 bg-black/50 z-[200] hidden flex items-center justify-center">
+        <div class="bg-white dark:bg-[#1A1A1A] rounded-2xl border border-slate-200 dark:border-white/10 shadow-xl
+                    w-full max-w-sm mx-4 overflow-hidden">
+            <div class="p-6">
+                <div class="flex items-center gap-3 mb-3">
+                    <div class="w-10 h-10 rounded-xl bg-red-50 dark:bg-red-900/20 flex items-center justify-center flex-shrink-0">
+                        <i class="fas fa-triangle-exclamation text-red-500"></i>
+                    </div>
+                    <h3 id="confirm-dialog-title" class="font-semibold text-slate-800 dark:text-slate-100 text-base"></h3>
+                </div>
+                <p id="confirm-dialog-message" class="text-sm text-slate-500 dark:text-slate-400 leading-relaxed ml-[52px]"></p>
+            </div>
+            <div class="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-100 dark:border-white/5">
+                <button id="confirm-dialog-cancel"
+                        class="px-4 py-2 rounded-lg border border-slate-200 dark:border-white/10
+                               text-slate-600 dark:text-slate-300 text-sm font-medium
+                               hover:bg-slate-50 dark:hover:bg-white/5
+                               cursor-pointer transition-colors duration-150"></button>
+                <button id="confirm-dialog-ok"
+                        class="px-4 py-2 rounded-lg bg-red-500 hover:bg-red-600 text-white text-sm font-medium
+                               cursor-pointer transition-colors duration-150"></button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Provider template picker -->
+    <div id="provider-picker-overlay" class="fixed inset-0 bg-black/50 z-[100] hidden flex items-center justify-center">
+        <div class="bg-white dark:bg-[#1A1A1A] rounded-2xl border border-slate-200 dark:border-white/10 shadow-xl w-full max-w-2xl mx-4 p-6">
+            <div class="flex items-center justify-between mb-5">
+                <h3 class="font-semibold text-slate-800 dark:text-slate-100">选择服务商</h3>
+                <button type="button" onclick="closeProviderPicker()"><i class="fas fa-times"></i></button>
+            </div>
+            <div id="provider-picker" class="provider-picker-grid"></div>
+        </div>
+    </div>
+
+    <!-- Provider credential modal -->
+    <div id="custom-provider-modal-overlay" class="fixed inset-0 bg-black/50 z-[100] hidden flex items-center justify-center">
+        <div class="bg-white dark:bg-[#1A1A1A] rounded-2xl border border-slate-200 dark:border-white/10 shadow-xl
+                    w-full max-w-md mx-4">
+            <div class="p-6">
+                <div class="flex items-center gap-3 mb-5">
+                    <div class="w-10 h-10 rounded-xl bg-primary-50 dark:bg-primary-900/20 flex items-center justify-center flex-shrink-0">
+                        <i class="fas fa-sliders text-primary-500"></i>
+                    </div>
+                    <div class="min-w-0 flex-1">
+                        <h3 id="custom-provider-modal-title" class="font-semibold text-slate-800 dark:text-slate-100 text-base"></h3>
+                    </div>
+                </div>
+
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-1.5">Protocol</label>
+                        <select id="custom-provider-protocol" class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-white/5 text-sm">
+                            <option value="openai-compatible">OpenAI Compatible</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-1.5" data-i18n="models_custom_name">名称</label>
+                        <input id="custom-provider-name" type="text" autocomplete="off" data-1p-ignore data-lpignore="true"
+                               class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600
+                                      bg-slate-50 dark:bg-white/5 text-sm text-slate-800 dark:text-slate-100
+                                      focus:outline-none focus:border-primary-500 transition-colors">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-1.5">API Base</label>
+                        <input id="custom-provider-base" type="text"
+                               class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600
+                                      bg-slate-50 dark:bg-white/5 text-sm text-slate-800 dark:text-slate-100
+                                      focus:outline-none focus:border-primary-500 font-mono transition-colors"
+                               placeholder="https://...../v1">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-1.5">API Key</label>
+                        <input id="custom-provider-key" type="text" autocomplete="off" data-1p-ignore data-lpignore="true"
+                               data-i18n-placeholder="models_custom_key_placeholder"
+                               class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600
+                                      bg-slate-50 dark:bg-white/5 text-sm text-slate-800 dark:text-slate-100
+                                      focus:outline-none focus:border-primary-500 font-mono transition-colors">
+                    </div>
+                </div>
+            </div>
+            <div class="flex items-center justify-between gap-3 px-6 py-4 border-t border-slate-100 dark:border-white/5 rounded-b-2xl">
+                <button id="custom-provider-modal-delete"
+                        class="px-3 py-2 rounded-lg text-sm font-medium text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20
+                               cursor-pointer transition-colors duration-150 hidden"
+                        data-i18n="models_custom_delete">删除</button>
+                <span id="custom-provider-modal-status"
+                      role="status" aria-live="polite"
+                      class="flex-1 text-xs text-primary-500 opacity-0 transition-opacity duration-300 text-left"></span>
+                <button id="custom-provider-modal-cancel"
+                        class="px-4 py-2 rounded-lg border border-slate-200 dark:border-white/10
+                               text-slate-600 dark:text-slate-300 text-sm font-medium
+                               hover:bg-slate-50 dark:hover:bg-white/5
+                               cursor-pointer transition-colors duration-150"
+                        data-i18n="cancel">取消</button>
+                <button id="custom-provider-modal-save"
+                        class="px-4 py-2 rounded-lg bg-primary-500 hover:bg-primary-600 text-white text-sm font-medium
+                               cursor-pointer transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
+                        data-i18n="save">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Expert editor -->
+    <div id="agent-editor-overlay" class="fixed inset-0 bg-black/55 z-[200] hidden items-center justify-center p-4">
+        <div class="agent-editor-card">
+            <div class="agent-editor-header">
+                <div>
+                    <h3 id="agent-editor-title" data-i18n="agents_create_title">创建专家</h3>
+                    <p data-i18n="agents_editor_desc">定义它是谁、如何思考，以及可以使用哪些能力。</p>
+                </div>
+                <button type="button" onclick="closeAgentEditor()" class="agent-editor-close" aria-label="Close">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="agent-editor-body">
+                <div class="agent-form-grid">
+                    <div class="agent-field agent-avatar-field">
+                        <span data-i18n="agents_avatar">头像</span>
+                        <div class="agent-avatar-picker">
+                            <div id="agent-avatar-preview" class="agent-avatar-preview" aria-live="polite">🤖</div>
+                            <div class="agent-avatar-picker-content">
+                                <span class="agent-avatar-presets-label" data-i18n="agents_avatar_presets">选择预设头像</span>
+                                <div id="agent-avatar-presets" class="agent-avatar-presets"></div>
+                            </div>
+                            <div class="agent-avatar-upload-area">
+                                <button type="button" class="agent-avatar-upload-button"
+                                        onclick="document.getElementById('agent-avatar-upload').click()">
+                                    <i class="fas fa-upload"></i>
+                                    <span data-i18n="agents_avatar_upload">上传图片</span>
+                                </button>
+                                <small data-i18n="agents_avatar_hint">PNG/JPEG/WebP/GIF · ≤ 2 MB</small>
+                            </div>
+                        </div>
+                        <input id="agent-form-avatar" type="hidden" value="🤖">
+                        <input id="agent-avatar-upload" type="file" class="hidden"
+                               accept="image/png,image/jpeg,image/webp,image/gif"
+                               onchange="uploadAgentAvatar(this)">
+                    </div>
+                    <label class="agent-field">
+                        <span data-i18n="agents_name">调用名</span>
+                        <input id="agent-form-name" maxlength="80" autocomplete="off"
+                               data-i18n-placeholder="agents_name_placeholder" placeholder="例如：ResearchAssistant">
+                    </label>
+                </div>
+                <label class="agent-field">
+                    <span data-i18n="agents_name_zh">中文名称</span>
+                    <input id="agent-form-name-zh" maxlength="80" autocomplete="off"
+                           data-i18n-placeholder="agents_name_zh_placeholder" placeholder="例如：研究助理">
+                </label>
+                <label class="agent-field">
+                    <span data-i18n="agents_name_en">英文名称</span>
+                    <input id="agent-form-name-en" maxlength="80" autocomplete="off"
+                           data-i18n-placeholder="agents_name_en_placeholder" placeholder="例如：Research Assistant">
+                </label>
+                <label class="agent-field">
+                    <span data-i18n="agents_description">简介</span>
+                    <input id="agent-form-description" maxlength="500" data-i18n-placeholder="agents_description_placeholder" placeholder="简要说明这个专家擅长什么">
+                </label>
+                <label class="agent-field">
+                    <span data-i18n="agents_description_zh">中文简介</span>
+                    <input id="agent-form-description-zh" maxlength="500" data-i18n-placeholder="agents_description_zh_placeholder" placeholder="简要说明这个专家擅长什么">
+                </label>
+                <label class="agent-field">
+                    <span data-i18n="agents_soul">Soul</span>
+                    <textarea id="agent-form-soul" rows="7" maxlength="20000" data-i18n-placeholder="agents_soul_placeholder" placeholder="描述专家、目标、工作方式和输出要求..."></textarea>
+                </label>
+                <div class="agent-form-grid">
+                    <label class="agent-field">
+                        <span data-i18n="models_provider">服务商</span>
+                        <div id="agent-form-provider" class="cfg-dropdown" tabindex="0">
+                            <div class="cfg-dropdown-selected">
+                                <span class="cfg-dropdown-text"></span>
+                                <i class="fas fa-chevron-down cfg-dropdown-arrow"></i>
+                            </div>
+                            <div class="cfg-dropdown-menu"></div>
+                        </div>
+                    </label>
+                    <label class="agent-field">
+                        <span data-i18n="agents_model">模型</span>
+                        <div id="agent-form-model-dropdown" class="cfg-dropdown agent-model-dropdown">
+                            <div class="cfg-dropdown-selected agent-model-dropdown-selected">
+                                <input id="agent-form-model-name" autocomplete="off"
+                                       placeholder="例如：qwen/qwen3-235b">
+                                <button type="button" class="agent-model-dropdown-toggle"
+                                        aria-label="Show models" aria-expanded="false">
+                                    <i class="fas fa-chevron-down cfg-dropdown-arrow"></i>
+                                </button>
+                            </div>
+                            <div id="agent-model-options" class="cfg-dropdown-menu"></div>
+                        </div>
+                        <small id="agent-model-discovery-status"></small>
+                    </label>
+                </div>
+                <div class="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
+                    <div class="agent-capability-panel">
+                        <div class="agent-capability-title">
+                            <span><i class="fas fa-wrench"></i><span data-i18n="agents_tools">工具</span></span>
+                            <button type="button" onclick="toggleAllAgentCapabilities('tools')" data-i18n="agents_select_all">全选</button>
+                        </div>
+                        <div id="agent-form-tools" class="agent-capability-list"></div>
+                    </div>
+                    <div class="agent-capability-panel">
+                        <div class="agent-capability-title">
+                            <span><i class="fas fa-bolt"></i><span data-i18n="agents_skills">技能</span></span>
+                            <button type="button" onclick="toggleAllAgentCapabilities('skills')" data-i18n="agents_select_all">全选</button>
+                        </div>
+                        <div id="agent-form-skills" class="agent-capability-list"></div>
+                    </div>
+                    <div class="agent-capability-panel">
+                        <div class="agent-capability-title">
+                            <span><i class="fas fa-code-branch"></i><span data-i18n="agents_plugins">插件</span></span>
+                            <button type="button" onclick="toggleAllAgentCapabilities('plugins')" data-i18n="agents_select_all">全选</button>
+                        </div>
+                        <div id="agent-form-plugins" class="agent-capability-list"></div>
+                    </div>
+                    <div class="agent-capability-panel">
+                        <div class="agent-capability-title">
+                            <span><i class="fas fa-plug"></i><span data-i18n="agents_mcps">MCP</span></span>
+                            <button type="button" onclick="toggleAllAgentCapabilities('mcps')" data-i18n="agents_select_all">全选</button>
+                        </div>
+                        <div id="agent-form-mcps" class="agent-capability-list"></div>
+                    </div>
+                </div>
+                <p id="agent-editor-status" class="agent-editor-status"></p>
+            </div>
+            <div class="agent-editor-footer">
+                <button type="button" onclick="closeAgentEditor()" class="agent-button-secondary" data-i18n="cancel">取消</button>
+                <button id="agent-editor-save" type="button" onclick="saveAgent()" class="agent-button-primary">
+                    <i class="fas fa-check"></i><span data-i18n="save">保存</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script defer src="assets/js/think_filter.js?v={{BIANBU_ASSET_VERSION}}"></script>
+    <script defer src="assets/js/session-runtime.js?v={{BIANBU_ASSET_VERSION}}"></script>
+    <script defer src="assets/js/trajectory.js?v={{BIANBU_ASSET_VERSION}}"></script>
+    <script defer src="assets/js/console.js?v={{BIANBU_ASSET_VERSION}}"></script>
+</body>
+</html>

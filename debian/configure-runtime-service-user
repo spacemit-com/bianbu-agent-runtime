@@ -1,0 +1,67 @@
+#!/bin/sh
+set -u
+
+# Resolve the device user and publish it as the Runtime system-service identity.
+# Both the package transaction (postinst) and the first-boot registration path
+# call this: an image build has no login user yet, so postinst may leave the
+# packaged bianbu-runtime fallback in place, and the device must re-resolve the
+# user once the OEM first-boot installer has created it.
+service_user_dir=${BIANBU_POSTINST_SERVICE_USER_DIR:-/etc/bianbu-agent-runtime}
+systemd_drop_in_dir=${BIANBU_POSTINST_SYSTEMD_DIR:-/etc/systemd/system}
+
+user=${SUDO_USER:-}
+if [ -z "$user" ] && [ -n "${PKEXEC_UID:-}" ]; then
+    user=$(getent passwd "$PKEXEC_UID" | cut -d: -f1 || true)
+fi
+# 安装时解析出来的身份是设备的属性，不随「谁执行了 apt」漂移：已经记下来的账号
+# 优先，重装与升级都保持同一份数据目录。账号被删掉了才重新解析，否则 drop-in
+# 会一直指向一个不存在的用户，服务再也起不来。
+if [ -z "$user" ] && [ -r "$service_user_dir/service-user" ]; then
+    recorded=$(sed -n '1p' "$service_user_dir/service-user")
+    if [ -n "$recorded" ] && getent passwd "$recorded" >/dev/null 2>&1; then
+        user=$recorded
+    fi
+fi
+if [ -z "$user" ]; then
+    user=$(logname 2>/dev/null || true)
+    # `logname` 在无 seat 的 root 服务里也返回 root，而 uid 1000 的回退只对
+    # 空值生效；root 不能当作设备用户，重置后走 uid 回退。
+    [ "$user" = root ] && user=
+fi
+if [ -z "$user" ]; then
+    user=$(getent passwd 1000 | cut -d: -f1 || true)
+fi
+if [ -z "$user" ]; then
+    # 用 root 直接安装（没有 SUDO_USER、logname 也是 root）或 uid 1000 被别的
+    # 账号占着时，退一步取 uid 最小的普通账号，也就是设备上的登录用户本身。
+    user=$(getent passwd \
+        | awk -F: '$3 >= 1000 && $3 < 65534 { print $3 " " $1 }' \
+        | sort -n | sed -n '1p' | cut -d' ' -f2)
+fi
+if ! printf '%s\n' "$user" | grep -Eq '^[A-Za-z_][A-Za-z0-9_.-]*$'; then
+    user=
+fi
+case "$user" in
+    ''|root) exit 0 ;;
+esac
+entry=$(getent passwd "$user" || true)
+uid=$(printf '%s\n' "$entry" | cut -d: -f3)
+home=$(printf '%s\n' "$entry" | cut -d: -f6)
+case "$uid:$home" in
+    ''*:|*[!0-9]*:*|*:|*:/) exit 0 ;;
+esac
+[ "$uid" -ge 1000 ] || exit 0
+[ -d "$home" ] || exit 0
+if getent group bianbu-agent >/dev/null 2>&1; then
+    usermod -a -G bianbu-agent "$user" >/dev/null 2>&1 || true
+fi
+install -d -m 0755 "$service_user_dir" || exit 0
+printf '%s\n' "$user" >"$service_user_dir/service-user" || exit 0
+install -d -m 0755 "$systemd_drop_in_dir/bianbu-agent-runtime.service.d" || exit 0
+cat >"$systemd_drop_in_dir/bianbu-agent-runtime.service.d/10-service-user.conf" <<EOF
+[Service]
+User=$user
+Environment=BIANBU_RUNTIME_SERVICE_USER=$user
+Environment=BIANBU_AGENT_MEMORY_ACCOUNT_ID=$user
+EOF
+chmod 0644 "$systemd_drop_in_dir/bianbu-agent-runtime.service.d/10-service-user.conf" 2>/dev/null || true

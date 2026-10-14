@@ -1,0 +1,178 @@
+#!/bin/sh
+set -eu
+
+data_root=/var/lib/bianbu-agent-runtime
+runtime_token=/usr/lib/bianbu-agent-runtime/runtime-admin-token.py
+# 运行身份是安装时生成的配置，路径可用环境变量覆盖，测试因此不必写到 /etc。
+service_user_dir=${BIANBU_POSTINST_SERVICE_USER_DIR:-/etc/bianbu-agent-runtime}
+systemd_drop_in_dir=${BIANBU_POSTINST_SYSTEMD_DIR:-/etc/systemd/system}
+
+warn() {
+    printf '%s\n' "bianbu-agent-runtime: $*" >&2
+}
+
+# The package transaction only touches the filesystem.  Image builds (pbuilder,
+# a plain chroot, a container, CI, a firmware build) have no running systemd
+# manager, no D-Bus and no securityd, so every step that needs the live system
+# belongs to the device-side start path instead: the Runtime units pull in
+# bianbu-agent-runtime-register.service, which grants the securityd membership,
+# materialises /run state and publishes the signed manifest.  Nothing below may
+# fail because the installing host is not a device.
+ensure_runtime_user() {
+    if ! getent group bianbu-runtime >/dev/null 2>&1; then
+        addgroup --system bianbu-runtime >/dev/null 2>&1 \
+            || warn "cannot create the bianbu-runtime group; the Runtime start path retries"
+    fi
+    if ! getent group bianbu-agent >/dev/null 2>&1; then
+        addgroup --system bianbu-agent >/dev/null 2>&1 \
+            || warn "cannot create the bianbu-agent group; the Runtime start path retries"
+    fi
+    if ! getent passwd bianbu-runtime >/dev/null 2>&1; then
+        adduser --system --ingroup bianbu-runtime --home "$data_root" \
+            --no-create-home --shell /usr/sbin/nologin bianbu-runtime >/dev/null 2>&1 \
+            || warn "cannot create the bianbu-runtime account; the Runtime start path retries"
+    fi
+    # securityd owns bianbu-security and may not be configured yet in an image
+    # build.  The Runtime start path grants the membership on the device and
+    # reports it there, so a missing group never fails a package install.
+    if getent group bianbu-security >/dev/null 2>&1; then
+        if ! adduser bianbu-runtime bianbu-security >/dev/null 2>&1; then
+            security_gid=$(getent group bianbu-security | cut -d: -f3)
+            id -G bianbu-runtime 2>/dev/null | tr ' ' '\n' | grep -qx "$security_gid" \
+                || warn "bianbu-runtime is not in bianbu-security yet; the Runtime start path grants it"
+        fi
+    fi
+    if ! install -d -m 0750 -o bianbu-runtime -g bianbu-runtime "$data_root" 2>/dev/null; then
+        install -d -m 0750 "$data_root" 2>/dev/null \
+            || warn "cannot create $data_root; the Runtime start path retries"
+    fi
+}
+
+ensure_system_profile_directory() {
+    # The Runtime user and sandboxed Workers read the published system Agent
+    # declaration, so it cannot live below the 0750 Runtime data directory.
+    # A retired generation published there; drop that unreadable tree so the
+    # new root is the only copy on disk.
+    rm -rf -- /var/lib/bianbu-agent-runtime/profiles
+    install -d -m 0755 -o root -g root /var/lib/bianbu-agent-profiles
+}
+
+ensure_runtime_admin_token() {
+    if ! install -d -m 0750 -o root -g bianbu-runtime /etc/bianbu-agent; then
+        warn "cannot create /etc/bianbu-agent; the Runtime start path retries"
+        return 0
+    fi
+    if [ ! -x "$runtime_token" ]; then
+        warn "Runtime admin token helper is missing; the Runtime start path retries"
+        return 0
+    fi
+    # Generate once on first install.  The helper preserves an existing
+    # operator token across upgrades and stores only a protected file path in
+    # runtime.env, so the secret never enters the unit, YAML, or journal.
+    /usr/bin/python3.14 "$runtime_token" --ensure \
+        || warn "Runtime admin token could not be prepared; the Runtime start path retries"
+}
+
+# One system service for the whole device.  The Runtime runs as the device user
+# so host Workers keep a real login identity (home directory, file resources,
+# sudo/PAM); the account is resolved here once and published as a systemd
+# drop-in, because User= cannot read an environment file.  A package install
+# that cannot see a device user (an image build in a chroot, a container or CI)
+# keeps the packaged default of the dedicated bianbu-runtime account instead of
+# failing, and the service is simply not enabled there.
+configure_system_service_user() {
+    user=${SUDO_USER:-}
+    if [ -z "$user" ] && [ -n "${PKEXEC_UID:-}" ]; then
+        user=$(getent passwd "$PKEXEC_UID" | cut -d: -f1 || true)
+    fi
+    # 安装时解析出来的身份是设备的属性，不随「谁执行了 apt」漂移：已经记下来的账号
+    # 优先，重装与升级都保持同一份数据目录。账号被删掉了才重新解析，否则 drop-in
+    # 会一直指向一个不存在的用户，服务再也起不来。
+    if [ -z "$user" ] && [ -r "$service_user_dir/service-user" ]; then
+        recorded=$(sed -n '1p' "$service_user_dir/service-user")
+        if [ -n "$recorded" ] && getent passwd "$recorded" >/dev/null 2>&1; then
+            user=$recorded
+        fi
+    fi
+    if [ -z "$user" ]; then
+        user=$(logname 2>/dev/null || true)
+        # `logname` 在无 seat 的 root 服务里也返回 root，而 uid 1000 的回退只对
+        # 空值生效；root 不能当作设备用户，重置后走 uid 回退。
+        [ "$user" = root ] && user=
+    fi
+    if [ -z "$user" ]; then
+        user=$(getent passwd 1000 | cut -d: -f1 || true)
+    fi
+    if [ -z "$user" ]; then
+        # 用 root 直接安装（没有 SUDO_USER、logname 也是 root）或 uid 1000 被别的
+        # 账号占着时，退一步取 uid 最小的普通账号，也就是设备上的登录用户本身。
+        user=$(getent passwd \
+            | awk -F: '$3 >= 1000 && $3 < 65534 { print $3 " " $1 }' \
+            | sort -n | sed -n '1p' | cut -d' ' -f2)
+    fi
+    if ! printf '%s\n' "$user" | grep -Eq '^[A-Za-z_][A-Za-z0-9_.-]*$'; then
+        user=
+    fi
+    case "$user" in
+        ''|root) return 0 ;;
+    esac
+    entry=$(getent passwd "$user" || true)
+    uid=$(printf '%s\n' "$entry" | cut -d: -f3)
+    home=$(printf '%s\n' "$entry" | cut -d: -f6)
+    case "$uid:$home" in
+        ''*:|*[!0-9]*:*|*:|*:/) return 0 ;;
+    esac
+    [ "$uid" -ge 1000 ] || return 0
+    [ -d "$home" ] || return 0
+    if getent group bianbu-agent >/dev/null 2>&1; then
+        usermod -a -G bianbu-agent "$user" >/dev/null 2>&1 || true
+    fi
+    install -d -m 0755 "$service_user_dir" \
+        || { warn "cannot write $service_user_dir; the service keeps its packaged identity"; return 0; }
+    printf '%s\n' "$user" >"$service_user_dir/service-user" \
+        || { warn "cannot record the Runtime service user"; return 0; }
+    install -d -m 0755 "$systemd_drop_in_dir/bianbu-agent-runtime.service.d" \
+        || { warn "cannot write the Runtime service drop-in"; return 0; }
+    cat >"$systemd_drop_in_dir/bianbu-agent-runtime.service.d/10-service-user.conf" <<EOF
+[Service]
+User=$user
+Environment=BIANBU_RUNTIME_SERVICE_USER=$user
+Environment=BIANBU_AGENT_MEMORY_ACCOUNT_ID=$user
+EOF
+    chmod 0644 "$systemd_drop_in_dir/bianbu-agent-runtime.service.d/10-service-user.conf" 2>/dev/null || true
+    runtime_configured=1
+}
+
+# Best effort: a live device should run the new generation right after the
+# upgrade.  A build host has no manager, so systemctl prints a diagnostic and
+# fails there; both are expected and stay invisible.
+activate_installed_units() {
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    # The system service must always be enabled so it comes up on first boot.
+    # Before the device user exists it runs as the packaged bianbu-runtime
+    # fallback; the first-boot registration path re-resolves the user and the
+    # Runtime unit restarts with the real identity.
+    systemctl enable bianbu-agent-runtime.service >/dev/null 2>&1 || true
+    systemctl start bianbu-agent-runtime.service >/dev/null 2>&1 || true
+}
+
+# 包不再往桌面放图标，旧版本自动装过的那份副本在 configure 时清掉。升级时跑的
+# 是旧包的 prerm，所以升级路径上只有这里能清（见 debian/cleanup-retired-desktop-icon）。
+cleanup_retired_desktop_icon() {
+    helper=${BIANBU_POSTINST_DESKTOP_CLEANUP:-/usr/lib/bianbu-agent-runtime/cleanup-retired-desktop-icon}
+    [ -x "$helper" ] || return 0
+    "$helper" || warn "retired desktop icon could not be cleaned up"
+}
+
+if [ "$1" = configure ]; then
+    ensure_runtime_user
+    ensure_system_profile_directory
+    ensure_runtime_admin_token
+    configure_system_service_user
+    cleanup_retired_desktop_icon
+    activate_installed_units
+fi
+
+#DEBHELPER#
+
+exit 0

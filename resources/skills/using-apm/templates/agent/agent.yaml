@@ -1,0 +1,43 @@
+schema_version: 2
+
+agent:
+  # id and name MUST hold the same value. APM publishes the resource to
+  # <bibit root>/agents/<agent.name>/, while the Runtime addresses an installed
+  # Agent directory by its agent.id: with two different values the Agent installs
+  # and lists correctly but cannot be found by ID. APM does not treat a mismatch
+  # as a validation error; `apm validate --type agent` reports it as a warning.
+  id: my-agent
+  name: my-agent
+
+  # name_zh, name_en and description_zh are required on submission. They are
+  # display-only metadata for the APC front end. `name` remains the call name.
+  # Display names are length-limited: name_zh is 2-16 characters, name_en is at
+  # most 32 printable ASCII characters and must contain at least one letter.
+  # The former zh_name key was renamed to name_zh; submitting zh_name is rejected.
+  name_zh: 我的助手
+  name_en: My Agent
+  version: "v1.0.0"
+  description: "An example Bibit Agent providing concise answers in Chinese."
+  description_zh: "一个用中文提供简洁回答的 Bibit 助手示例。"
+
+  soul: |-
+    You are a concise Chinese-language question-answering assistant.
+    Answer using information provided by the user. State uncertainty
+    explicitly and never invent results of external actions.
+
+  # An Agent no longer declares Hooks: it declares Plugins and the Runtime resolves
+  # the Hooks those Plugins own. A `hooks:` key here is rejected by the Runtime.
+  #
+  # The fields below are optional. APM passes them through unchanged and does not
+  # validate model/tools/skills/mcps business semantics. The skills and mcps
+  # lists double as this expert's declaration of the Powers its identity depends
+  # on: a running Bibit expert compares them with the capabilities its session
+  # exposes to find a gap it may provision itself (see references/self-provision.md).
+  model:
+    provider: my-provider
+    name: my-model
+  tools:
+    - "*"
+  skills:
+    - "*"
+  mcps: []

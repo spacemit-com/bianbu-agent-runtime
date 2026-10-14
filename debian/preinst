@@ -1,0 +1,62 @@
+#!/bin/sh
+set -eu
+
+stop_user_runtime() {
+    user=$1
+    entry=$(getent passwd "$user" || true)
+    uid=$(printf '%s\n' "$entry" | cut -d: -f3)
+    home=$(printf '%s\n' "$entry" | cut -d: -f6)
+    case "$uid:$home" in
+        ''*:|*[!0-9]*:*|*:|*:/) return 0 ;;
+    esac
+    runtime_dir=/run/user/$uid
+    runuser -u "$user" -- env HOME="$home" XDG_RUNTIME_DIR="$runtime_dir" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime_dir/bus" \
+        systemctl --user stop bianbu-agent-runtime.service >/dev/null 2>&1 || true
+}
+
+user_systemctl() {
+    user=$1
+    shift
+    entry=$(getent passwd "$user" || true)
+    uid=$(printf '%s\n' "$entry" | cut -d: -f3)
+    home=$(printf '%s\n' "$entry" | cut -d: -f6)
+    case "$uid:$home" in
+        ''*:|*[!0-9]*:*|*:|*:/) return 1 ;;
+    esac
+    runtime_dir=/run/user/$uid
+    runuser -u "$user" -- env HOME="$home" XDG_RUNTIME_DIR="$runtime_dir" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime_dir/bus" \
+        systemctl --user "$@"
+}
+
+stop_system_runtime() {
+    # Stop the running generation before its executable and trust declaration
+    # are replaced, so no old process keeps a retired caller binding.  The
+    # device-side start path publishes and starts the new generation afterwards.
+    systemctl stop bianbu-agent-runtime.service >/dev/null 2>&1 || true
+    systemctl stop 'bianbu-agent-runtime@*.service' >/dev/null 2>&1 || true
+    systemctl stop bianbu-agent-runtime-register.service >/dev/null 2>&1 || true
+}
+
+if [ "$1" = upgrade ] || [ "$1" = install ]; then
+    stop_system_runtime
+    # Logical/login users may still run the legacy user unit.  Only stop the
+    # ones that are actually active; nothing is recorded for postinst.
+    while IFS=: read -r user _ uid _ _ home _; do
+        case "$uid:$home" in
+            ''*:|*[!0-9]*:*|*:|*:/) continue ;;
+        esac
+        if [ "$uid" -lt 1000 ] 2>/dev/null; then
+            continue
+        fi
+        # Supply the user's bus coordinates explicitly; invoking
+        # systemctl --user from a root maintainer script otherwise probes
+        # root's (usually absent) bus and leaves an old Runtime process alive.
+        if user_systemctl "$user" is-active --quiet bianbu-agent-runtime.service 2>/dev/null; then
+            stop_user_runtime "$user"
+        fi
+    done </etc/passwd
+fi
+
+exit 0

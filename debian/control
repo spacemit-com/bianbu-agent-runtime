@@ -1,0 +1,41 @@
+Source: bianbu-agent-runtime
+Section: utils
+Priority: optional
+Maintainer: Decheng Liu <decheng.liu@spacemit.com>
+Build-Depends:
+ curl,
+ gcc,
+ debhelper-compat (= 13),
+ libfst-dev,
+ python3.14,
+ python3-pip,
+Standards-Version: 4.6.2
+Homepage: https://gitlab.dc.com/bianbu/ai/bianbu-agent-runtime
+Rules-Requires-Root: no
+Vcs-Git: https://gitlab.dc.com/bianbu/ai/bianbu-agent-runtime.git
+Vcs-Browser: https://gitlab.dc.com/bianbu/ai/bianbu-agent-runtime
+
+Package: bianbu-agent-runtime
+Architecture: any
+Depends:
+ agent-browser (>= 0.37.1),
+ auditd,
+ bianbu-agent-memory (>= 0.1.7),
+ bianbu-agent-securityd (>= 0.1.18),
+ bibit-intent (>= 0.1.23),
+ ca-certificates,
+ llama.cpp-tools-spacemit,
+ libfst26,
+ python3.14,
+ searxng,
+ spacemit-ai-gateway,
+ systemd,
+ polkitd,
+ adduser,
+ ${misc:Depends},
+ ${shlibs:Depends},
+Description: local web console and runtime for Bianbu Agent
+ Bianbu Agent is a YAML-configured agent runtime with a FastAPI web
+ console, command-line management, plugin hosting, MCP integration and
+ file-backed storage. This package includes a locked Python environment
+ so installing the package does not need to download Python dependencies.

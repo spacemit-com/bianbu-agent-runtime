@@ -1,0 +1,55 @@
+data_dir: ../.bianbu-agent
+service:
+  title: Bianbu Agent
+  host: 0.0.0.0
+  port: 9899
+language: zh
+require_file_backed_capabilities: true
+plugin_stop_timeout_seconds: 5.0
+allow_unmanaged_capabilities: false
+presets:
+  tools:
+  - skills_list
+  - skill_view
+  - skill_manage
+  - terminal
+  - process
+  - read_file
+  - write_file
+  - search_files
+  - patch
+  skills:
+  - using-apm
+security:
+  required: false
+  securityd_uds: /run/bianbu/securityd.sock
+  client_dir: /usr/lib/bianbu-securityd/client
+runtime:
+  control:
+    execution:
+      requested_mode: host
+    startup_timeout_seconds: 10
+    handshake_timeout_seconds: 10
+    heartbeat_interval_seconds: 5
+    heartbeat_timeout_seconds: 15
+    restart_policy:
+      enabled: true
+      max_restarts: 5
+      backoff_seconds:
+      - 1
+      - 2
+      - 5
+      - 10
+      - 30
+  worker:
+    execution:
+      requested_mode: host
+    entrypoint:
+      - .venv/bin/bianbu-agent
+      - --role
+      - agent-worker
+      - --config
+      - config/development.yaml
+      - worker
+    startup_timeout_seconds: 15
+    max_concurrent_runs: 4

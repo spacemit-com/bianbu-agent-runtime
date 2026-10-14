@@ -1,0 +1,101 @@
+<script>
+  // The security view is loaded as a separate document; mirror the Runtime
+  // WebUI theme preference before the plugin paints.  Fall back to the
+  // browser preference when the Runtime has not persisted a choice yet.
+  (function () {
+    var stored = localStorage.getItem('bianbu_theme');
+    var dark = stored ? stored === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.classList.toggle('dark', dark);
+  }());
+  window.addEventListener('storage', function (event) {
+    if (event.key !== 'bianbu_theme') return;
+    document.documentElement.classList.toggle('dark', event.newValue === 'dark');
+  });
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function (event) {
+    if (!localStorage.getItem('bianbu_theme')) document.documentElement.classList.toggle('dark', event.matches);
+  });
+</script>
+<script type="module" crossorigin src="/security/assets/index-o6tormbT.js"></script>
+<link rel="stylesheet" crossorigin href="/security/assets/index-CjF2tsdx.css">
+<style>
+  /* The Runtime already provides navigation; hide the standalone Workbench rail. */
+  html, body, #root, .bibit-dev-host { min-height: 100% !important; width: 100%; margin: 0; background: #f8fafc !important; }
+  :root { background: #f8fafc !important; }
+  html.dark, html.dark body, html.dark #root, html.dark .bibit-dev-host,
+  html.dark .bibit-dev-host__stage, html.dark .bibit-dev-host__preview,
+  html.dark .bibit-dev-host__canvas, html.dark :root { background: #111111 !important; }
+  .bibit-dev-host { display: block !important; min-height: 100vh !important; }
+  .bibit-dev-host__rail,
+  .bibit-dev-host__stage > header,
+  .bibit-dev-host__viewport-label { display: none !important; }
+  .bibit-dev-host__stage { width: 100% !important; min-width: 0; padding: 0 !important; }
+  .bibit-dev-host__preview { min-height: 0 !important; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; }
+  .bibit-dev-host__canvas { min-height: 0 !important; padding: 0 !important; }
+  .security-settings { max-width: 1200px; min-height: 100vh; margin: 0 auto; padding: 24px; background: #f8fafc; align-content: start; }
+  .security-settings .security-agent-select { height: 38px !important; min-height: 38px !important; line-height: 1.2 !important; padding: 8px 10px !important; box-sizing: border-box !important; }
+  .security-settings .security-tabs { grid-auto-rows: 76px; align-items: stretch; }
+  .security-settings .security-tabs button { height: 76px !important; min-height: 76px !important; box-sizing: border-box !important; }
+  .security-settings .security-tabs button strong { line-height: 20px; }
+  .security-settings .security-tabs button span { line-height: 16px; min-height: 16px; }
+  html.dark .security-settings { background: #111111; color: #e5e7eb; }
+  /* The host shell contains the “General / Current plugin” region. Keep it
+     in sync with the Runtime theme instead of leaving a white frame around
+     the dark security panel. */
+  html.dark .bibit-dev-host__settings-shell,
+  html.dark .bibit-dev-host__settings-shell > header,
+  html.dark .bibit-dev-host__settings-body,
+  html.dark .bibit-dev-host__settings-body > aside,
+  html.dark .bibit-dev-host__settings-content { background: #111111 !important; color: #e5e7eb !important; border-color: rgba(255,255,255,.1) !important; }
+  html.dark .bibit-dev-host__settings-shell > header,
+  html.dark .bibit-dev-host__settings-body > aside,
+  html.dark .bibit-dev-host__settings-body > aside * { background: #111111 !important; border-color: rgba(255,255,255,.1) !important; color: #e5e7eb !important; }
+  html.dark .bibit-dev-host__settings-body > aside strong { background: #24201c !important; color: #fff !important; }
+  html.dark .security-settings h2,
+  html.dark .security-settings h3,
+  html.dark .security-settings strong,
+  html.dark .security-settings td { color: #f5f5f5; }
+  html.dark .security-settings .security-eyebrow { color: #c8a98a; }
+  html.dark .security-settings .security-button,
+  html.dark .security-settings .security-link-button { color: #e8d8c8; }
+  html.dark .security-settings .security-panel,
+  html.dark .security-settings .security-subpanel,
+  html.dark .security-settings .security-context,
+  html.dark .security-settings .security-service-state { background: #1a1a1a !important; border-color: rgba(255,255,255,.1) !important; color: #e5e7eb; }
+  html.dark .security-settings .security-tabs { background: #171717 !important; border-color: rgba(255,255,255,.1) !important; }
+  html.dark .security-settings .security-tabs button.is-active { background: #24201c !important; border-color: #6b5745 !important; color: #fff !important; }
+  html.dark .security-settings .security-tabs button:hover { background: #26221f !important; }
+  html.dark .security-settings .security-table-wrap { background: #1a1a1a !important; border-color: rgba(255,255,255,.1) !important; }
+  html.dark .security-settings .security-table tbody tr:hover { background: #24201c !important; }
+  html.dark .security-settings .security-button--secondary { background: #24201c !important; border-color: #6b5745 !important; color: #e8d8c8 !important; }
+  html.dark .security-settings input,
+  html.dark .security-settings select,
+  html.dark .security-settings textarea { background: #111111 !important; border-color: rgba(255,255,255,.16) !important; color: #e5e7eb !important; }
+  html.dark .security-settings table th { background: #111111 !important; color: #cbd5e1; }
+  html.dark .security-settings table td { border-color: rgba(255,255,255,.08) !important; }
+  html.dark .security-settings .security-muted,
+  html.dark .security-settings .security-tabs button span { color: #a3a3a3 !important; }
+  html.dark .security-settings .security-mode-control {
+    background: #1a1a1a !important;
+    border-color: rgba(255,255,255,.14) !important;
+    color: #e5e7eb !important;
+  }
+  html.dark .security-settings .security-mode-control.is-yolo {
+    background: #2a1d20 !important;
+    border-color: #8f4b58 !important;
+  }
+  html.dark .security-settings .security-mode-control h3,
+  html.dark .security-settings .security-mode-control strong { color: #f5f5f5 !important; }
+  html.dark .security-settings .security-mode-control p { color: #b7b7b7 !important; }
+  html.dark .security-settings .security-mode-control .security-pill--active {
+    background: #173d2d !important; color: #8ff0bf !important;
+  }
+  html.dark .security-settings .security-mode-control .security-pill--revoked {
+    background: #4a2028 !important; color: #ffacb8 !important;
+  }
+  @media (max-width: 640px) {
+    .security-settings { padding: 16px; }
+    .security-settings .security-tabs { grid-auto-rows: 68px; }
+    .security-settings .security-tabs button { height: 68px !important; min-height: 68px !important; }
+  }
+</style>
+<div id="root"></div>

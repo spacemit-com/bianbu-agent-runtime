@@ -1,0 +1,13 @@
+{
+  "name": "worker-rpc-interrupted",
+  "description": "Worker 在 Run 中途失败。真实原因必须活到客户端，不能退化成 EOFError。",
+  "error": {
+    "code": "upstream_unavailable",
+    "message": "worker stream disconnected",
+    "retryable": true,
+    "details": {
+      "worker_instance": "agent.demo-1"
+    }
+  },
+  "ui_detail_keys": ["worker_instance"]
+}

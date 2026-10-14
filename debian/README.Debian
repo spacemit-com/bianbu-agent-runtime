@@ -1,0 +1,216 @@
+Bianbu Agent Runtime for Debian/Ubuntu
+======================================
+
+Building from source
+--------------------
+
+A clean checkout can be built directly with:
+
+    dpkg-buildpackage -us -uc -b
+
+When `SECURITY_MANIFEST_DIR` is not supplied, the build creates an ephemeral
+Ed25519 key in memory and emits a development self-signed Runtime manifest.
+The private key is never written to disk or included in the package. The DEB
+contains `/usr/share/doc/bianbu-agent-runtime/DEVELOPMENT-SELF-SIGNED` so it
+cannot be mistaken for an officially signed release artifact.
+
+Release builds must supply a complete production manifest explicitly:
+
+    SECURITY_MANIFEST_DIR=/secure/release-manifest \
+        dpkg-buildpackage -us -uc -b
+
+An explicit manifest directory is validated and never replaced by a generated
+development manifest.
+
+The package contains its locked Python dependencies under
+`/usr/lib/bianbu-agent-runtime`. The packaged profile includes a preconfigured
+built-in Bibit Provider and a starter Agent template for this internal deployment. The
+Provider is published as the Custom Provider `custom:bibit` (shown as "Bibit Built-in") so the
+Models page never offers it as a vendor template the user is expected to fill in. The DEB
+and every installed copy contain that API credential, so distribute the package only to
+trusted recipients and rotate the key if the package leaves that boundary.
+
+System Runtime service
+------------------------
+
+The package installs one system-level service, `bianbu-agent-runtime.service`,
+wanted by `multi-user.target`: the Runtime starts at boot, independently of who
+logs in. Its identity is the device user `postinst` resolves once; the account is
+recorded in `/etc/bianbu-agent-runtime/service-user` and published as the drop-in
+`/etc/systemd/system/bianbu-agent-runtime.service.d/10-service-user.conf`, because
+`User=` cannot read a configuration file. Running as the device user rather than a
+dedicated system account is deliberate: host Workers are real login sessions and
+need a home directory, the user's files, and normal sudo/PAM semantics. Host and
+bwrap Workers keep using system transient scopes, and the polkit rule admits those
+scopes only when the caller lives in `bianbu-agent-runtime.service` and delegates
+nothing else; the console is opened in a browser at the Runtime port, so no
+in-session caller has to start that unit. A package install that cannot see a
+device user (an image build in a chroot, a container or CI) keeps the packaged
+default of the dedicated `bianbu-runtime` account instead of failing, and does not
+enable the unit there.
+
+The package depends on `bianbu-agent-securityd (>= 0.1.18)`. The package
+transaction itself only writes files: an image build may run it in a chroot, a
+container or CI, where no systemd manager, no D-Bus and no securityd exist yet.
+Everything that needs the live device happens when the service starts, through
+`bianbu-agent-runtime-register.service`, a oneshot unit that the Runtime and
+the network-learning collector pull in via `Requires=`/`After=`.
+It grants the `bianbu-security` membership, materialises the live `/run` state,
+resets only the stable `com.bianbu.runtime` caller binding through securityd's
+audited administrator API, and publishes the signed Runtime manifest. A
+half-installed image therefore registers itself on first boot; if a security
+step fails there, the Runtime refuses to start and `capabilities.db` is never
+deleted.
+
+Useful commands are:
+
+    sudo systemctl start bianbu-agent-runtime.service
+    sudo systemctl enable --now bianbu-agent-runtime.service
+    sudo systemctl stop bianbu-agent-runtime.service
+    systemctl status bianbu-agent-runtime.service
+    journalctl -u bianbu-agent-runtime.service
+
+Callers do not have to guess which account owns the data directory. Resolution
+order is `BIANBU_AGENT_CONFIG`, then the account recorded in
+`/etc/bianbu-agent-runtime/service-user` and its `~/.bianbu-agent/config.yaml`,
+then the caller's own `$HOME` when there is no record at all (a source checkout).
+The `bianbu-agent` CLI and the Workers all follow it, so
+`sudo bianbu-agent ...` never reads root's empty directory; a local user who is
+not the service user gets told which account owns it instead of a bare
+permission error. `/api/v1/runtime/status` reports `service_user` and `data_dir`
+for the same reason, and the console's Runtime status page shows both.
+
+Service start creates the service user's `~/.bianbu-agent`. The console port is
+derived from that account's UID - 9899 for UID 1000, then
+`9899 + ((uid - 1000) % 55637)` - so anyone can reach the console at
+`http://<device>:<port>/` even though the service account's home is not readable
+to them. The package ships no desktop entry, launcher or hicolor icon any more:
+the console is opened in a browser at that port. A copy of the retired entry
+left on a user's desktop - the retired installer's `Bianbu Agent.desktop`, or
+`bianbu-agent.desktop` copied from the start menu while that entry existed - is
+removed by every package transaction, because a byte-identical copy is what both
+produce; an edited copy is left alone. The comparison reference is the packaged
+`/usr/lib/bianbu-agent-runtime/retired-bianbu-agent.desktop`, which is not an
+application-menu entry.
+
+Package upgrades stop the service in `preinst` (along with any retired per-user
+`bianbu-agent-runtime@*.service` instances), then `postinst` enables and starts the
+shared unit again, which runs device registration first. The registration unit keeps a
+digest of the installed manifest in
+`/var/lib/bianbu-agent-runtime/registered-manifest.sha256`: an unchanged
+generation only repairs a missing registration, while a new generation calls
+securityd's administrator-only `ResetAgentBinding` operation before registering
+the new signed manifest. That reset is what stops an upgraded Runtime from
+inheriting the retired caller binding of the previous process identity. A
+failed registration leaves the service stopped instead of falling back to a
+generation whose binding is gone; `capabilities.db` is never deleted.
+
+Installing without a live device
+--------------------------------
+
+An image build (pbuilder, a plain chroot, a container, CI or a firmware build)
+has no running systemd, no securityd on the system bus and no image-provided
+`bianbu` group, so `dpkg --configure` there can only lay the package down on
+disk. No switch is needed:
+
+    sudo apt install ./bianbu-agent-runtime_*.deb
+
+The transaction never fails on a missing live prerequisite. It creates the
+`bianbu-runtime` account, its data directory and the admin token, because they
+are image content rather than live state, and it asks systemd to reload and to
+start the service with every return value ignored; the unit is only enabled when
+a device user was found. When securityd's `bianbu-security` group does not exist
+yet it is left alone: the registration unit grants the membership on the device,
+where securityd is present. Resetting the caller binding, registering the
+manifest, creating live `/run` state and starting the service all wait for the
+device. Nothing is copied onto a user's desktop, and `systemctl` diagnostics from
+a build host are routed to `/dev/null`, so a firmware build stays quiet.
+
+To register and start an image that was only unpacked on a build host, enable the
+service on the device and start it; the registration unit runs first:
+
+    sudo systemctl enable --now bianbu-agent-runtime.service
+
+The registration unit never registers a Runtime whose binding could not be
+reset: on a device it fails closed with
+`securityd is unavailable; refusing to start the Runtime` instead of starting an
+unregistered Runtime.
+
+Packaged components and upgrades
+--------------------------------
+
+The package profile supplies the tracked Agents, Tools, Skills, Hooks, Plugins,
+MCP and Model definitions from the source `.bianbu-agent` profile. On the first
+service start they are copied into the corresponding
+directories below `~/.bianbu-agent`. When the packaged profile changes, all
+package-managed component IDs are replaced, including locally edited copies.
+Changed or retired copies are saved first below:
+
+    ~/.bianbu-agent/backups/package-upgrade/<profile-digest>/
+
+Components created by the user under IDs that the package has never managed
+are preserved. When the packaged profile changes during an upgrade, the Runtime's
+`config.yaml` and all package-managed components are replaced
+from the packaged profile, including the LAN listening address, port, Bibit
+soul and built-in model selection. The packaged Bibit
+Provider under `models/custom-bibit` is also replaced from the DEB profile. Previous
+config, Agents, Providers and other managed files are saved under the same
+backup directory before replacement. User-created Agents and components whose
+IDs have never been supplied by the package, plus sessions, session logs and workspace,
+are not replaced. Removing the DEB does not remove the Runtime data or its
+backups.
+
+An existing `config.yaml` is the user's file: provisioning only adds the
+device's `presets` section to it when the profile declares one and the file has
+none, and never touches the other keys. Delete `config.yaml` to get the
+packaged profile back verbatim.
+
+The profile keeps `agents`, `models`, `sessions`, `workspace`,
+`logs`, `runtime` and `backups`. Each Session owns
+`sessions/<session-id>.json` plus its transcript under
+`sessions/<session-id>/session.jsonl.zstd`. Extension roots (`skills`,
+`plugins`, `mcps`) are created on demand when an extension is actually
+installed, so an untouched profile holds no empty directories for them.
+Standalone Hook packages are retired: a Plugin provides its Hooks as package
+members, so there is no `hooks` root.
+
+Model setup
+-----------
+
+The first launch creates one ordinary starter Agent with a persisted random
+`com.bianbu.<12-hex>` ID, bound to the packaged
+`custom:bibit / deepseek-flash` model. The service and control panel can therefore be
+used immediately. The package owns `models/custom-bibit/provider.yaml`; the first
+edit is copied into the Runtime user's
+`~/.bianbu-agent/models/custom-bibit/provider.yaml` with mode `0600`, and every later
+edit updates that user copy, so the packaged credential is never modified in place.
+
+1. Open **Configure provider** if you want to replace the packaged Bibit
+   credential or Base URL.
+2. Open **Select model** on the selected Agent if you want to change its model.
+
+Runtime Provider credentials are stored in each user's
+`~/.bianbu-agent/models` files with private permissions. They are never
+returned in API responses or written to logs; this DEB is the explicit
+exception because it intentionally embeds the deployment credential.
+
+Open the packaged Runtime URL in a browser. Manual CLI use can still select another
+configuration with `BIANBU_AGENT_CONFIG` or `--config /path/to/config.yaml`.
+
+Runtime management API credential
+---------------------------------
+
+The package retains the root-only token management command for deployments
+that enable the optional management API credential. The default Runtime does
+not enable that gate, so opening the desktop console requires no token.
+
+Retrieve the token on the board and paste it into the browser prompt:
+
+    sudo bianbu-agent-runtime-token --get-token
+
+To rotate it (the shared Runtime service is restarted automatically):
+
+    sudo bianbu-agent-runtime-token --rotate
+
+If a deployment enables token authentication, reload the user's Runtime URL
+and enter the new token.

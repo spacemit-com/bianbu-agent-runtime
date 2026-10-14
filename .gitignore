@@ -1,0 +1,22 @@
+.venv/
+debian/.bianbu-agent-build/
+__pycache__/
+.pytest_cache/
+.playwright-cli/
+*.py[cod]
+data/
+workspace/
+.worktrees/
+.$*.bkp
+
+# Local runtime state and user-installed resources.
+.bianbu-agent/
+
+# docs/ 只发布配合 README 的必要文档；内部记录、联调笔记与证据暂不纳入本仓。
+docs/*
+!docs/api-guide.md
+!docs/cli-guide.md
+!docs/overview-guide.md
+!docs/plugin-development-guide.md
+!docs/refs/
+!docs/refs/**

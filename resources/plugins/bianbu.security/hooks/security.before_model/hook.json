@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "hooks": {
+    "BeforeModel": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "exec \"${RUNTIME_PYTHON}\" \"$PLUGIN_ROOT/scripts/before_model.py\"",
+            "timeout": 15.0
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,44 @@
+#!/bin/sh
+set -eu
+export PYTHONDONTWRITEBYTECODE=1
+
+prefix=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+runtime=$prefix/lib/bianbu-agent-runtime/venv/bin/bianbu-agent
+
+# The package runs one system-level Runtime for the whole device, so the device
+# has exactly one data directory: the account postinst recorded in
+# /etc/bianbu-agent-runtime/service-user.  Resolving it here keeps the CLI, the
+# Web console and the Workers on the same ~/.bianbu-agent instead of letting
+# every caller fall back to its own $HOME - which for ``sudo bianbu-agent`` is
+# root's, a directory the Runtime never reads.  An explicit BIANBU_AGENT_CONFIG
+# still wins, and a source checkout without the record file keeps the login
+# user, so "a default never masquerades as an explicit --config" still holds.
+if [ -z "${BIANBU_AGENT_CONFIG:-}" ]; then
+    service_user_file=${BIANBU_SERVICE_USER_FILE:-/etc/bianbu-agent-runtime/service-user}
+    service_user=
+    if [ -r "$service_user_file" ]; then
+        service_user=$(sed -n '1p' "$service_user_file")
+    fi
+    case "$service_user" in
+        ''|*[!A-Za-z0-9_.-]*) service_user= ;;
+    esac
+    service_home=
+    if [ -n "$service_user" ]; then
+        service_home=$(getent passwd "$service_user" 2>/dev/null | cut -d: -f6 || true)
+    fi
+    if [ -n "$service_home" ] && [ -d "$service_home" ]; then
+        export BIANBU_AGENT_CONFIG="$service_home/.bianbu-agent/config.yaml"
+        # Only the service user can read that directory.  Say which account the
+        # Runtime data belongs to instead of letting the CLI report a bare
+        # permission error about a path the caller never chose.
+        caller=$(id -un 2>/dev/null || true)
+        if [ "$caller" != "$service_user" ] && [ ! -r "$BIANBU_AGENT_CONFIG" ]; then
+            printf '%s\n' \
+                "bianbu-agent: the Runtime for this device runs as '$service_user' and keeps its data in $BIANBU_AGENT_CONFIG." \
+                "bianbu-agent: run as that account (sudo -u $service_user bianbu-agent ...) or set BIANBU_AGENT_CONFIG to another configuration file." >&2
+        fi
+    else
+        export BIANBU_AGENT_CONFIG="${HOME}/.bianbu-agent/config.yaml"
+    fi
+fi
+exec "$runtime" "$@"

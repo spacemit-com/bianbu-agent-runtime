@@ -1,0 +1,35 @@
+// Permit the packaged Runtime control plane to create/stop per-Worker transient
+// scopes.  A scope inherits the caller's already-dropped identity and cannot
+// carry User=/Group= properties.  Service units are not allowed here: accepting
+// them would let a compromised Worker request a privileged transient service by
+// adding a User= override to a valid unit.
+//
+// The caller is identified by the systemd unit it lives in, which polkit derives
+// from the caller's cgroup: only a process inside bianbu-agent-runtime.service
+// (the packaged control plane) matches, so the rule needs no per-user name.  The
+// unit runs with NoNewPrivileges=false so host Workers keep normal sudo/PAM
+// semantics, and a rule that also demanded no_new_privileges would deny every
+// Worker scope start.  Worker scopes never match the control-plane unit name.
+//
+// Nothing else about the unit is delegated: the console is opened from a browser
+// at the Runtime port, so no in-session caller has to start it.
+var RUNTIME_UNIT = "bianbu-agent-runtime.service";
+
+polkit.addRule(function(action, subject) {
+    if (action.id !== "org.freedesktop.systemd1.manage-units") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var unit = action.lookup("unit") || "";
+    var verb = action.lookup("verb") || "";
+    if ((subject.system_unit || "") !== RUNTIME_UNIT) {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (!/^bianbu-agent-[A-Za-z0-9_.-]+\.scope$/.test(unit)) {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (verb === "start" || verb === "stop" || verb === "kill" ||
+        verb === "restart" || verb === "reload" || verb === "reset-failed") {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

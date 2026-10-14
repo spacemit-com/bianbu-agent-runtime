@@ -1,0 +1,183 @@
+#!/bin/sh
+set -eu
+
+test -x /usr/bin/bianbu-agent
+test -x /usr/lib/bianbu-agent-runtime/venv/bin/bianbu-agent
+test -x /usr/bin/bianbu-agent-runtime
+test ! -e /etc/bianbu-agent/config.yaml
+# 桌面入口与启动器已退役：控制台按端口打开，包内只留清理参照。
+test ! -e /usr/bin/bianbu-agent-launcher
+test ! -e /usr/lib/bianbu-agent-runtime/desktop-launcher.py
+test -r /usr/lib/bianbu-agent-runtime/retired-bianbu-agent.desktop
+test -x /usr/lib/bianbu-agent-runtime/provision-user.py
+test -x /usr/lib/bianbu-agent-runtime/register-security-manifest.py
+test -x /usr/lib/bianbu-agent-runtime/reset-security-binding.py
+test -x /usr/lib/bianbu-agent-runtime/runtime-admin-token.py
+test -x /usr/bin/bianbu-agent-runtime-token
+test -r /etc/bianbu-agent/runtime.env
+test -r /etc/bianbu-agent/runtime-admin-token
+test "$(stat -c '%a' /etc/bianbu-agent/runtime.env)" = 640
+test "$(stat -c '%a' /etc/bianbu-agent/runtime-admin-token)" = 640
+grep -q '^BIANBU_RUNTIME_ADMIN_TOKEN_FILE=/etc/bianbu-agent/runtime-admin-token$' /etc/bianbu-agent/runtime.env
+test ! -e /usr/lib/bianbu-agent-runtime/install-desktop-shortcut
+test -x /usr/lib/bianbu-agent-runtime/cleanup-retired-desktop-icon
+test -x /usr/lib/bianbu-agent-runtime/runtime-user-entrypoint
+test -r '/usr/lib/systemd/system/bianbu-agent-runtime.service'
+test ! -e '/usr/lib/systemd/system/bianbu-agent-runtime@.service'
+test ! -e '/usr/lib/systemd/system/bianbu-agent-runtime-control@.service'
+test -r /usr/share/polkit-1/rules.d/60-bianbu-agent-runtime.rules
+grep -q 'var RUNTIME_UNIT = "bianbu-agent-runtime.service";' \
+    /usr/share/polkit-1/rules.d/60-bianbu-agent-runtime.rules
+! grep -q 'subject\.local' \
+    /usr/share/polkit-1/rules.d/60-bianbu-agent-runtime.rules
+grep -q 'subject.system_unit' \
+    /usr/share/polkit-1/rules.d/60-bianbu-agent-runtime.rules
+! grep -q 'subject\.no_new_privileges' \
+    /usr/share/polkit-1/rules.d/60-bianbu-agent-runtime.rules
+# One system-level service for the whole device: no instance template, no %i,
+# starts at boot, and runs as the identity postinst resolves.
+unit='/usr/lib/systemd/system/bianbu-agent-runtime.service'
+! grep -q '%i' "$unit"
+grep -qx 'WantedBy=multi-user.target' "$unit"
+grep -qx 'User=bianbu-runtime' "$unit"
+grep -qx 'SupplementaryGroups=bianbu-security bianbu-agent bianbu-admin bianbu' "$unit"
+grep -qx 'Environment=BIANBU_RUNTIME_SYSTEM_SERVICE=1' "$unit"
+grep -qx 'Environment=BIANBU_RUNTIME_SYSTEM_UNIT=bianbu-agent-runtime.service' "$unit"
+grep -qx 'Environment=BIANBU_RUNTIME_SERVICE_USER=bianbu-runtime' "$unit"
+grep -qx 'Environment=BIANBU_AGENT_MEMORY_ACCOUNT_ID=bianbu-runtime' "$unit"
+grep -qx 'NoNewPrivileges=false' "$unit"
+grep -qx 'RestrictSUIDSGID=false' "$unit"
+grep -qx 'Environment=BIANBU_SECURITY=1' "$unit"
+grep -qx 'Environment=BIANBU_RUNTIME_SECURITY=required' "$unit"
+grep -qx 'ExecStartPre=+/usr/bin/install -d -m 2770 -o root -g bianbu /run/bianbu/agent-runtime' "$unit"
+grep -qx 'ExecStartPre=+/usr/bin/install -d -m 2770 -o root -g bianbu-agent /run/bianbu/agent-runtime/memory-registry' "$unit"
+! grep -q '^ReadWritePaths=' "$unit"
+! grep -q '/opt/bibit-intent' "$unit"
+test -r /usr/share/bianbu-agent-runtime/default-profile/config.yaml
+test -r /usr/share/bianbu-agent-runtime/plugins/bianbu.bibit.intent/mcps/bibit-readonly/mcp.json
+test -r /usr/share/bianbu-agent-runtime/plugins/bianbu.bibit.intent/mcps/bibit-control/mcp.json
+test -r /usr/share/bianbu-agent-runtime/plugins/bianbu.bibit.intent/mcps/bibit-admin/mcp.json
+test ! -e /usr/share/bianbu-agent-runtime/plugins/bianbu.bibit.intent/mcps/bibit-intent
+test ! -e /usr/share/bianbu-agent-runtime/mcps/bibit-intent
+test -r /usr/share/bianbu-agent-runtime/security-manifest/com.bianbu.runtime/manifest.toml
+test -r /usr/share/bianbu-agent-runtime/security-manifest/com.bianbu.runtime/manifest.toml.sig
+test -r /usr/share/bianbu-agent-runtime/security-manifest/com.bianbu.runtime/pubkey.hex
+test -r /usr/share/bianbu-agent-runtime/models/custom-bibit/provider.yaml
+test ! -e /usr/share/bianbu-agent-runtime/default-profile/tools/read_file/tool.py
+test -d /usr/share/bianbu-agent-runtime/plugins/bianbu.bibit.intent
+test -r /usr/share/bianbu-agent-runtime/plugins/bianbu.bibit.intent/plugin.yaml
+test ! -e /usr/share/bianbu-agent-runtime/plugins/bianbu.bibit.intent/tools/intent_classify
+test ! -e /usr/share/applications/bianbu-agent.desktop
+test ! -e /usr/share/icons/hicolor/512x512/apps/bianbu-agent.jpg
+
+bianbu-agent --help >/dev/null
+bianbu-agent mcp --help >/dev/null
+/usr/lib/bianbu-agent-runtime/venv/bin/python -c 'import bashlex, bianbu_agent, bianbu_agent_sdk.memory, fastapi, langgraph'
+test -r /usr/lib/python3/dist-packages/bianbu_agent_sdk/memory/__init__.py
+
+test_home=$(mktemp -d)
+serve_pid=
+cleanup() {
+    if [ -n "$serve_pid" ]; then
+        kill "$serve_pid" 2>/dev/null || true
+        wait "$serve_pid" 2>/dev/null || true
+    fi
+    rm -rf "$test_home"
+}
+trap cleanup EXIT HUP INT TERM
+
+python=/usr/lib/bianbu-agent-runtime/venv/bin/python
+resources=/usr/share/bianbu-agent-runtime
+profile="$resources/default-profile"
+HOME="$test_home" "$python" /usr/lib/bianbu-agent-runtime/provision-user.py \
+    --profile "$profile" --home "$test_home" --uid 1000 >"$test_home/provision.json"
+grep -q '"updated": true' "$test_home/provision.json"
+config=$test_home/.bianbu-agent/config.yaml
+starter_agent_id=$("$python" -c '
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8"))["starter_agent_id"])
+' "$test_home/.bianbu-agent/.managed-profile.json")
+case "$starter_agent_id" in
+    com.bianbu.[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) exit 1 ;;
+esac
+starter_agent="$test_home/.bianbu-agent/agents/$starter_agent_id/agent.yaml"
+test -r "$config"
+test ! -e "$starter_agent"
+starter_agent="$profile/starter-agent.yaml"
+test ! -e "$test_home/.bianbu-agent/tools"
+"$python" -c "from bianbu_agent.tools.builtins import builtin_source; assert builtin_source('read_file').is_file()"
+test ! -e "$test_home/.bianbu-agent/plugins/bianbu.memory/plugin.yaml"
+test ! -e "$test_home/.bianbu-agent/plugins/bianbu.bibit.intent/tools/intent_classify"
+
+# Reprovisioning models install/reinstall/upgrade: all user-owned state and
+# unmanaged MCP registrations must survive.
+mkdir -p "$test_home/.bianbu-agent/sessions/preserve-smoke" \
+    "$test_home/.bianbu-agent/mcps/user-owned"
+printf '%s\n' keep >"$test_home/.bianbu-agent/sessions/preserve-smoke/session.json"
+printf '%s\n' '{"transport":"stdio","command":"/bin/true"}' \
+    >"$test_home/.bianbu-agent/mcps/user-owned/mcp.json"
+HOME="$test_home" "$python" /usr/lib/bianbu-agent-runtime/provision-user.py \
+    --profile "$profile" --home "$test_home" --uid 1000 >"$test_home/reprovision.json"
+test -r "$test_home/.bianbu-agent/sessions/preserve-smoke/session.json"
+test -r "$test_home/.bianbu-agent/mcps/user-owned/mcp.json"
+rm -rf "$test_home/.bianbu-agent/mcps/user-owned"
+"$python" -c '
+import sys, yaml
+document = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+assert document["agent"]["model"] == {"provider": "custom:bibit", "name": "deepseek-flash"}
+' "$starter_agent"
+grep -q '^provider: custom:bibit$' "$resources/models/custom-bibit/provider.yaml"
+grep -q '^  api_key: sk-' "$resources/models/custom-bibit/provider.yaml"
+test "$(stat -c '%a' "$resources/models/custom-bibit/provider.yaml")" = 644
+
+HOME="$test_home" BIANBU_AGENT_CONFIG="$config" \
+    bianbu-agent mcp add smoke --command /bin/true >"$test_home/mcp-add.json"
+grep -q '"id": "mcp.smoke"' "$test_home/mcp-add.json"
+HOME="$test_home" BIANBU_AGENT_CONFIG="$config" \
+    bianbu-agent mcp get smoke >"$test_home/mcp-get.json"
+grep -q '"id": "mcp.smoke"' "$test_home/mcp-get.json"
+HOME="$test_home" BIANBU_AGENT_CONFIG="$config" \
+    bianbu-agent mcp list >"$test_home/mcp-list.json"
+grep -q '"id": "mcp.smoke"' "$test_home/mcp-list.json"
+HOME="$test_home" BIANBU_AGENT_CONFIG="$config" \
+    bianbu-agent mcp get mcp.smoke >"$test_home/mcp-get-full.json"
+grep -q '"id": "mcp.smoke"' "$test_home/mcp-get-full.json"
+HOME="$test_home" BIANBU_AGENT_CONFIG="$config" \
+    bianbu-agent mcp remove smoke >"$test_home/mcp-remove.json"
+grep -q '"deleted": true' "$test_home/mcp-remove.json"
+test ! -e "$test_home/.bianbu-agent/mcps/mcp.smoke"
+
+# AgentHub's APM stages an MCP package directory and installs it by path.
+apm_stage="$test_home/apm-staging/mcp.staged"
+mkdir -p "$apm_stage"
+printf '%s\n' '{"display_name": "staged", "transport": "stdio", "command": "/bin/true", "timeout_seconds": 30.0}' \
+    >"$apm_stage/mcp.json"
+HOME="$test_home" BIANBU_AGENT_CONFIG="$config" \
+    bianbu-agent mcp install "$apm_stage" >"$test_home/mcp-install.json"
+grep -q '"id": "mcp.staged"' "$test_home/mcp-install.json"
+HOME="$test_home" BIANBU_AGENT_CONFIG="$config" \
+    bianbu-agent mcp get staged >"$test_home/mcp-get-staged.json"
+grep -q '"id": "mcp.staged"' "$test_home/mcp-get-staged.json"
+
+port=$("$python" -c \
+    'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
+sed -i -e "s|^  port:.*|  port: $port|" "$config"
+
+# 桌面入口与启动器退役后，控制台只剩「按端口访问」这一条路：前台起一次打包的
+# Runtime，确认它对生成的配置端口真的返回控制台页面。
+HOME="$test_home" BIANBU_AGENT_CONFIG="$config" bianbu-agent serve \
+    >"$test_home/serve.log" 2>&1 &
+serve_pid=$!
+console_ready=false
+for _ in $(seq 1 150); do
+    if curl -fsSL "http://127.0.0.1:$port/" 2>/dev/null | grep -qi '<html'; then
+        console_ready=true
+        break
+    fi
+    sleep 0.2
+done
+if [ "$console_ready" != true ]; then
+    cat "$test_home/serve.log" >&2
+    exit 1
+fi

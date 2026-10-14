@@ -1,0 +1,17 @@
+{
+  "name": "provider-timeout",
+  "description": "模型服务收下请求但没在超时时间内回包。属于可重试的传输层故障。",
+  "error": {
+    "code": "provider_timeout",
+    "message": "无法连接到模型服务 api.example.com：在超时时间内没有返回任何内容。下一步：检查网络与 Provider 地址、服务状态后重试；若该模型一贯较慢，请更换更快的模型或 Provider。",
+    "retryable": true,
+    "details": {
+      "agent_id": "agent.demo",
+      "provider_host": "api.example.com",
+      "network_mode": "",
+      "domains": [],
+      "action": "check_network_provider_and_retry"
+    }
+  },
+  "ui_detail_keys": ["provider_host"]
+}

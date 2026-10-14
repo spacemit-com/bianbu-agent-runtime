@@ -1,0 +1,12 @@
+{
+  "schema_version": 2,
+  "name": "my-plugin",
+  "name_zh": "我的插件",
+  "name_en": "My Plugin",
+  "version": "v1.0.0",
+  "description": "Provide a Skill that generates a short greeting in the user's language.",
+  "description_zh": "提供一个用于生成简短问候的内嵌 Skill。",
+  "skills": [
+    "skills/greeting-skill"
+  ]
+}

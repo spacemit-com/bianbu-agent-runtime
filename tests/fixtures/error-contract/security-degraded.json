@@ -1,0 +1,20 @@
+{
+  "name": "security-degraded",
+  "description": "securityd 不可达导致的 fail-closed 拦截。与明确拒绝区分：服务恢复后重试可能成功。",
+  "error": {
+    "code": "security_unavailable",
+    "message": "[bianbu-security] securityd 不可达，按失败关闭策略拦截",
+    "retryable": true,
+    "details": {
+      "tool": "terminal",
+      "capability": "terminal.execute",
+      "scope": "",
+      "risk_level": "L3",
+      "decision": "BLOCK",
+      "reason": "securityd 不可达，按失败关闭策略拦截",
+      "degraded": true,
+      "terminate_run": true
+    }
+  },
+  "ui_detail_keys": ["tool", "capability"]
+}

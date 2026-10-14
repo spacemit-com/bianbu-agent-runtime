@@ -1,0 +1,27 @@
+[Unit]
+Description=Bianbu Agent privileged network learning collector
+Documentation=file:/usr/share/doc/bianbu-agent-runtime/README.Debian
+After=network-online.target bianbu-agent-runtime-register.service
+Wants=network-online.target bianbu-agent-runtime-register.service
+
+[Service]
+Type=simple
+User=root
+Group=bianbu-security
+UMask=0007
+Environment=BIANBU_NETWORK_LEARNING_EBPF=0
+# The Runtime connects as a member of bianbu-security.  Do not let the
+# collector create a world-traversable socket directory during a reboot.
+ExecStartPre=+/usr/bin/install -d -m 0770 -o root -g bianbu-security /run/bianbu /run/bianbu/network-learning
+ExecStart=/usr/bin/python3.14 /usr/lib/bianbu-agent-runtime/network-learning-ebpf-collector.py --socket /run/bianbu/network-learning/collector.sock
+Restart=on-failure
+RestartSec=2s
+KillSignal=SIGINT
+TimeoutStopSec=10s
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/run/bianbu
+
+[Install]
+WantedBy=multi-user.target

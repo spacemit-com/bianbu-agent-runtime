@@ -1,0 +1,11 @@
+schema_version: 1
+provider: custom:bibit
+model: credential
+base_url: https://api.deepseek.com/v1
+parameters:
+  record_kind: custom_provider
+  custom_id: bibit
+  name: Bibit Built-in
+  protocol: openai-compatible
+  api_key: sk-72fa130137d3439483b02563d10ed9d1
+id: custom-provider-bibit

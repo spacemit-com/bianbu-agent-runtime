@@ -1,0 +1,9 @@
+{
+  "display_name": "AgentMemory",
+  "transport": "stdio",
+  "command": "${RUNTIME_PYTHON}",
+  "args": ["-m", "bianbu_agent_sdk.memory.mcp_server"],
+  "env": {
+    "PATH": "${RUNTIME_PYTHON_BIN_DIR}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+  }
+}

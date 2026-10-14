@@ -1,0 +1,22 @@
+#!/bin/sh
+set -e
+
+# 卸载与升级都清一遍退役的桌面图标。升级时执行的是旧包的 prerm，所以真正生效的
+# 那次清理在 postinst；这里负责卸载，两处调同一个脚本，实现只有一份。
+cleanup_retired_desktop_icon() {
+    helper=${BIANBU_PRERM_DESKTOP_CLEANUP:-/usr/lib/bianbu-agent-runtime/cleanup-retired-desktop-icon}
+    [ -x "$helper" ] || return 0
+    "$helper" || true
+}
+
+if [ "$1" = remove ] || [ "$1" = upgrade ]; then
+    cleanup_retired_desktop_icon
+    systemctl stop bianbu-agent-network-learning.service >/dev/null 2>&1 || true
+    systemctl stop bianbu-agent-runtime.service >/dev/null 2>&1 || true
+    # 退役的每用户实例：升级时先停掉，避免两个运行时抢同一个端口。
+    systemctl stop 'bianbu-agent-runtime@*.service' >/dev/null 2>&1 || true
+fi
+
+#DEBHELPER#
+
+exit 0

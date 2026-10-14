@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "hooks": {
+    "BeforeRun": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "exec \"${RUNTIME_PYTHON}\" \"$PLUGIN_ROOT/scripts/before_run.py\"",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  },
+  "priority": 200,
+  "metadata": {
+    "agent_selectable": true,
+    "display_name": "Bibit edge-first routing",
+    "description": "Call the Bibit Intent HTTP service before the Runtime model."
+  },
+  "parallel": true,
+  "waits_for": [
+    "bianbu.security/*"
+  ]
+}

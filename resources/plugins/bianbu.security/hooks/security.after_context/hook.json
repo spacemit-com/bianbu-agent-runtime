@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "hooks": {
+    "AfterContext": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "exec \"${RUNTIME_PYTHON}\" \"$PLUGIN_ROOT/scripts/after_context.py\"",
+            "timeout": 15.0
+          }
+        ]
+      }
+    ]
+  }
+}

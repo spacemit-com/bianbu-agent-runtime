@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "hooks": {
+    "OnError": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "exec \"${RUNTIME_PYTHON}\" \"$PLUGIN_ROOT/scripts/on_error.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "parallel": true
+}

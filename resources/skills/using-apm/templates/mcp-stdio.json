@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "name": "my-mcp",
+  "name_zh": "我的 MCP",
+  "name_en": "My MCP",
+  "version": "v1.0.0",
+  "description": "Local MCP template; supply the actual service command and capability.",
+  "description_zh": "本地 MCP 模板；请填入真实的服务命令与能力说明。",
+  "definition": {
+    "transport": "stdio",
+    "command": "my-mcp-server",
+    "args": []
+  }
+}

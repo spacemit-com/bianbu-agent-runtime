@@ -1,0 +1,3 @@
+a+ /run/bianbu - - - - u:bianbu:rwx,u:bianbu-memory:rwx,g:bianbu-security:rwx,m::rwx
+
+d /run/bianbu/syscall-audit 2770 root bianbu-security -

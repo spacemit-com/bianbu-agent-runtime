@@ -1,0 +1,20 @@
+{
+  "name": "mid-run-diagnostic",
+  "description": "具体原因只出现在过程中间（上游 429），终态是通用失败。两个原因都要能被客户端看到。",
+  "diagnostic": {
+    "code": "provider_rate_limited",
+    "message": "上游返回 429：配额的请求数已耗尽",
+    "retryable": true,
+    "details": {
+      "provider": "deepseek",
+      "http_status": 429
+    }
+  },
+  "error": {
+    "code": "run_failed",
+    "message": "任务执行失败",
+    "retryable": true,
+    "details": {}
+  },
+  "ui_detail_keys": ["provider", "http_status"]
+}

@@ -1,0 +1,218 @@
+#!/usr/bin/make -f
+
+export PYBUILD_NAME = bianbu-agent-runtime
+export UV_NO_PROGRESS = 1
+export PYTHONDONTWRITEBYTECODE = 1
+
+PACKAGE := bianbu-agent-runtime
+BUILD_ROOT := $(CURDIR)/debian/.bianbu-agent-build
+BUILD_VENV := $(BUILD_ROOT)/venv
+NETWORK_LEARNING_PRELOAD := $(BUILD_ROOT)/libbianbu-network-learning.so
+EXTRA_REQUIREMENTS := $(CURDIR)/debian/requirements-extra.txt
+PACKAGE_ROOT := $(CURDIR)/debian/$(PACKAGE)
+ALLOW_UNSIGNED_RUNTIME_PACKAGE ?= 0
+# This numeric trust-anchor version is independent from the Debian revision,
+# but must advance whenever a package is released.  Securityd rejects
+# manifest rollback even when the Debian revision is unchanged during a
+# development rebuild.
+RUNTIME_MANIFEST_VERSION ?= 1.2.59
+# The starter Agent uses the packaged Bibit provider, whose endpoint is
+# DeepSeek's API, and can still fall back to Bibit's cloud service. Keep both
+# hostnames and the local Bibit service in the signed Runtime policy; otherwise
+# systemd's per-Worker IP filter blocks the request before the Hook can route
+# the prompt.
+RUNTIME_ALLOWED_DOMAINS ?= api.deepseek.com api.rvcompute.com localhost
+RUNTIME_NETWORK_MODE ?= allow_all
+RUNTIME_PYTHON := /usr/bin/python3.14
+UV := python3 -m uv
+DEB_HOST_ARCH ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
+SQLITE_VEC_WHEEL := $(BUILD_ROOT)/sqlite_vec-0.1.9-py3-none-manylinux_2_43_riscv64.whl
+SQLITE_VEC_URL := https://git.spacemit.com/api/v4/projects/33/packages/pypi/files/45c3e2d7b38c98e6e1ceee745d605c18276c7d1bd5ffc69e3ddbbef72605e0ca/sqlite_vec-0.1.9-py3-none-manylinux_2_41_riscv64.whl
+SQLITE_VEC_SHA256 := 45c3e2d7b38c98e6e1ceee745d605c18276c7d1bd5ffc69e3ddbbef72605e0ca
+# browser_* Tools shell out to `agent-browser` on PATH; the CLI, its wrapper
+# and its Chromium dependency come from the separate agent-browser package
+# (gitlab.dc.com/bianbu/ai/agent-browser), so this build no longer compiles Rust.
+
+ifeq ($(origin SECURITY_MANIFEST_DIR), undefined)
+SECURITY_MANIFEST_DIR := $(BUILD_ROOT)/security-manifest
+GENERATE_DEVELOPMENT_SECURITY_MANIFEST := 1
+else
+GENERATE_DEVELOPMENT_SECURITY_MANIFEST := 0
+endif
+
+.PHONY: prepare-security-manifest
+prepare-security-manifest:
+	if [ "$(GENERATE_DEVELOPMENT_SECURITY_MANIFEST)" = 1 ]; then \
+		echo "WARNING: generating a development self-signed Runtime manifest" >&2; \
+		"$(BUILD_VENV)/bin/python" debian/generate-security-manifest.py \
+			--agent-source resources/default-profile/starter-agent.yaml \
+			--config-source resources/default-profile/config.yaml \
+			--output "$(SECURITY_MANIFEST_DIR)" \
+			--development-self-signed \
+			--uid 1000 \
+			--version "$(RUNTIME_MANIFEST_VERSION)" \
+			--network-mode "$(RUNTIME_NETWORK_MODE)" \
+			$(foreach domain,$(RUNTIME_ALLOWED_DOMAINS),--allowed-domain "$(domain)"); \
+	else \
+		"$(BUILD_VENV)/bin/python" debian/generate-security-manifest.py \
+			--agent-source resources/default-profile/starter-agent.yaml \
+			--config-source resources/default-profile/config.yaml \
+			--validate-existing "$(SECURITY_MANIFEST_DIR)" \
+			--uid 1000 \
+			--version "$(RUNTIME_MANIFEST_VERSION)" \
+			--network-mode "$(RUNTIME_NETWORK_MODE)" \
+			$(foreach domain,$(RUNTIME_ALLOWED_DOMAINS),--allowed-domain "$(domain)"); \
+	fi
+
+%:
+	dh $@
+
+override_dh_auto_clean:
+	rm -rf "$(BUILD_ROOT)"
+	rm -f "$(NETWORK_LEARNING_PRELOAD)"
+	dh_auto_clean
+
+override_dh_auto_build:
+	mkdir -p "$(BUILD_ROOT)"
+	$(CC) -shared -fPIC -O2 -Wall -Wextra scripts/network-learning-preload.c -o "$(NETWORK_LEARNING_PRELOAD)" -ldl -pthread
+	if ! $(UV) --version 2>/dev/null | grep -Eq '^uv 0\.11\.'; then \
+		python3 -m pip install 'uv>=0.11,<0.12' \
+			--index-url https://nexus.bianbu.xyz/repository/pypi/simple \
+			--trusted-host nexus.bianbu.xyz --break-system-packages --prefer-binary; \
+	fi
+	mkdir -p "$(BUILD_ROOT)"
+	if [ "$(DEB_HOST_ARCH)" = riscv64 ]; then \
+		curl -fsSL --retry 3 "$(SQLITE_VEC_URL)" -o "$(SQLITE_VEC_WHEEL)"; \
+		printf '%s  %s\n' "$(SQLITE_VEC_SHA256)" "$(SQLITE_VEC_WHEEL)" | sha256sum -c -; \
+	fi
+	$(UV) venv --clear --relocatable --system-site-packages --python "$(RUNTIME_PYTHON)" "$(BUILD_VENV)"
+	if [ "$(DEB_HOST_ARCH)" = riscv64 ]; then \
+		UV_PROJECT_ENVIRONMENT="$(BUILD_VENV)" $(UV) sync --locked --no-dev \
+			--no-install-project --no-install-package sqlite-vec \
+			--python "$(BUILD_VENV)/bin/python"; \
+	else \
+		UV_PROJECT_ENVIRONMENT="$(BUILD_VENV)" $(UV) sync --locked --no-dev \
+			--no-install-project --python "$(BUILD_VENV)/bin/python"; \
+	fi
+	$(UV) pip install --python "$(BUILD_VENV)/bin/python" -r "$(EXTRA_REQUIREMENTS)"
+	if [ "$(DEB_HOST_ARCH)" = riscv64 ]; then \
+		$(UV) pip install --python "$(BUILD_VENV)/bin/python" "$(SQLITE_VEC_WHEEL)"; \
+	fi
+	$(UV) pip install --python "$(BUILD_VENV)/bin/python" --no-deps .
+	$(MAKE) -f debian/rules prepare-security-manifest \
+		BUILD_ROOT="$(BUILD_ROOT)" BUILD_VENV="$(BUILD_VENV)" \
+		SECURITY_MANIFEST_DIR="$(SECURITY_MANIFEST_DIR)" \
+		GENERATE_DEVELOPMENT_SECURITY_MANIFEST="$(GENERATE_DEVELOPMENT_SECURITY_MANIFEST)"
+	find "$(BUILD_VENV)" -type d -name __pycache__ -prune -exec rm -rf '{}' +
+	rm -f "$(BUILD_VENV)/.gitignore" "$(BUILD_VENV)/.lock" "$(BUILD_VENV)/CACHEDIR.TAG"
+	rm -f "$(BUILD_VENV)"/bin/activate "$(BUILD_VENV)"/bin/activate.* "$(BUILD_VENV)"/bin/deactivate.bat
+	rm -f "$(BUILD_VENV)/bin/activate_this.py"
+
+override_dh_auto_test:
+	debian/tests/test-build-dependencies.sh
+	debian/tests/validate-source-package.sh
+	TEST_BUILD_VENV="$(BUILD_VENV)" debian/tests/test-development-manifest.sh
+	debian/tests/test-offline-install.sh
+	debian/tests/test-desktop-icon-cleanup.sh
+	debian/tests/test-postrm-cleanup.sh
+	TEST_BUILD_VENV="$(BUILD_VENV)" debian/tests/test-starter-profile.sh
+	debian/tests/test-system-profile-dir.sh
+	"$(BUILD_VENV)/bin/bianbu-agent" --config "$(CURDIR)/config/development.yaml" --help >/dev/null
+
+override_dh_auto_install:
+	install -d "$(PACKAGE_ROOT)/usr/lib/bianbu-agent-runtime"
+	cp -a "$(BUILD_VENV)" "$(PACKAGE_ROOT)/usr/lib/bianbu-agent-runtime/venv"
+	install -D -m 0755 debian/bianbu-agent-wrapper "$(PACKAGE_ROOT)/usr/bin/bianbu-agent"
+	install -D -m 0755 debian/bianbu-agent-runtime-wrapper "$(PACKAGE_ROOT)/usr/bin/bianbu-agent-runtime"
+	install -D -m 0755 debian/provision-user.py "$(PACKAGE_ROOT)/usr/lib/bianbu-agent-runtime/provision-user.py"
+	install -D -m 0755 scripts/provision-system-agent.py "$(PACKAGE_ROOT)/usr/lib/bianbu-agent-runtime/provision-system-agent.py"
+	install -D -m 0755 debian/generate-security-manifest.py "$(PACKAGE_ROOT)/usr/lib/bianbu-agent-runtime/generate-security-manifest.py"
+	install -D -m 0755 debian/register-security-manifest.py "$(PACKAGE_ROOT)/usr/lib/bianbu-agent-runtime/register-security-manifest.py"
+	install -D -m 0755 debian/reset-security-binding.py "$(PACKAGE_ROOT)/usr/lib/bianbu-agent-runtime/reset-security-binding.py"
+	install -D -m 0755 debian/runtime-admin-token.py "$(PACKAGE_ROOT)/usr/lib/bianbu-agent-runtime/runtime-admin-token.py"
+	install -D -m 0755 debian/bianbu-agent-runtime-token "$(PACKAGE_ROOT)/usr/bin/bianbu-agent-runtime-token"
+	if [ -d "$(SECURITY_MANIFEST_DIR)/com.bianbu.runtime" ]; then \
+		install -d "$(PACKAGE_ROOT)/usr/share/bianbu-agent-runtime/security-manifest/com.bianbu.runtime"; \
+		for file in manifest.toml manifest.toml.sig pubkey.hex; do \
+			install -m 0644 "$(SECURITY_MANIFEST_DIR)/com.bianbu.runtime/$$file" \
+				"$(PACKAGE_ROOT)/usr/share/bianbu-agent-runtime/security-manifest/com.bianbu.runtime/$$file"; \
+		done; \
+	elif [ "$(ALLOW_UNSIGNED_RUNTIME_PACKAGE)" = 1 ]; then \
+		echo "WARNING: building an explicitly development-only package without a signed Runtime manifest" >&2; \
+	else \
+		echo "No signed Security Runtime manifest supplied; refusing production package build" >&2; \
+		exit 1; \
+	fi
+	if [ -s "$(SECURITY_MANIFEST_DIR)/DEVELOPMENT-SELF-SIGNED" ]; then \
+		install -D -m 0644 "$(SECURITY_MANIFEST_DIR)/DEVELOPMENT-SELF-SIGNED" \
+			"$(PACKAGE_ROOT)/usr/share/doc/$(PACKAGE)/DEVELOPMENT-SELF-SIGNED"; \
+	fi
+	# 桌面入口与启动器已退役：`retired-bianbu-agent.desktop` 不是应用菜单项，只是
+	# cleanup-retired-desktop-icon 用来判定「桌面副本是否原样」的逐字节参照。
+	install -D -m 0644 debian/retired-bianbu-agent.desktop \
+		"$(PACKAGE_ROOT)/usr/lib/bianbu-agent-runtime/retired-bianbu-agent.desktop"
+	install -D -m 0755 debian/cleanup-retired-desktop-icon "$(PACKAGE_ROOT)/usr/lib/bianbu-agent-runtime/cleanup-retired-desktop-icon"
+	install -D -m 0755 debian/runtime-user-entrypoint "$(PACKAGE_ROOT)/usr/lib/bianbu-agent-runtime/runtime-user-entrypoint"
+	install -D -m 0755 debian/register-runtime-manifest "$(PACKAGE_ROOT)/usr/lib/bianbu-agent-runtime/register-runtime-manifest"
+	install -D -m 0755 debian/configure-runtime-service-user "$(PACKAGE_ROOT)/usr/lib/bianbu-agent-runtime/configure-runtime-service-user"
+	if [ -f scripts/syscall-ebpf-collector.py ]; then install -D -m 0755 scripts/syscall-ebpf-collector.py "$(PACKAGE_ROOT)/usr/lib/bianbu-agent-runtime/syscall-ebpf-collector.py"; fi
+	if [ -f scripts/syscall-auditd-collector.py ]; then install -D -m 0755 scripts/syscall-auditd-collector.py "$(PACKAGE_ROOT)/usr/lib/bianbu-agent-runtime/syscall-auditd-collector.py"; fi
+	install -D -m 0755 scripts/network-learning-collector.py "$(PACKAGE_ROOT)/usr/lib/bianbu-agent-runtime/network-learning-collector.py"
+	install -D -m 0755 scripts/network-learning-ebpf-collector.py "$(PACKAGE_ROOT)/usr/lib/bianbu-agent-runtime/network-learning-ebpf-collector.py"
+	install -D -m 0755 "$(NETWORK_LEARNING_PRELOAD)" "$(PACKAGE_ROOT)/usr/lib/bianbu-agent-runtime/libbianbu-network-learning.so"
+	# One system-level Runtime service per device: it starts at boot and runs as
+	# the device user resolved by postinst, so nothing depends on who logs in.
+	install -D -m 0644 'debian/bianbu-agent-runtime.service' \
+		'$(PACKAGE_ROOT)/usr/lib/systemd/system/bianbu-agent-runtime.service'
+	install -D -m 0644 debian/bianbu-agent-network-learning.service \
+		"$(PACKAGE_ROOT)/usr/lib/systemd/system/bianbu-agent-network-learning.service"
+	# The Runtime units depend on this one, so the device publishes the signed
+	# manifest and prepares live state at start instead of during unpack.
+	install -D -m 0644 debian/bianbu-agent-runtime-register.service \
+		"$(PACKAGE_ROOT)/usr/lib/systemd/system/bianbu-agent-runtime-register.service"
+	install -D -m 0644 debian/bianbu-agent-runtime.polkit \
+		"$(PACKAGE_ROOT)/usr/share/polkit-1/rules.d/60-bianbu-agent-runtime.rules"
+	install -D -m 0644 debian/bianbu-agent-runtime.tmpfiles \
+		"$(PACKAGE_ROOT)/usr/lib/tmpfiles.d/bianbu-agent-runtime.conf"
+	# resources/ mirrors the installed resource root, so shipping it is one
+	# copy.  Its README describes the source layout and stays behind.
+	install -d "$(PACKAGE_ROOT)/usr/share/bianbu-agent-runtime"
+	cp -a resources/. "$(PACKAGE_ROOT)/usr/share/bianbu-agent-runtime/"
+	rm -f "$(PACKAGE_ROOT)/usr/share/bianbu-agent-runtime/README.md"
+	# A resource kind keeps its directory even when the package ships no entry
+	# for it, so a reader never has to tell "absent" from "unsupported".
+	for kind in agents mcps models plugins skills; do \
+		install -d "$(PACKAGE_ROOT)/usr/share/bianbu-agent-runtime/$$kind"; \
+	done
+	# The starter Agent template is rendered: the deploy-time model selection
+	# replaces the source default so a device never publishes the placeholder.
+	"$(BUILD_VENV)/bin/python" debian/render-starter-agent.py \
+		resources/default-profile/starter-agent.yaml \
+		"$(PACKAGE_ROOT)/usr/share/bianbu-agent-runtime/default-profile/starter-agent.yaml"
+	# Command Hooks, the Worker and its tools are separate Python processes,
+	# and the service runs with PYTHONDONTWRITEBYTECODE=1 against a root-owned
+	# read-only /usr/lib.  Without shipped bytecode every process re-compiles
+	# every imported module on every start (measured on K3: an intent Hook goes
+	# 2.08s -> 1.04s, `import fastapi/pydantic/uvicorn` 3.30s -> ~1.00s).
+	# Only the venv is compiled: pre-compiling the Hook scripts themselves
+	# measured within noise, and the resource tree is a validated package tree
+	# where a stray __pycache__ next to plugin.yaml makes the Plugin unreadable.
+	# -s/-p (compileall rejects -d together with -s) rewrite the bytecode copied
+	# from the build tree so co_filename is the absolute installation path
+	# (/usr/lib/...), never the build directory: tracebacks keep resolving their
+	# source lines on the device while the build path does not leak.
+	find "$(PACKAGE_ROOT)/usr/share/bianbu-agent-runtime" -type d -name __pycache__ -prune -exec rm -rf '{}' +
+	env -u PYTHONDONTWRITEBYTECODE "$(BUILD_VENV)/bin/python" -m compileall -q -f \
+		-j "$$(nproc)" -s "$(PACKAGE_ROOT)" -p / \
+		"$(PACKAGE_ROOT)/usr/lib/bianbu-agent-runtime"
+
+override_dh_installsystemd:
+	dh_installsystemd --name=bianbu-agent-runtime --no-enable --no-start
+	dh_installsystemd --name=bianbu-agent-runtime-register --no-enable --no-start
+	dh_installsystemd --name=bianbu-agent-network-learning
+
+# Native extensions come from upstream wheels and must not be rewritten or
+# split into a Debian debug package.
+override_dh_dwz:
+
+override_dh_strip:

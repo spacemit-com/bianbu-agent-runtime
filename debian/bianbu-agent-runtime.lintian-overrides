@@ -1,0 +1,12 @@
+# The offline runtime intentionally vendors the locked wheel implementations of
+# libyaml and libzstd. Replacing them with distribution libraries would make the
+# installed environment differ from uv.lock.
+bianbu-agent-runtime: embedded-library
+
+# uv emits relocatable Python entry points as valid shell/Python polyglot
+# scripts. They execute correctly but cannot be parsed by `sh -n` in isolation.
+bianbu-agent-runtime: shell-script-fails-syntax-check
+
+# Native extensions are supplied by upstream wheels. Debian stripping is
+# disabled to avoid rewriting or damaging those prebuilt artifacts.
+bianbu-agent-runtime: unstripped-binary-or-object

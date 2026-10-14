@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*appcli_run",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "exec \"${RUNTIME_PYTHON}\" \"$PLUGIN_ROOT/scripts/after_appcli.py\"",
+            "timeout": 25
+          }
+        ]
+      }
+    ]
+  },
+  "priority": 220,
+  "metadata": {
+    "agent_selectable": true,
+    "display_name": "Bibit appcli artifact check",
+    "description": "After appcli_run, independently re-verify the produced artifact (read-only) and attach a correction when the file is missing or malformed."
+  },
+  "parallel": true
+}

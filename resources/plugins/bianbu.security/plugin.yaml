@@ -1,0 +1,4 @@
+schema_version: 1
+name: bianbu.security
+version: 1.0.0
+description: Security policy enforcement hooks and guidance.

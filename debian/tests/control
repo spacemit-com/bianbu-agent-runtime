@@ -1,0 +1,5 @@
+Tests: package-smoke
+Depends: @, curl
+
+Tests: provision-user-unit
+Depends: @, python3-pytest, python3-yaml

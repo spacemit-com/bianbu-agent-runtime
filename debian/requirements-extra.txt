@@ -1,0 +1,2 @@
+# Runtime dependency used by the packaged command-inspection implementation.
+bashlex @ https://pypi.tuna.tsinghua.edu.cn/packages/f4/be/6985abb1011fda8a523cfe21ed9629e397d6e06fb5bae99750402b25c95b/bashlex-0.18-py2.py3-none-any.whl#sha256=91d73a23a3e51711919c1c899083890cdecffc91d8c088942725ac13e9dcfffa

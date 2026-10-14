@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+
+action=${1:?usage: runtime-user-entrypoint provision|serve}
+home=${HOME:?systemd did not provide HOME}
+user=${USER:?systemd did not provide USER}
+
+case "$user:$home" in
+    *[!A-Za-z0-9_.-]*:*|*:*[!A-Za-z0-9_./-]*|*:/*/../*|*:/|*:) exit 1 ;;
+esac
+entry=$(getent passwd "$user" || true)
+expected_home=$(printf '%s\n' "$entry" | cut -d: -f6)
+[ -n "$expected_home" ] && [ "$home" = "$expected_home" ] || exit 1
+
+case "$action" in
+    provision)
+        exec /usr/lib/bianbu-agent-runtime/venv/bin/python \
+            /usr/lib/bianbu-agent-runtime/provision-user.py \
+            --profile /usr/share/bianbu-agent-runtime/default-profile \
+            --home "$home"
+        ;;
+    serve)
+        exec /usr/bin/bianbu-agent-runtime --role control \
+            --config "$home/.bianbu-agent/config.yaml" serve
+        ;;
+    *) exit 2 ;;
+esac

@@ -1,0 +1,10 @@
+{
+  "name": "empty-message-exception",
+  "description": "无消息异常（如 TimeoutError()）的 str() 是空串。兜底必须给出异常类型名，客户端不能只剩一个看不懂的 code。",
+  "error": {
+    "code": "run_failed",
+    "message": "TimeoutError",
+    "retryable": true,
+    "details": {}
+  }
+}

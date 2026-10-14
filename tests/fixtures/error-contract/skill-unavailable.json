@@ -1,0 +1,13 @@
+{
+  "name": "skill-unavailable",
+  "description": "会话显式选中的 Skill 已离开当前 Generation。原样重试不会变好，必须点名是哪个 Skill。",
+  "error": {
+    "code": "skill_unavailable",
+    "message": "Selected Skills are unavailable: web-search, doc-reader",
+    "retryable": false,
+    "details": {
+      "skill_ids": ["web-search", "doc-reader"]
+    }
+  },
+  "ui_detail_keys": ["skill_ids"]
+}

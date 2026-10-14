@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "hooks": {
+    "AfterModel": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "exec \"${RUNTIME_PYTHON}\" \"$PLUGIN_ROOT/scripts/after_model.py\"",
+            "timeout": 15.0
+          }
+        ]
+      }
+    ]
+  }
+}

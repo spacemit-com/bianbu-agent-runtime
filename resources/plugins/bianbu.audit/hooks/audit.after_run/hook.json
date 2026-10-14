@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "hooks": {
+    "AfterRun": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "exec \"${RUNTIME_PYTHON}\" \"$PLUGIN_ROOT/scripts/after_run.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "parallel": true
+}

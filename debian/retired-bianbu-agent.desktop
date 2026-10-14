@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Bianbu Agent
+Name[zh_CN]=Bianbu 智能体
+Comment=Open the local Bianbu Agent web console
+Comment[zh_CN]=打开本地 Bianbu Agent 前端
+Exec=/usr/bin/bianbu-agent-launcher
+Icon=/usr/share/icons/hicolor/512x512/apps/bianbu-agent.jpg
+Terminal=false
+Categories=Utility;
+StartupNotify=true
