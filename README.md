@@ -300,12 +300,14 @@ already accepts `harness` agents, and securityd owns a dedicated `harness` tool
 catalog, so a dsh agent appears in the same security console as
 `com.dsh.agent`.
 
-The dsh adapter lives in `impl/bianbu-securityd/harness_plugin/`: an out-of-tree
-Node bundle plus a Python sidecar that speaks JSON-RPC over stdio and calls
-securityd. `tools/pre-execute` maps to `pre_tool_call`, `tools/post-execute` to
-`post_tool_call` and `agent/pre-step` to `input`. dsh exposes no public hook that
-can rewrite committed assistant messages or provider requests, so the adapter
-deliberately does not claim output-side masking.
+The dsh adapter lives in the `bianbu-agent-security` repository under
+`impl/bianbu-securityd/harness_plugin/`: an out-of-tree Node bundle plus a Python
+sidecar that speaks JSON-RPC over stdio and calls securityd. `tools/pre-execute`
+maps to `pre_tool_call`, `tools/post-execute` to `post_tool_call` and
+`agent/pre-step` to `input`. dsh exposes no public hook that can rewrite committed
+assistant messages or provider requests, so the adapter deliberately does not
+claim output-side masking. Install it from the security checkout with
+`impl/bianbu-securityd/harness_plugin/scripts/install-on-k3.sh dsh`.
 
 DeepSeek Harness is also a behavioural reference for this repository. Design
 notes with upstream revisions and file-level evidence live in

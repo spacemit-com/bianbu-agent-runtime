@@ -265,11 +265,13 @@ DeepSeek Harness 是独立运行时。Runtime 的安全注册已经接受 `harne
 也有独立的 `harness` 工具目录，所以 dsh Agent（`com.dsh.agent`）会和其它 Agent 一起出现在
 同一个安全控制台里。
 
-dsh 适配器位于 `impl/bianbu-securityd/harness_plugin/`：一个 out-of-tree Node bundle 加
-一个 Python sidecar，sidecar 通过 stdio 上的 JSON-RPC 调用 securityd。
-`tools/pre-execute` 映射到 `pre_tool_call`，`tools/post-execute` 映射到
-`post_tool_call`，`agent/pre-step` 映射到 `input`。dsh 没有可以改写已提交 assistant
-消息或 provider 请求的公开钩子，因此适配器不会声称覆盖输出侧脱敏。
+dsh 适配器位于 `bianbu-agent-security` 仓的
+`impl/bianbu-securityd/harness_plugin/`：一个 out-of-tree Node bundle 加一个 Python
+sidecar，sidecar 通过 stdio 上的 JSON-RPC 调用 securityd。`tools/pre-execute` 映射到
+`pre_tool_call`，`tools/post-execute` 映射到 `post_tool_call`，`agent/pre-step` 映射
+到 `input`。dsh 没有可以改写已提交 assistant 消息或 provider 请求的公开钩子，因此适配器
+不会声称覆盖输出侧脱敏。安装时在该安全仓执行
+`impl/bianbu-securityd/harness_plugin/scripts/install-on-k3.sh dsh`。
 
 DeepSeek Harness 同时也是本仓的行为参考。带上游 revision 与文件级证据的设计笔记见
 [DeepSeek Harness 笔记](docs/deepseek-harness-notes.md)。
