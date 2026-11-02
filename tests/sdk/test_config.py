@@ -283,13 +283,38 @@ def test_runtime_config_rejects_invalid_presets(
         load_runtime_config(config_path)
 
 
-def test_runtime_config_rejects_the_retired_automatic_execution_mode(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("section", "key"),
+    [
+        ("control", "execution"),
+        ("control", "startup_timeout_seconds"),
+        ("worker", "execution"),
+        ("worker", "startup_timeout_seconds"),
+    ],
+)
+def test_runtime_config_rejects_removed_keys(
+    tmp_path: Path, section: str, key: str
 ) -> None:
     document = _document()
-    document["runtime"] = {"worker": {"execution": {"requested_mode": "auto"}}}
+    value = {"requested_mode": "host"} if key == "execution" else 10
+    document["runtime"] = {section: {key: value}}
     config_path = tmp_path / "runtime.yaml"
     _write_config(config_path, document)
 
-    with pytest.raises(RuntimeConfigError, match="requested_mode must be one of"):
+    with pytest.raises(RuntimeConfigError, match=f"runtime.{section}.*removed key"):
         load_runtime_config(config_path)
+
+
+def test_runtime_config_loads_without_removed_keys(tmp_path: Path) -> None:
+    document = _document()
+    document["runtime"] = {
+        "control": {"handshake_timeout_seconds": 60},
+        "worker": {"max_concurrent_runs": 4},
+    }
+    config_path = tmp_path / "runtime.yaml"
+    _write_config(config_path, document)
+
+    config = load_runtime_config(config_path)
+
+    assert config.runtime.control.handshake_timeout_seconds == 60
+    assert config.runtime.worker.max_concurrent_runs == 4

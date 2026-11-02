@@ -116,8 +116,14 @@ def is_context_overflow_error(error: BaseException) -> bool:
     return False
 
 
-def _static_request_tokens(system_prompt: str, tools: Sequence[Any]) -> int:
-    schemas: list[dict[str, object]] = []
+def tool_definitions(tools: Sequence[Any]) -> list[dict[str, object]]:
+    """The exact tool declarations a provider is given, in its own order.
+
+    One definition serves both the request budget estimate and the Trajectory
+    record: what the operator reads is what the model was handed.
+    """
+
+    definitions: list[dict[str, object]] = []
     for tool in tools:
         raw_schema = getattr(tool, "args_schema", None)
         schema_method = getattr(raw_schema, "model_json_schema", None)
@@ -126,17 +132,85 @@ def _static_request_tokens(system_prompt: str, tools: Sequence[Any]) -> int:
                 raw_schema = schema_method()
             except Exception:
                 raw_schema = {}
-        schemas.append(
+        definitions.append(
             {
                 "name": str(getattr(tool, "name", "")),
                 "description": str(getattr(tool, "description", "")),
-                "schema": (
+                "parameters": (
                     dict(raw_schema) if isinstance(raw_schema, Mapping) else {}
                 ),
             }
         )
-    serialized = json.dumps(schemas, ensure_ascii=False, default=str)
+    return definitions
+
+
+def _static_request_tokens(system_prompt: str, tools: Sequence[Any]) -> int:
+    serialized = json.dumps(tool_definitions(tools), ensure_ascii=False, default=str)
     return 4 + (len(str(system_prompt)) + len(serialized) + 3) // 4
+
+
+def request_text(
+    system_prompt: str,
+    tools: Sequence[Mapping[str, object]],
+    messages: Sequence[BaseMessage],
+) -> str:
+    """The model-visible request as one plain-text document.
+
+    A reader has to be able to answer "what exactly did this Run send?" from
+    one record, so the system prompt, every tool declaration and every folded
+    message are rendered in the order the provider receives them.  The tool
+    schemas stay JSON because that is their real shape; everything else is
+    text, never a summary.
+    """
+
+    sections = ["## System prompt", str(system_prompt), f"## Tools ({len(tools)})"]
+    for tool in tools:
+        parameters = json.dumps(
+            tool.get("parameters") or {}, ensure_ascii=False, sort_keys=True,
+            default=str,
+        )
+        sections.append(
+            f"### {tool.get('name') or ''}\n"
+            f"{tool.get('description') or ''}\n"
+            f"parameters: {parameters}"
+        )
+    sections.append(f"## Messages ({len(messages)})")
+    for message in messages:
+        sections.append(f"### {_message_role(message)}\n{_message_body(message)}")
+    return "\n\n".join(sections)
+
+
+def _message_role(message: BaseMessage) -> str:
+    if isinstance(message, ToolMessage):
+        return "tool"
+    if isinstance(message, AIMessage):
+        return "assistant"
+    if isinstance(message, HumanMessage):
+        return "user"
+    return "system"
+
+
+def _message_body(message: BaseMessage) -> str:
+    """One message's model-visible content, including declared tool calls."""
+
+    text = _message_text(getattr(message, "content", ""))
+    if isinstance(message, AIMessage):
+        calls = [
+            {
+                "id": str(call.get("id") or ""),
+                "name": str(call.get("name") or ""),
+                "arguments": call.get("args") or {},
+            }
+            for call in message.tool_calls
+        ]
+        if calls:
+            rendered = json.dumps(calls, ensure_ascii=False, default=str)
+            text = f"{text}\n{rendered}" if text else rendered
+    if isinstance(message, ToolMessage):
+        name = str(getattr(message, "name", "") or "")
+        if name:
+            text = f"{name}: {text}"
+    return text
 
 
 def _command_name(value: str) -> str:
@@ -305,6 +379,9 @@ def build_langgraph_agent(
     tools: list[Any] | None = None,
     hitl_tools: Collection[str] | None = None,
     context_settings: CompressionSettingsProvider | None = None,
+    security_enabled: bool | None = None,
+    hook_runner: object | None = None,
+    security_hook_ids: Collection[str] = (),
 ) -> Any:
     """Build a LangGraph Agent from explicit host-provided policy."""
 
@@ -331,7 +408,13 @@ def build_langgraph_agent(
         )
     }
     protected_names.update(hitl_tools or ())
-    security_enabled = _security_middleware_enabled()
+    # ``None`` keeps the historical environment-driven default for SDK
+    # embedders; the Runtime always passes the per-Agent Plugin decision.
+    security_enabled = (
+        _security_middleware_enabled()
+        if security_enabled is None
+        else bool(security_enabled) and _security_middleware_enabled()
+    )
     if security_enabled:
         # 所有工具都进入动态候选集，但只有 securityd 返回 CONFIRM（或工具被
         # 显式静态保护）时才会真正 interrupt。worker 的 LangChain 1.2.x
@@ -425,6 +508,9 @@ def build_langgraph_agent(
                     memory_names=memory_names,
                     memory_when=_memory_tool_call_requires_approval,
                     tool_metadata=tool_metadata,
+                    hook_runner=hook_runner,
+                    hook_ids=security_hook_ids,
+                    enabled=security_enabled,
                 )
             )
         else:  # pragma: no cover - security 包被裁剪的安装
@@ -451,6 +537,7 @@ def build_langgraph_agent(
         frozenset(decode_tool_name(name) for name in loaded_names),
     )
     setattr(graph, "_bianbu_tool_metadata", tool_metadata)
+    setattr(graph, "_bianbu_tool_definitions", tool_definitions(explicit_tools))
     setattr(graph, "_bianbu_context_events", compression_events)
     setattr(graph, "_bianbu_context_middleware", compression_middleware)
     return graph
@@ -469,6 +556,7 @@ class LangGraphEngine:
         agent_id: str | None = None,
         hook_ids: Sequence[str] = (),
         provider_id: str | None = None,
+        model_name: str | None = None,
         capture_callback: object | None = None,
         system_prompt: str | None = None,
         transcript_provider: TranscriptProvider | None = None,
@@ -490,6 +578,15 @@ class LangGraphEngine:
         self._hook_ids = tuple(str(item) for item in hook_ids)
         self._provider_id = (
             str(provider_id).strip() if provider_id is not None else ""
+        )
+        self._model_name = (
+            str(model_name).strip() if model_name is not None else ""
+        )
+        raw_tool_definitions = getattr(graph, "_bianbu_tool_definitions", ())
+        self._tool_definitions = tuple(
+            dict(definition)
+            for definition in raw_tool_definitions
+            if isinstance(definition, Mapping)
         )
         self._capture_callback = capture_callback
         self.system_prompt = None if system_prompt is None else str(system_prompt)
@@ -698,6 +795,27 @@ class LangGraphEngine:
             agent_input = {
                 "messages": list(await self._history(product_id, session_id))
             }
+        # The Trajectory "Context" row is the request itself: the Engine is the
+        # only place that holds the folded messages and the tool declarations
+        # the provider is actually handed, so it publishes that record instead
+        # of letting the host reconstruct a second, drifting view of it.
+        request_messages = tuple(
+            (agent_input or {}).get("messages") or ()
+        )
+        yield RuntimeEvent(
+            kind="request_context",
+            payload={
+                "reason": "initial" if prompt is not None else "continuation",
+                "agent_id": self._agent_id,
+                "provider": self._provider_id,
+                "model": self._model_name,
+                "text": request_text(
+                    self.system_prompt or "",
+                    self._tool_definitions,
+                    request_messages,
+                ),
+            },
+        )
         compression_token = self._activate_compression_events(
             control.request_id
         )

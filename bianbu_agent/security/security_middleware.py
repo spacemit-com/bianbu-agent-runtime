@@ -12,20 +12,28 @@
      `handle_tool_errors=True` 会把异常包成 ToolMessage，Agent 只是换个
      路径重试同一个被拒绝的工具。
 
-  3. 审批判定（INT-RT-12 的配套）—— 供 `InterruptOnConfig.when` 读取
-     securityd 的 CONFIRM 判定。
+  3. 审批判定（INT-RT-12 的配套）—— 在 `after_model` 阶段执行
+     `bianbu.security` 的 BEFORE_TOOL Hook 链，用它返回的 CONFIRM 决定是否
+     interrupt。执行时不再重跑这条链，因此一次工具调用只有一次判权。
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 from collections.abc import Collection
 from typing import Any, Callable, Mapping
 
 logger = logging.getLogger("bianbu_agent.security")
 
 __all__ = [
+    "APPROVAL_ALLOW",
+    "APPROVAL_ASK",
+    "APPROVAL_DENY",
+    "APPROVAL_UNKNOWN",
     "BianbuSecurityMiddleware",
     "build_security_hitl_middleware",
+    "securityd_approval_decision",
     "securityd_requires_confirm",
     "securityd_record_approval",
     "extract_security_metadata",
@@ -63,7 +71,9 @@ def _plugin_lib_path() -> str | None:
     """定位 bianbu.security 插件的 lib 目录（复用其映射与桥接实现）。
 
     中间件跑在 Runtime 主干里，而映射表在插件目录下 —— 两者没有包依赖关系，
-    只能按约定路径找。找不到就返回 None，调用方按「不需审批」处理。
+    只能按约定路径找。用户插件目录优先；未安装该插件的专家仍可使用随
+    Runtime 包发布的系统插件，否则全局安全中间件会因缺少映射实现而把
+    securityd 的明确 ALLOW 降级成 UNKNOWN。只有两者都不存在时才返回 None。
     """
     import os
     import sys
@@ -84,6 +94,12 @@ def _plugin_lib_path() -> str | None:
     # 当前 Runtime 的配置数据目录是 `.bianbu-agent`。
     for dirname in (".bianbu-agent",):
         roots.append(os.path.join(os.getcwd(), dirname, "plugins", "bianbu.security"))
+    try:
+        from bianbu_agent.system_resources import system_resource_dir
+
+        roots.append(str(system_resource_dir("plugins") / _PLUGIN_ID))
+    except Exception:  # noqa: BLE001 - source deployments may not ship a system root
+        pass
     for r in roots:
         if os.path.isdir(os.path.join(r, "lib")):
             return r
@@ -171,42 +187,49 @@ class _SecurityPolicyDenied(PermissionError):
         }
 
 
-def securityd_requires_confirm(request: Any) -> bool:
-    """`InterruptOnConfig.when` 的判定函数（INT-RT-12）。
+#: Result of asking securityd whether one call may proceed.  ``UNKNOWN`` means
+#: policy could not be evaluated at all (plugin/client missing, transport
+#: error); it is distinct from an authoritative ``ALLOW`` so the caller can
+#: fall back to a tool's static contract instead of silently dropping it.
+APPROVAL_ALLOW = "allow"
+APPROVAL_ASK = "ask"
+APPROVAL_DENY = "deny"
+APPROVAL_UNKNOWN = "unknown"
 
-    **直接问 securityd，不读 hook 写的 metadata。**
 
-    原实现从 `request.state` 读 before_tool hook 落的 `requires_approval`，
-    但那永远读不到 —— 时序不允许：
+def securityd_approval_decision(request: Any) -> str:
+    """Ask securityd for the decision when the Hook chain is unavailable.
 
-        ① 模型产出 tool_call
-        ② HITL 中间件 after_model → when(req)        ← 此处，需要判权结果
-        ③ 工具开始执行 → _adapt_tool.invoke()
-        ④ before_tool hook 跑，才拿到 CONFIRM        ← 太晚
+    正常路径由 :func:`run_tool_guard_hooks` 在 ``after_model`` 阶段执行
+    ``bianbu.security`` 的 BEFORE_TOOL Hook 链（与工具执行前是同一套
+    handler），HITL 只消费那一份结果：同一个工具调用只有 hook 里的一次
+    CheckPermission，不会再单独判一遍。
 
-    `when` 在 `after_model` 阶段求值（见 langchain 的
-    human_in_the_loop.py），比 before_tool hook 早一整个阶段。实测原实现
-    导致 CONFIRM 静默放行：判权说要确认，工具却直接执行了。
+    只有插件没装、Hook 不可用或调用点拿不到 ``hook_runner`` 时才走这里，
+    用「工具名 → 能力 → CheckPermissionV2」兜底。结果不缓存，避免 WebUI
+    修改策略后 Runtime 继续使用旧判定。
 
-    所以这里自己走一遍「工具名 → 能力 → CheckPermissionV2」。开销是一次
-    D-Bus 往返（实测 P99 4.357ms）。不缓存结果，避免 WebUI 修改策略后
-    Runtime 继续使用旧判定。
+    返回值必须是三态而不是布尔：调用方还要区分
 
-    fail 策略：判不出来时返回 True，把决定交给人。before_tool hook 能阻断
-    明确 DENY，却无法自己创建 LangGraph interrupt；如果这里 fail-open，
-    securityd 随后返回 CONFIRM 也已经来不及弹审批，工具会直接执行。
+    * ``ALLOW``  —— securityd 明确放行，静态 ``requires_approval`` 不得再
+      覆盖它，否则策略页显示 allow、实际仍弹窗；
+    * ``ASK``    —— 需要人工确认；
+    * ``DENY``   —— 拒绝（本函数直接抛 ``_SecurityPolicyDenied``）；
+    * ``UNKNOWN``—— 判不出来，调用方按工具自身的静态契约兜底。
     """
     import os
     import sys
 
     if os.environ.get("BIANBU_SECURITY", "1") == "0":
-        return False
+        # securityd 不在场：交给工具静态契约（terminal 的 rm、MCP 的
+        # destructiveHint 等），既不放行也不凭空要求确认。
+        return APPROVAL_UNKNOWN
 
     try:
         tc = getattr(request, "tool_call", None) or {}
         tool_name = str(tc.get("name") or "")
         if not tool_name:
-            return False
+            return APPROVAL_UNKNOWN
         args = tc.get("args") or {}
 
         # YOLO is an Agent-level override and must be evaluated before tool
@@ -224,14 +247,14 @@ def securityd_requires_confirm(request: Any) -> bool:
             mode = security_client_call("get_agent_security_mode", agent_id)
             if isinstance(mode, Mapping) and str(mode.get("mode", "")).lower() == "yolo":
                 logger.info("Agent %s 使用 YOLO 模式，跳过 HITL approval interrupt", agent_id)
-                return False
+                return APPROVAL_ALLOW
         except Exception as exc:  # noqa: BLE001 — retain fail-safe confirmation
             logger.debug("读取 Agent security mode 失败，继续常规判权：%s", exc)
 
         plugin_home = _plugin_lib_path()
         if plugin_home is None:
             logger.warning("找不到 bianbu.security 插件目录，审批预判按需确认处理")
-            return True
+            return APPROVAL_UNKNOWN
         if plugin_home not in sys.path:
             sys.path.append(plugin_home)
 
@@ -256,20 +279,20 @@ def securityd_requires_confirm(request: Any) -> bool:
         if resolved is None:
             # 未映射工具（D-5）：原来直接 return False —— 不弹审批也不判权，
             # 名字不含关键字的新工具就这么静默执行了。现按统一策略：
-            # confirm（默认）弹审批交用户定，allow 放行，deny 交由
-            # before_tool hook 的 SecurityDenied 拦截（那里能真正阻断）。
+            # ask 弹审批交用户定，allow 放行，deny 交由 before_tool hook 的
+            # SecurityDenied 拦截（那里能真正阻断）。
             try:
                 from lib.mapping import unmapped_policy  # noqa: PLC0415
                 policy = unmapped_policy()
             except Exception:  # noqa: BLE001
-                policy = "confirm"
-            if policy == "confirm":
-                logger.info("未映射工具 %s 需人工审批（策略 unmapped=confirm）", tool_name)
-                return True
-            return False
+                policy = "ask"
+            if policy == "ask":
+                logger.info("未映射工具 %s 需人工审批（策略 unmapped=ask）", tool_name)
+                return APPROVAL_ASK
+            return APPROVAL_ALLOW if policy == "allow" else APPROVAL_DENY
         capability = resolved[0]
         if not capability:
-            return False       # 显式免判权
+            return APPROVAL_ALLOW       # 显式免判权
 
         session_id, run_id = _runtime_context(request)
 
@@ -283,9 +306,9 @@ def securityd_requires_confirm(request: Any) -> bool:
             ))
             if decision == 2:
                 raise _SecurityPolicyDenied(tool=tool_name, policy="deny")
-            return decision == 1
+            return APPROVAL_ASK if decision == 1 else APPROVAL_ALLOW
         decision = int(security_client_call(
-            "check_permission_v2", agent_id, capability,
+            "check_permission_v2", agent_id, capability, "",
             {"session_id": session_id, "run_id": run_id},
         ))
         # DENY is not an approval candidate.  Raising here is essential: the
@@ -295,15 +318,161 @@ def securityd_requires_confirm(request: Any) -> bool:
         # securityd had explicitly recorded DENY (the observed echo bypass).
         if decision == 2:            # 2=DENY
             raise _SecurityPolicyDenied(tool=tool_name, policy="deny")
-        need = decision == 1          # 1=ASK
-        if need:
+        if decision == 1:            # 1=ASK
             logger.info("需人工审批：%s → %s", tool_name, capability)
-        return need
+            return APPROVAL_ASK
+        return APPROVAL_ALLOW
     except Exception as e:  # noqa: BLE001 — 判定失败不应让工具调用崩掉
         if isinstance(e, _SecurityPolicyDenied):
             raise
         logger.warning("审批判定失败，按需确认处理：%s", e)
-        return True
+        return APPROVAL_UNKNOWN
+
+
+def securityd_requires_confirm(request: Any) -> bool:
+    """Compatibility wrapper: only an authoritative ASK needs a prompt."""
+
+    return securityd_approval_decision(request) == APPROVAL_ASK
+
+
+def tool_call_key(tool_call: Mapping[str, Any]) -> str:
+    """Stable identity of one tool call inside a model message."""
+
+    call_id = str(tool_call.get("id") or "").strip()
+    if call_id:
+        return call_id
+    name = str(tool_call.get("name") or "")
+    arguments = tool_call.get("args") or {}
+    return f"{name}:{json.dumps(arguments, sort_keys=True, default=str)}"
+
+
+def _securityd_metadata(meta: Any) -> Mapping[str, Any]:
+    """Read the securityd payload out of an aggregated Hook ContextPatch."""
+
+    if not isinstance(meta, Mapping):
+        return {}
+    scoped = meta.get(_PLUGIN_ID)
+    if isinstance(scoped, Mapping):
+        inner = scoped.get("securityd")
+        if isinstance(inner, Mapping):
+            return inner
+        return scoped
+    inner = meta.get("securityd")
+    return inner if isinstance(inner, Mapping) else {}
+
+
+async def run_tool_guard_hooks(
+    *,
+    runtime: Any,
+    tool_call: Mapping[str, Any],
+    tool_metadata: Mapping[str, Any],
+    hook_runner: Any,
+    hook_ids: Collection[str],
+) -> tuple[str, Mapping[str, Any] | None]:
+    """Run the security BEFORE_TOOL Hook chain once for one tool call.
+
+    This is the only place one tool call is judged.  It runs in
+    ``after_model`` — the moment the HITL middleware needs the decision — so
+    the audit record and the approval prompt share one Hook result instead of
+    calling CheckPermission twice (once here, once at execution).
+
+    Returns ``(decision, effective_arguments)``:
+
+    * ``ALLOW`` / ``ASK`` / ``DENY`` come from the Hook chain;
+    * ``UNKNOWN`` means the chain could not judge, so the caller falls back to
+      the static tool contract;
+    * ``effective_arguments`` carries DLP-restored or masked arguments that the
+      tool invocation must use.
+
+    A Hook denial (``PermissionError``) propagates on purpose: a BLOCK has to
+    stop the Run before the tool executes.
+    """
+
+    import os
+    from types import SimpleNamespace
+
+    from bianbu_agent.plugins.contributions import HookPoint, RunContext
+
+    if hook_runner is None or not hook_ids:
+        return APPROVAL_UNKNOWN, None
+    session_id, run_id = _runtime_context(SimpleNamespace(runtime=runtime))
+    if not session_id or not run_id:
+        return APPROVAL_UNKNOWN, None
+    name = str(tool_call.get("name") or "")
+    arguments = tool_call.get("args")
+    context = RunContext(
+        run_id=run_id,
+        session_id=session_id,
+        agent_id=(
+            os.environ.get("COM_BIANBU_AGENT_ID")
+            or os.environ.get("BIANBU_WORKER_AGENT_ID")
+            or os.environ.get("BIANBU_AGENT_ID")
+            or "com.bianbu.agent"
+        ),
+        request=name,
+        metadata={
+            "tool": name,
+            "arguments": dict(arguments) if isinstance(arguments, Mapping) else {},
+            "tool_metadata": dict(tool_metadata or {}),
+        },
+    )
+    patch = await hook_runner.run_hooks(
+        HookPoint.BEFORE_TOOL, context, hook_ids=tuple(hook_ids))
+    inner = _securityd_metadata(getattr(patch, "metadata", None))
+    decision = str(inner.get("decision") or "").strip().upper()
+    if decision == "CONFIRM" or inner.get("requires_approval") is True:
+        outcome = APPROVAL_ASK
+    elif decision == "ALLOW":
+        outcome = APPROVAL_ALLOW
+    elif decision == "BLOCK":
+        outcome = APPROVAL_DENY
+    else:
+        outcome = APPROVAL_UNKNOWN
+    effective = getattr(patch, "tool_arguments", None)
+    if not isinstance(effective, Mapping):
+        masked = inner.get("dlp_masked_args")
+        effective = masked if isinstance(masked, Mapping) else None
+    return outcome, (dict(effective) if isinstance(effective, Mapping) else None)
+
+
+def _apply_effective_arguments(
+    result: Any,
+    state: Any,
+    arguments: Mapping[str, Mapping[str, Any]],
+) -> Any:
+    """Apply DLP-restored/masked arguments to the tool calls about to run.
+
+    The security Hook chain no longer runs a second time at execution, so the
+    argument rewrite it produced in ``after_model`` has to be written onto the
+    surviving tool calls here.
+    """
+
+    if not arguments:
+        return result
+    messages = list(result.get("messages") or ()) if isinstance(result, Mapping) else []
+    target = messages[0] if messages else None
+    if target is None:
+        state_messages = (
+            state.get("messages", ()) if isinstance(state, Mapping) else ()
+        )
+        for message in reversed(list(state_messages)):
+            if getattr(message, "tool_calls", None):
+                target = message
+                break
+    if target is None:
+        return result
+    changed = False
+    for call in getattr(target, "tool_calls", ()) or ():
+        if not isinstance(call, dict):
+            continue
+        effective = arguments.get(tool_call_key(call))
+        if effective is None:
+            continue
+        call["args"] = dict(effective)
+        changed = True
+    if not changed:
+        return result
+    return result if result is not None else {"messages": [target]}
 
 
 def agent_security_mode_is_yolo(agent_id: str | None = None) -> bool:
@@ -327,11 +496,13 @@ def agent_security_mode_is_yolo(agent_id: str | None = None) -> bool:
 def securityd_record_approval(*, tool_name: str, args: Mapping[str, Any],
                               session_id: str, run_id: str,
                               tool_metadata: Mapping[str, object] | None = None) -> bool:
-    """将 Runtime HITL 的批准写入 securityd 的 once_per_session 信任表。
+    """Record a Runtime HITL approval for exactly this tool call.
 
-    HITL 是 Runtime/LangGraph 的用户交互，不会经过 securityd 的阻塞式
-    RequestConfirmV2；批准恢复前由此调用受 caller/session 校验保护的 V2
-    接口。对 trusted/always/L4 能力返回 False，不影响本次已批准调用。
+    The approval is written to the audit chain only.  It must not create a
+    ``session_trust`` grant: that made every later call of the same tool in
+    the session skip the prompt, so a high-risk tool such as ``terminal``
+    could run again without the user ever seeing a confirmation.  Each call
+    that policy marks ``ask`` has to be approved on its own.
     """
     import os
     import sys
@@ -358,6 +529,7 @@ def securityd_record_approval(*, tool_name: str, args: Mapping[str, Any],
         capability = resolved[0]
         if not capability:
             return False
+        scope = str(resolved[1]) if len(resolved) > 1 else ""
         from bianbu_agent.security.security_runtime import security_client_call
         agent_id = (
             os.environ.get("COM_BIANBU_AGENT_ID")
@@ -365,13 +537,82 @@ def securityd_record_approval(*, tool_name: str, args: Mapping[str, Any],
             or os.environ.get("BIANBU_AGENT_ID")
             or "com.bianbu.agent"
         )
-        return bool(security_client_call(
-            "grant_session_trust_v2", agent_id, capability,
-            {"session_id": session_id, "run_id": run_id},
-        ))
+        written = security_client_call(
+            "audit_log", agent_id, "ask", f"{capability}:{scope}",
+            "approved=true",
+        )
+        return int(written or 0) > 0
     except Exception as exc:  # noqa: BLE001 — 批准本身不应被记录失败阻断
-        logger.warning("HITL 批准写入 session trust 失败：%s", exc)
+        logger.warning("HITL 批准写入审计失败：%s", exc)
         return False
+
+
+def _sanitize_error_result(request, result, rewritten: bool):
+    """Strip restored plaintext from an error ToolMessage built by ToolNode.
+
+    ToolNode converts a validation failure into an error ``ToolMessage`` whose
+    text embeds the kwargs it was given.  When this call went through handle
+    restoration those kwargs are plaintext, so the echoed segment is dropped
+    without inspecting it: the message is built with ``repr``, which escapes
+    newlines and quotes, and matching values against it would silently miss.
+    The validation block itself can also quote ``input_value`` and carry a URL,
+    so the rebuilt message keeps only the field path and the error kind.
+    """
+    from langchain_core.messages import ToolMessage
+
+    if not rewritten or not isinstance(result, ToolMessage):
+        return result
+    if str(getattr(result, "status", "")) != "error":
+        return result
+    content = str(result.content or "")
+    tool_call = getattr(request, "tool_call", {}) or {}
+    kinds = list(dict.fromkeys(
+        match.group("kind") for match in _ERROR_KIND.finditer(content)
+    ))
+    return ToolMessage(
+        content=_rejection_content(tool_call.get("args"), kinds),
+        name=str(tool_call.get("name") or result.name or ""),
+        tool_call_id=str(tool_call.get("id") or result.tool_call_id or ""),
+        status="error",
+    )
+
+
+_ERROR_KIND = re.compile(r"\[type=(?P<kind>[a-z_]+)[,\]]")
+
+
+def _rejected_arguments_message(request, exc: Exception, rewritten: bool):
+    """Answer an argument rejection ourselves when a restore is involved.
+
+    ``ToolInvocationError`` carries the plaintext kwargs in its message and in
+    the traceback of the chain, so returning a value here keeps both out of
+    logs and out of the model's context.
+    """
+    if not rewritten or type(exc).__name__ != "ToolInvocationError":
+        return None
+    from langchain_core.messages import ToolMessage
+
+    tool_call = getattr(request, "tool_call", {}) or {}
+    kinds = list(dict.fromkeys(
+        str(item.get("type"))
+        for item in (getattr(exc, "filtered_errors", None) or ())
+        if isinstance(item, Mapping) and item.get("type")
+    ))
+    content = _rejection_content(tool_call.get("args"), kinds)
+    return ToolMessage(
+        content=content,
+        name=str(tool_call.get("name") or ""),
+        tool_call_id=str(tool_call.get("id") or ""),
+        status="error",
+    )
+
+
+def _rejection_content(arguments: object, kinds: list[str]) -> str:
+    """Name the fields and error kinds without ever quoting a value."""
+    fields = sorted(str(name) for name in arguments) if isinstance(arguments, Mapping) else []
+    summary = "fields " + ", ".join(fields) if fields else ""
+    if kinds:
+        summary += (" " if summary else "") + "(" + ", ".join(kinds) + ")"
+    return "Tool arguments were rejected" + (f": {summary}" if summary else "")
 
 
 class BianbuSecurityMiddleware:
@@ -414,43 +655,105 @@ class BianbuSecurityMiddleware:
         if not self.enabled:
             return await handler(request)
 
-        request = self._apply_dlp_masking(request)
-
+        request, rewritten = self._prepare_tool_arguments(request)
         try:
-            return await handler(request)
+            result = await handler(request)
+            return _sanitize_error_result(request, result, rewritten)
         except PermissionError as exc:
             return self._handle_denial(request, exc)
+        except Exception as exc:
+            rejected = _rejected_arguments_message(request, exc, rewritten)
+            if rejected is not None:
+                return rejected
+            raise
 
     def wrap_tool_call(self, request, handler):
         """同步版本（LangChain 会按可用性选择调用哪个）。"""
         if not self.enabled:
             return handler(request)
-        request = self._apply_dlp_masking(request)
+        request, rewritten = self._prepare_tool_arguments(request)
         try:
-            return handler(request)
+            result = handler(request)
+            return _sanitize_error_result(request, result, rewritten)
         except PermissionError as exc:
             return self._handle_denial(request, exc)
+        except Exception as exc:
+            rejected = _rejected_arguments_message(request, exc, rewritten)
+            if rejected is not None:
+                return rejected
+            raise
 
     # —— 内部 ——
+    def _prepare_tool_arguments(self, request):
+        """Restore handles and apply hook rewrites; report whether either ran."""
+        request, restored = self._restore_dlp_references(request)
+        request, rewritten = self._apply_dlp_masking(request)
+        return request, restored or rewritten
+
+    def _restore_dlp_references(self, request):
+        """Turn model-facing DLP handles back into values before the tool runs.
+
+        This is the trusted side of the boundary: the model only ever sees the
+        handle, while a local tool receives the original argument.  The handle
+        is scoped to the current session and an expired/forged handle denies the
+        call instead of being passed through.
+        """
+        from bianbu_agent.security.security_dlp import (
+            contains_reference,
+            current_agent_id,
+            current_session_id,
+            resolve_references,
+        )
+        tool_call = dict(getattr(request, "tool_call", {}) or {})
+        if not tool_call:
+            return request, False
+        args = tool_call.get("args")
+        if not isinstance(args, (dict, list, str)):
+            return request, False
+        if not contains_reference(args):
+            return request, False
+        if agent_security_mode_is_yolo(current_agent_id()):
+            return request, False
+        session_id, _run_id = _runtime_context(request)
+        try:
+            restored, count = resolve_references(
+                args, session_id=session_id or current_session_id(),
+                tool=str(tool_call.get("name") or ""))
+        except PermissionError:
+            raise
+        except Exception as e:  # noqa: BLE001 - fail closed at the tool boundary
+            from bianbu_agent.security.security_dlp import DLPDenied
+            raise DLPDenied('DLP 引用还原失败，已阻止工具调用',
+                            stage='pre_tool_call',
+                            tool=str(tool_call.get("name") or '')) from e
+        if not count:
+            return request, False
+        tool_call["args"] = restored
+        logger.info("DLP 已还原 %d 个工具参数引用：%s",
+                    count, tool_call.get("name"))
+        return request.override(tool_call=tool_call), True
+
     def _apply_dlp_masking(self, request):
         """把 before_tool hook 脱敏后的参数应用到实际调用（INT-RT-10）。"""
         from bianbu_agent.security.security_dlp import current_agent_id
         if agent_security_mode_is_yolo(current_agent_id()):
-            return request
+            return request, False
         meta = extract_security_metadata(getattr(request, "state", None))
+        restored = meta.get("dlp_restored_args")
         masked = meta.get("dlp_masked_args")
-        if not isinstance(masked, Mapping) or not masked:
-            return request
+        replacement = restored if isinstance(restored, Mapping) and restored else masked
+        if not isinstance(replacement, Mapping) or not replacement:
+            return request, False
         try:
             tool_call = dict(getattr(request, "tool_call", {}) or {})
             if not tool_call:
-                return request
-            tool_call["args"] = dict(masked)
-            logger.info("DLP 已脱敏工具参数：%s", tool_call.get("name"))
-            return request.override(tool_call=tool_call)
+                return request, False
+            tool_call["args"] = dict(replacement)
+            logger.info("DLP 已应用工具参数改写：%s", tool_call.get("name"))
+            return request.override(tool_call=tool_call), True
         except Exception as e:  # noqa: BLE001 — 改写失败宁可用原参数，别断调用
             logger.warning("DLP 参数改写失败，沿用原参数：%s", e)
-            return request
+            return request, False
 
     def _handle_denial(self, request, exc: PermissionError):
         """明确的 deny 一律终止整轮 run（INT-RT-06）。
@@ -504,14 +807,19 @@ def build_security_hitl_middleware(
     memory_names: Collection[str] = (),
     memory_when: Callable[[Any], bool] | None = None,
     tool_metadata: Mapping[str, Mapping[str, object]] | None = None,
+    hook_runner: Any = None,
+    hook_ids: Collection[str] = (),
+    enabled: bool = True,
 ):
     """构造兼容旧 LangChain 的动态安全审批中间件。
 
     LangChain 1.2.x 的 ``HumanInTheLoopMiddleware`` 不读取配置中的
-    ``when`` 谓词，导致只靠 ``before_tool`` 写入的 CONFIRM 标记被工具执行
-    之后才看到。这里在其 ``after_model`` 阶段先做一次 securityd 预判，
-    再委托官方中间件处理 interrupt/resume，保持前端协议和批准恢复逻辑
-    不变。
+    ``when`` 谓词。这里在 ``after_model`` 阶段直接执行 ``bianbu.security``
+    的 BEFORE_TOOL Hook 链（与工具执行前是同一套 handler），用它的决策
+    决定是否 interrupt；工具执行时不再重复这道判权。
+
+    判权因此只有一个入口、一条审计：Hook 链里的 ``sec_capability`` 调用的
+    CheckPermission 就是本次调用的唯一一次判权，HITL 不再单独调用。
     """
     from copy import copy
     from types import SimpleNamespace
@@ -525,24 +833,54 @@ def build_security_hitl_middleware(
         str(name): dict(metadata)
         for name, metadata in (tool_metadata or {}).items()
     }
+    security_hooks = tuple(str(name) for name in hook_ids)
 
     class _DynamicSecurityHITL(ApprovalMiddleware):
+        _securityd_enabled = bool(enabled)
+        _hook_runner = hook_runner
+        _decisions: Mapping[str, str] = {}
+
         def _needs_interrupt(self, tool_call: Mapping[str, Any], runtime: Any) -> bool:
             name = str(tool_call.get("name") or "")
-            if agent_security_mode_is_yolo():
+            if not self._securityd_enabled:
+                # No Plugin, no securityd: only the tool's own static contract
+                # decides whether the user must approve this call.
+                if name in protected:
+                    return True
+                request = SimpleNamespace(
+                    tool_call=tool_call,
+                    runtime=runtime,
+                    tool_metadata=metadata_by_name.get(name, {}),
+                )
+                if name in terminals and terminal_when is not None:
+                    return bool(terminal_when(request))
+                if name in memories and memory_when is not None:
+                    return bool(memory_when(request))
                 return False
-            # 直接在 after_model 时序调用 securityd；before_tool hook 仍负责
-            # 最终 DENY/审计，二者不能互相替代。
+            # The BEFORE_TOOL Hook chain is the single judge.  Its decision is
+            # computed once in ``aafter_model`` and cached per tool call; the
+            # direct securityd call only remains for installations where the
+            # chain cannot run.
             request = SimpleNamespace(
                 tool_call=tool_call,
                 runtime=runtime,
                 tool_metadata=metadata_by_name.get(name, {}),
             )
-            # Always ask securityd first.  An explicit DENY raises here and
-            # must not be hidden by a static approval marker (otherwise the
-            # UI prompts for approval and then the before_tool hook blocks it).
-            if securityd_requires_confirm(request):
+            cached = self._decisions.get(tool_call_key(tool_call))
+            if cached is None:
+                if agent_security_mode_is_yolo():
+                    return False
+                decision = securityd_approval_decision(request)
+            else:
+                decision = cached
+            if decision == APPROVAL_DENY:
+                # A Hook chain that reports BLOCK without raising still has to
+                # stop the Run; never turn it into an approval prompt.
+                raise _SecurityPolicyDenied(tool=name, policy="deny")
+            if decision == APPROVAL_ASK:
                 return True
+            if decision == APPROVAL_ALLOW:
+                return False
             if name in protected:
                 return True
             if name in terminals and terminal_when is not None:
@@ -554,19 +892,53 @@ def build_security_hitl_middleware(
                 return bool(memory_when(request))
             return False
 
-        def _filtered_delegate(self, state: Any, runtime: Any):
-            active = {
+        def _filtered_delegate(
+            self,
+            state: Any,
+            runtime: Any,
+            decisions: Mapping[str, str] | None = None,
+        ):
+            delegate = copy(self)
+            delegate._decisions = dict(decisions or {})
+            delegate.interrupt_on = {
                 name: config
                 for name, config in self.interrupt_on.items()
                 if any(
                     str(call.get("name") or "") == name
-                    and self._needs_interrupt(call, runtime)
-                    for call in self._last_tool_calls(state)
+                    and delegate._needs_interrupt(call, runtime)
+                    for call in delegate._last_tool_calls(state)
                 )
             }
-            delegate = copy(self)
-            delegate.interrupt_on = active
             return delegate
+
+        async def _precheck(
+            self, state: Any, runtime: Any
+        ) -> tuple[dict[str, str], dict[str, Mapping[str, Any]]]:
+            """Judge every tool call once through the security Hook chain."""
+
+            decisions: dict[str, str] = {}
+            effective_arguments: dict[str, Mapping[str, Any]] = {}
+            if (
+                not self._securityd_enabled
+                or self._hook_runner is None
+                or not security_hooks
+            ):
+                return decisions, effective_arguments
+            for call in self._last_tool_calls(state):
+                name = str(call.get("name") or "")
+                decision, effective = await run_tool_guard_hooks(
+                    runtime=runtime,
+                    tool_call=call,
+                    tool_metadata=metadata_by_name.get(name, {}),
+                    hook_runner=self._hook_runner,
+                    hook_ids=security_hooks,
+                )
+                key = tool_call_key(call)
+                if decision != APPROVAL_UNKNOWN:
+                    decisions[key] = decision
+                if effective is not None:
+                    effective_arguments[key] = effective
+            return decisions, effective_arguments
 
         @staticmethod
         def _last_tool_calls(state: Any) -> tuple[Mapping[str, Any], ...]:
@@ -582,10 +954,14 @@ def build_security_hitl_middleware(
             self._metadata_by_name = metadata_by_name
 
         async def aafter_model(self, state: Any, runtime: Any):
-            # 先按本次调用的实际 need 过滤 interrupt_on，再走 ApprovalMiddleware
-            # 的"在 Run 内等待决定"路径；同步 after_model 已由基类显式拒绝。
-            delegate = self._filtered_delegate(state, runtime)
-            return await ApprovalMiddleware.aafter_model(delegate, state, runtime)
+            # 判权只发生在 Hook 链里；这里先取结果，再按实际的 need 过滤
+            # interrupt_on，最后走 ApprovalMiddleware 的"在 Run 内等待决定"
+            # 路径。同步 after_model 已由基类显式拒绝。
+            decisions, effective_arguments = await self._precheck(state, runtime)
+            delegate = self._filtered_delegate(state, runtime, decisions)
+            result = await ApprovalMiddleware.aafter_model(delegate, state, runtime)
+            return _apply_effective_arguments(
+                result, state, effective_arguments)
 
     return _DynamicSecurityHITL(
         interrupt_on=dict(interrupt_on),

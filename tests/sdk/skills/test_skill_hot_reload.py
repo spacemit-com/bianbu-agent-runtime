@@ -5,6 +5,13 @@ from dataclasses import replace
 import pytest
 
 from bianbu_agent.config import RuntimeConfig
+from bianbu_agent.inventory import (
+    CapabilityKind,
+    CapabilityOrigin,
+    CapabilitySource,
+    InstalledCapability,
+    InventorySnapshot,
+)
 from bianbu_agent.plugins.manager import PluginManager
 from bianbu_agent.server.runtime import _inventory_snapshot
 
@@ -22,6 +29,39 @@ def manager_for(config):
         skill_snapshot_provider=lambda: _inventory_snapshot(config, skills_only=True, strict_skills=True),
         workspace_root=config.data_dir / "workspace",
         plugin_data_root=config.data_dir / "workspace" / "plugin-data",
+    )
+
+
+def _private_skill_snapshot(
+    root: Path, owner: str, *, body: str = "body"
+) -> InventorySnapshot:
+    skill = root / "private-skill"
+    skill.mkdir(parents=True, exist_ok=True)
+    manifest = skill / "SKILL.md"
+    manifest.write_text(
+        f"---\nname: private-skill\ndescription: Private skill\n---\n{body}\n",
+        encoding="utf-8",
+    )
+    from bianbu_agent._internal.filesystem import digest_directory, regular_files
+
+    digest = digest_directory(skill, regular_files(skill))
+    return InventorySnapshot(
+        revision=1,
+        items=(
+            InstalledCapability(
+                source=CapabilitySource(
+                    kind=CapabilityKind.SKILL,
+                    capability_id="private-skill",
+                    version="1.0.0",
+                    root=skill,
+                    manifest_path=manifest,
+                    content_digest=digest,
+                    origin=CapabilityOrigin.STANDALONE,
+                    metadata={"agent_private": True, "owner_agent_id": owner},
+                ),
+                enabled=True,
+            ),
+        ),
     )
 
 
@@ -148,6 +188,36 @@ async def test_user_skills_add_edit_delete_preserve_leases_and_host(tmp_path, mo
     finally:
         await manager.close()
     assert manager._skill_watch_task is None
+
+
+@pytest.mark.asyncio
+async def test_private_skill_keeps_its_owner_across_hot_reload(tmp_path, monkeypatch):
+    """A refreshed Skill catalog must not drop private ownership metadata."""
+
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))
+    config = RuntimeConfig(data_dir=tmp_path / "runtime")
+    owner = "com.bianbu.private"
+    private_root = tmp_path / "agent"
+    snapshots = [_private_skill_snapshot(private_root, owner)]
+    manager = PluginManager(
+        snapshot_provider=lambda: snapshots[0],
+        skill_snapshot_provider=lambda: snapshots[0],
+        workspace_root=config.data_dir / "workspace",
+        plugin_data_root=config.data_dir / "workspace" / "plugin-data",
+    )
+    await manager.start()
+    try:
+        private_key = (CapabilityKind.SKILL, "private-skill")
+        assert manager.current_generation.capability_catalog.private_owners[
+            private_key
+        ] == owner
+        snapshots[0] = _private_skill_snapshot(private_root, owner, body="changed")
+        assert await manager.refresh_skills(snapshot=snapshots[0]) is True
+        assert manager.current_generation.capability_catalog.private_owners[
+            private_key
+        ] == owner
+    finally:
+        await manager.close()
 
 
 @pytest.mark.asyncio

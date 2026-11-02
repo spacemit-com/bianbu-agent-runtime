@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 import pytest
 
@@ -179,22 +179,13 @@ async def test_agent_creation_records_gaps_instead_of_refusing(
     )
 
     section = _power_dependencies_section(resolved, generation)
-    assert "## Power Dependencies" in section
-    assert "Execution mode: sandbox" in section
-    assert "Skills: declared [review, translation]; available [using-apm, review]; missing [translation]" in section
-    assert (
-        "MCP servers: declared [mcp.weather, mcp.finance]; available [mcp.weather]; "
-        "missing [mcp.finance]" in section
+    assert section == (
+        "## Power Dependencies\n"
+        "\n"
+        "- Skills: using-apm, review\n"
+        "- MCP servers: mcp.weather\n"
+        "- Plugins: vendor.bundle, vendor.missing"
     )
-    assert (
-        "Plugins: declared [vendor.bundle, vendor.missing]; available [vendor.bundle]; "
-        "missing [vendor.missing]" in section
-    )
-    # The sandbox cannot run `apm` at all (read-only data root, no writable
-    # HOME), so the section asks for the gap instead of the host recipe.
-    assert "using-apm Skill's self-provisioning flow" not in section
-    assert "runs in a sandbox" in section
-    assert "read-only" in section
 
 
 @pytest.mark.asyncio
@@ -215,50 +206,33 @@ async def test_host_workers_get_the_apm_self_provisioning_recipe(
     )
 
     section = _power_dependencies_section(resolved, generation)
-    assert "Execution mode: host" in section
-    assert "using-apm Skill's self-provisioning flow" in section
-    assert "runs in a sandbox" not in section
+    assert section == (
+        "## Power Dependencies\n"
+        "\n"
+        "- Skills: using-apm, review\n"
+        "- MCP servers: mcp.weather\n"
+        "- Plugins: vendor.bundle, vendor.missing"
+    )
 
 
 @pytest.mark.asyncio
-async def test_power_dependencies_reports_execution_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_power_dependencies_names_resolved_powers(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BIANBU_SANDBOX_ACTIVE", "0")
     spec = AgentSpec(
         id="host-expert",
         name="Host Expert",
+        skills=("review",),
+        mcps=("mcp.weather",),
+        plugins=("vendor.bundle",),
         metadata={"execution": {"requested_mode": "host"}},
     )
 
     section = _power_dependencies_section(spec)
 
-    assert "Execution mode: host (requested: host)" in section
-
-
-def test_tool_gap_is_reported_without_repeating_tool_policy() -> None:
-    generation = _generation()
-    wildcard = AgentSpec(
-        id="wildcard",
-        name="Wildcard",
-        tools=("terminal",),
-        declared=AgentDeclaration.from_spec(
-            AgentSpec(id="wildcard", name="Wildcard", tools=("*",))
-        ),
+    assert section == (
+        "## Power Dependencies\n"
+        "\n"
+        "- Skills: review\n"
+        "- MCP servers: mcp.weather\n"
+        "- Plugins: vendor.bundle"
     )
-
-    # Tool Policy already carries the exposed names, so a satisfied wildcard
-    # must not repeat the whole list here.
-    assert _tool_line(wildcard, generation) == "- Tools: declared [*]"
-
-    declared = AgentDeclaration.from_spec(
-        AgentSpec(id="wildcard", name="Wildcard", tools=("terminal", "read_file"))
-    )
-    narrowed = replace(wildcard, tools=("terminal",), declared=declared)
-
-    assert _tool_line(narrowed, generation) == (
-        "- Tools: declared [terminal, read_file]; missing [read_file]"
-    )
-
-
-def _tool_line(agent: AgentSpec, generation: Generation) -> str:
-    section = _power_dependencies_section(agent, generation)
-    return next(line for line in section.splitlines() if line.startswith("- Tools:"))

@@ -120,14 +120,14 @@ class HybridDLPPolicyStore:
             if os.environ.get("BIANBU_AGENT_DLP_POLICY_LOCAL_FALLBACK") == "1":
                 logger.warning("中央 DLP 策略不可达，显式使用本地开发回退：%s", exc)
                 return self.local_store.effective_matrix(agent_id)
-            logger.error("中央 DLP 策略不可达且无缓存，按 BLOCK fail-closed：%s", exc)
+            logger.error("中央 DLP 策略不可达且无缓存，按 deny fail-closed：%s", exc)
             from securityd.dlp.pii_scanner import PIIType  # noqa: PLC0415
 
-            return {pii_type.value: self._action.BLOCK.value for pii_type in PIIType}
+            return {pii_type.value: self._action.DENY.value for pii_type in PIIType}
 
     def get_action(self, agent_id, pii_type):
         value = self._matrix(str(agent_id)).get(pii_type.value)
-        return self._action(value) if value else self._action.BLOCK
+        return self._action(value) if value else self._action.DENY
 
     def effective_matrix(self, agent_id: str) -> dict[str, str]:
         return dict(self._matrix(agent_id))
@@ -203,18 +203,37 @@ class HybridPIIScanner:
 
     @staticmethod
     def _mask_findings(text: str, findings: Iterable):
-        from securityd.dlp.pii_scanner import PIIScanner, ScanResult  # noqa: PLC0415
+        from securityd.dlp.pii_scanner import (  # noqa: PLC0415
+            PIIScanner, ScanResult, pseudonym,
+        )
 
         ordered = sorted(findings, key=lambda finding: finding.start)
         if not ordered:
             return ScanResult(findings=[], masked_text=text, mask_map={})
-        counters, parts, mask_map, cursor = {}, [], {}, 0
+        # Use the same deterministic natural stand-ins as securityd's own
+        # scan-and-mask path.  Building ``[PII-…]`` markers here would let the
+        # model see that a substitution happened even when securityd's output
+        # is hidden.
+        real_values = {finding.value for finding in ordered}
+        by_value: dict[tuple, str] = {}
+        used: set[str] = set()
+        parts, mask_map, cursor = [], {}, 0
         for finding in ordered:
-            counters[finding.pii_type] = counters.get(finding.pii_type, 0) + 1
-            placeholder = (f"[PII-{PIIScanner._LABEL[finding.pii_type]}-"
-                           f"{counters[finding.pii_type]:03d}]")
-            parts.extend((text[cursor:finding.start], placeholder))
-            mask_map[placeholder] = text[finding.start:finding.end]
+            key = (finding.pii_type, finding.value)
+            stand_in = by_value.get(key)
+            if stand_in is None:
+                for counter in range(64):
+                    candidate = pseudonym(finding.pii_type, finding.value, counter)
+                    if candidate in used or candidate in real_values:
+                        continue
+                    stand_in = candidate
+                    break
+                else:  # pragma: no cover - pool is far larger than 64 collisions
+                    raise ValueError("PII stand-in pool exhausted")
+                by_value[key] = stand_in
+                used.add(stand_in)
+            parts.extend((text[cursor:finding.start], stand_in))
+            mask_map[stand_in] = finding.value
             cursor = finding.end
         parts.append(text[cursor:])
         return ScanResult(findings=ordered, masked_text="".join(parts),
@@ -237,7 +256,7 @@ class HybridPIIScanner:
         full = self.scan_for_agent(agent_id, text)
         keep = [finding for finding in full.findings
                 if store.get_action(agent_id, finding.pii_type)
-                in (DLPAction.MASK, DLPAction.BLOCK)]
+                in (DLPAction.MASK, DLPAction.DENY)]
         masked = self._mask_findings(text, keep)
         return ScanResult(findings=full.findings,
                           masked_text=masked.masked_text,

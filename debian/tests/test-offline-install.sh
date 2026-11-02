@@ -3,10 +3,9 @@ set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 postinst=$repo_root/debian/postinst
-register=$repo_root/debian/register-runtime-manifest
+register=$repo_root/debian/prepare-runtime-device
 register_unit=$repo_root/debian/bianbu-agent-runtime-register.service
 runtime_unit=$repo_root/debian/bianbu-agent-runtime.service
-network_unit=$repo_root/debian/bianbu-agent-network-learning.service
 
 fail() {
     printf 'FAIL: %s\n' "$1" >&2
@@ -34,21 +33,19 @@ grep -q 'the Runtime start path grants it' "$postinst" \
 # systemd is only ever asked best effort, and the answer stays invisible.
 grep -q 'systemctl daemon-reload >/dev/null 2>&1 || true' "$postinst" \
     || fail "postinst must not depend on a running manager"
-grep -q 'systemctl start bianbu-agent-runtime.service >/dev/null 2>&1 || true' "$postinst" \
+grep -q 'systemctl restart bianbu-agent-runtime.service >/dev/null 2>&1 || true' "$postinst" \
     || fail "postinst must not report a missing manager as an install error"
 
 # Everything that needs the live device lives in one device-side entry point
 # that the Runtime units pull in.
-[ -x "$register" ] || fail "device registration script is not executable"
+[ -x "$register" ] || fail "device preparation script is not executable"
 for required in 'bianbu-security group is missing' 'adduser bianbu-runtime bianbu-security' \
-                '/run/bianbu/network-learning' '/run/bianbu/agent-runtime/memory-registry' \
-                'reset-security-binding.py' 'register-security-manifest.py' \
-                'registered-manifest.sha256' '--if-missing'; do
+                '/run/bianbu/agent-runtime/memory-registry'; do
     grep -q -- "$required" "$register" \
-        || fail "device registration script lost: $required"
+        || fail "device preparation script lost: $required"
 done
-grep -q '^ExecStart=/usr/lib/bianbu-agent-runtime/register-runtime-manifest$' "$register_unit" \
-    || fail "registration unit must call the device registration script"
+grep -q '^ExecStart=/usr/lib/bianbu-agent-runtime/prepare-runtime-device$' "$register_unit" \
+    || fail "registration unit must call the device preparation script"
 grep -q '^Type=oneshot$' "$register_unit" \
     || fail "registration unit must be a oneshot job"
 ! grep -q '^\[Install\]' "$register_unit" \
@@ -57,9 +54,6 @@ grep -q '^After=.*bianbu-agent-runtime-register.service' "$runtime_unit" \
     || fail "Runtime must start after device registration"
 grep -q '^Requires=.*bianbu-agent-runtime-register.service' "$runtime_unit" \
     || fail "Runtime must require device registration"
-grep -q '^After=.*bianbu-agent-runtime-register.service' "$network_unit" \
-    || fail "network learning collector must start after device registration"
-
 # Behavioural check: run the install-time helpers against a fake host that has
 # no login session, no securityd group and a failing manager.  The install must
 # still succeed and stay silent.
@@ -112,16 +106,22 @@ chmod +x "$fake_bin"/*
 
 harness() {
     function=$1
+    shift
     {
         printf '%s\n' 'data_root=/var/lib/bianbu-agent-runtime'
         printf '%s\n' 'service_user_dir=${BIANBU_POSTINST_SERVICE_USER_DIR:-/etc/bianbu-agent-runtime}'
         printf '%s\n' 'systemd_drop_in_dir=${BIANBU_POSTINST_SYSTEMD_DIR:-/etc/systemd/system}'
+        # activate_installed_units depends on the first-install marker helper,
+        # which is covered by its own checks and needs a live /run hierarchy.
+        printf '%s\n' 'mark_package_first_install() { printf "%s\\n" mark_package_first_install >>"$FAKE_LOG"; }'
         sed -n "/^$function() {\$/,/^}\$/p" "$postinst"
         printf '%s\n' 'warn() { printf "%s\\n" "bianbu-agent-runtime: $*" >&2; }'
-        printf '%s\n' "$function"
+        # The caller's extra arguments model the postinst version argument:
+        # empty on a first install, the replaced version on an upgrade.
+        printf '%s "$@"\n' "$function"
     } | env -u SUDO_USER -u PKEXEC_UID PATH="$fake_bin:$PATH" FAKE_LOG="$log" \
         BIANBU_POSTINST_SERVICE_USER_DIR="$work/etc-bianbu-agent-runtime" \
-        BIANBU_POSTINST_SYSTEMD_DIR="$work/etc-systemd" sh
+        BIANBU_POSTINST_SYSTEMD_DIR="$work/etc-systemd" sh -s -- "$@"
 }
 
 : > "$log"
@@ -181,7 +181,18 @@ cmp "$work/expected-drop-in" \
 harness activate_installed_units 2> "$work/units.err" \
     || fail "install must tolerate a host without a running systemd manager"
 grep -q 'systemctl daemon-reload' "$log" || fail "install must still refresh the manager when it exists"
+grep -q 'mark_package_first_install' "$log" \
+    || fail "first install must mark the security-mode reset for the next Runtime start"
 [ ! -s "$work/units.err" ] || fail "a missing systemd manager must not be reported as an install error"
+
+: > "$log"
+harness activate_installed_units 0.1.207 2> "$work/upgrade.err" \
+    || fail "upgrade must tolerate a host without a running systemd manager"
+grep -q 'systemctl restart bianbu-agent-runtime.service' "$log" \
+    || fail "upgrade must still restart the Runtime"
+! grep -q 'mark_package_first_install' "$log" \
+    || fail "an upgrade must not request another security-mode reset"
+[ ! -s "$work/upgrade.err" ] || fail "a missing systemd manager must not be reported as an upgrade error"
 
 
 # 用 root 直接安装（没有 SUDO_USER 与登录会话）时必须仍然解析到设备用户，否则

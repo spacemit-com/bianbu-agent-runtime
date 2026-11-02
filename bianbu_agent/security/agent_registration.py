@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Mapping, Sequence
 
+from .capability_declarations import DeclarationBaseline, plan_replay
 from .security_runtime import SecurityRuntimeClient
 
 
@@ -14,16 +15,24 @@ class SecurityAgentRegistration:
     async def register(self, agent_id: str, metadata: Mapping[str, object] | None = None):
         return await self.client._call("register_agent", str(agent_id), dict(metadata or {}))
 
-    async def initialize_builtin_yolo(self, agent_id: str):
-        """Apply the built-in default only when Security records no explicit choice.
+    async def initialize_builtin_yolo(self, agent_id: str, *, force: bool = False):
+        """Apply the built-in ``yolo`` default to a packaged system Agent.
 
-        Only the trusted system-starter lifecycle calls this; Agent metadata
-        and ordinary declarations cannot request security mode changes.
+        Without ``force`` this only replaces the untouched default an older
+        Security release wrote (``safe`` with no ``updated_at``/``updated_by``).
+        The first install passes ``force`` so the shipped Agent starts from the
+        product default ``yolo`` -> ``host``.  Reinstalls and upgrades never
+        pass ``force``.  Only the trusted package/startup lifecycle calls this;
+        Agent metadata and ordinary declarations cannot change a security mode.
         """
         mode = await self.client._call("get_agent_security_mode", str(agent_id))
         if not isinstance(mode, Mapping):
             return None
-        if (mode.get("mode") == "normal" and mode.get("updated_at") == ""
+        if force:
+            if mode.get("mode") == "yolo":
+                return mode
+            return await self.client._call("set_agent_security_mode", str(agent_id), "yolo")
+        if (mode.get("mode") == "safe" and mode.get("updated_at") == ""
                 and mode.get("updated_by") == ""):
             return await self.client._call("set_agent_security_mode", str(agent_id), "yolo")
         return mode
@@ -32,29 +41,46 @@ class SecurityAgentRegistration:
         return await self.client._call("unregister_agent", str(agent_id))
 
     async def ensure_capabilities(self, agent_id: str,
-                                  capabilities: Sequence[Mapping[str, object]]):
-        """Register tool rows that securityd does not already know about.
+                                  capabilities: Sequence[Mapping[str, object]],
+                                  *,
+                                  baseline: DeclarationBaseline | None = None):
+        """Replay this Agent's declared tool policies over securityd.
 
-        The tool-policy table is Operator-owned: once a policy exists, the
-        console and the securityd WebUI are the only places that change it.
-        Registration therefore only *adds* what is missing — an Agent
-        declaration must never overwrite a tightening an operator made after
-        the fact.
+        The tool-policy table is shared with the security console: the Runtime
+        writes the rows it declares, the console writes the operator's edits.
+        An upgrade has to make a new declaration effective, and it must never
+        roll back a tightening an operator made in the console.  The baseline
+        is what tells the two apart — a stored row that no longer matches the
+        value this Runtime declared last time belongs to the operator and is
+        left alone (``capability_declarations.plan_replay``).
         """
+        declared_rows = [dict(row) for row in capabilities
+                         if str(row.get("tool", "")).strip()]
+        declared = {str(row["tool"]): str(row.get("policy", "allow"))
+                    for row in declared_rows}
         existing = await self.client._call("get_capabilities", str(agent_id))
-        if not isinstance(existing, Sequence) or isinstance(existing, (str, bytes, bytearray)):
-            existing = []
-        known = {
-            str(row.get("tool") or row.get("capability") or "")
-            for row in existing if isinstance(row, Mapping)
-        }
-        rows = [dict(x) for x in capabilities if str(x.get("tool", "")) not in known]
-        if not rows:
-            return {"agent_id": str(agent_id), "count": 0, "status": "unchanged"}
-        result = await self.client._call("register_capabilities", str(agent_id), rows)
-        if result is None:
-            return None
-        return {"agent_id": str(agent_id), "count": len(rows), "status": "registered"}
+        current: dict[str, str] = {}
+        if isinstance(existing, Sequence) and not isinstance(existing, (str, bytes, bytearray)):
+            for item in existing:
+                if not isinstance(item, Mapping):
+                    continue
+                tool = str(item.get("tool") or item.get("capability") or "")
+                if tool:
+                    current[tool] = str(item.get("policy", "allow"))
+        previous = baseline.declared_for(agent_id) if baseline is not None else None
+        plan = plan_replay(declared=declared, current=current, previous=previous)
+        if plan.writes:
+            payload = [row for row in declared_rows
+                       if str(row["tool"]) in plan.writes]
+            result = await self.client._call("register_capabilities",
+                                             str(agent_id), payload)
+            if result is None:
+                return None
+        if baseline is not None:
+            baseline.record(agent_id, declared)
+        return {"agent_id": str(agent_id), "count": len(plan.writes),
+                "status": "replayed" if plan.writes else "unchanged",
+                "preserved": sorted(plan.preserved)}
 
 
 _VALID_POLICIES = ("allow", "ask", "deny")

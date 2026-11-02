@@ -129,6 +129,47 @@ async def test_agent_model_request_timeout_follows_the_provider_record(
 
 
 @pytest.mark.asyncio
+async def test_agent_model_resolution_carries_effort_and_thinking_dialect(
+    tmp_path: Path,
+) -> None:
+    """The Provider record supplies the endpoint; the Agent owns the effort."""
+
+    store = YAMLModelStore(tmp_path / "models")
+    await store.open()
+    await store.upsert_provider(
+        ProviderConfig(
+            id="openrouter",
+            name="OpenRouter",
+            protocol="openai-compatible",
+            base_url="https://openrouter.ai/api/v1",
+            api_key="secret",
+        )
+    )
+    await store.upsert_provider(
+        ProviderConfig(
+            id="deepseek",
+            name="DeepSeek",
+            protocol="openai-compatible",
+            base_url="https://api.deepseek.com/v1",
+            api_key="secret",
+        )
+    )
+
+    resolver = YAMLModelResolver(tmp_path / "models")
+    openai_style = resolver.resolve_agent_model(
+        AgentModel(provider="openrouter", name="qwen/qwen3", effort="max")
+    )
+    deepseek_style = resolver.resolve_agent_model(
+        AgentModel(provider="deepseek", name="deepseek-flash", effort="high")
+    )
+
+    assert openai_style.reasoning_effort == "max"
+    assert openai_style.thinking_format == "openai"
+    assert deepseek_style.reasoning_effort == "high"
+    assert deepseek_style.thinking_format == "deepseek"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "value",
     [0, -1, 3601, float("inf"), float("nan"), "600", True],

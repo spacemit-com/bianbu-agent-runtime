@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import fnmatch
 import inspect
 import logging
 import time
@@ -43,6 +42,29 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# MCP servers are independent leaves: their manifests declare no Plugin
+# dependencies and they only publish a runtime into their own scope.  Starting
+# them together keeps a Worker from paying every server's interpreter startup
+# in sequence, while the bound avoids drowning a small board in cold starts.
+_MCP_START_CONCURRENCY = 4
+#: Background command-Hook warm-up.  Starting every resident Hook at once on a
+#: small board competes with MCP children for CPU, so the host bounds it while
+#: still finishing long before the first user request on an idle Worker.
+_HOOK_PREWARM_CONCURRENCY = 3
+_HOOK_PREWARM_TIMEOUT_SECONDS = 5.0
+#: Hooks that every Run needs go first; tool-only Hooks follow so a first Run
+#: that never uses a tool is not queued behind them.
+_HOOK_PREWARM_ORDER = {
+    HookPoint.BEFORE_RUN: 0,
+    HookPoint.AFTER_RUN: 1,
+    HookPoint.BEFORE_MODEL: 2,
+    HookPoint.AFTER_MODEL: 3,
+    HookPoint.AFTER_CONTEXT: 4,
+    HookPoint.BEFORE_TOOL: 5,
+    HookPoint.AFTER_TOOL: 6,
+    HookPoint.ON_ERROR: 7,
+}
+
 
 def _hook_id(contribution: HookContribution) -> str:
     return str(contribution.metadata.get("qualified_id") or contribution.id)
@@ -50,13 +72,6 @@ def _hook_id(contribution: HookContribution) -> str:
 
 def _tool_unavailable_reason(contribution: ToolContribution) -> str:
     return str(contribution.spec.metadata.get("unavailable_reason") or "").strip()
-
-
-_GATE_POINTS = frozenset({
-    HookPoint.BEFORE_RUN,
-    HookPoint.BEFORE_TOOL,
-    HookPoint.BEFORE_MODEL,
-})
 
 
 def _failure_text(exc: BaseException, contribution: HookContribution) -> str:
@@ -116,9 +131,9 @@ async def _invoke_hook(
 ) -> tuple[ContextPatch | None, BaseException | None]:
     """Execute one Hook and report its patch or its failure.
 
-    Failure policy stays with the caller: overlapping Hooks must keep the same
-    fail-closed gates and fail-open observers as a serial pass, and the first
-    failure in (priority, hook id) order has to be the one that surfaces.
+    Failure policy stays with the caller: a denial must surface in
+    (priority, hook id) order, and an ordinary failure stays fail-open so one
+    broken observer cannot take down the Run.
     """
 
     invocation_id = uuid.uuid4().hex
@@ -153,6 +168,9 @@ async def _invoke_hook(
     invalid = (
         "Hook returned an invalid ContextPatch"
         if not isinstance(patch, ContextPatch)
+        else "approval is only valid for the Bibit intent BeforeRun hook"
+        if patch.approval is not None and (point is not HookPoint.BEFORE_RUN or
+                                          contribution.plugin_id != "bianbu.bibit.intent" or patch.direct_reply is None)
         else "direct_reply is only valid for before_run"
         if patch.direct_reply is not None and point is not HookPoint.BEFORE_RUN
         else None
@@ -384,79 +402,57 @@ class PluginGeneration:
         context: RunContext,
         *,
         hook_ids: Collection[str] | None = None,
+        exclude: Collection[str] = (),
     ) -> ContextPatch:
         sections: list[str] = []
         metadata: dict[str, dict[str, object]] = {}
         direct_reply: str | None = None
         direct_reply_hook: str | None = None
+        approval = None
+        tool_arguments = None
+        user_visible_text: str | None = None
+        stream_stand_ins: dict[str, str] = {}
         selected = None if hook_ids is None else frozenset(hook_ids)
+        excluded = frozenset(exclude)
         contributions = [
             contribution
             for contribution in self._hooks[HookPoint(point)]
-            if selected is None or _hook_id(contribution) in selected
+            if _hook_id(contribution) not in excluded
+            and (selected is None or _hook_id(contribution) in selected)
         ]
-        # Hooks that declare ``parallel`` overlap with each other; the rest run
-        # inline in the same (priority, hook id) order.  Patches are merged in
-        # that order either way, so opting in changes latency, not the merged
-        # result.  The batch only starts once the loop reaches it, which keeps a
-        # denying Hook that sorts earlier from racing a Hook it should stop.
-        parallel = [
-            index
-            for index, contribution in enumerate(contributions)
-            if contribution.parallel
-        ]
-        first_parallel = parallel[0] if parallel else None
+        # Every Hook of one point runs concurrently: the batch is started as a
+        # whole and only the merge waits, in (priority, hook id) order.  That
+        # ordering is what makes the merged patch deterministic, so a Hook's own
+        # runtime never decides where in the request its sections land.
         pending: dict[
             int, asyncio.Task[tuple[ContextPatch | None, BaseException | None]]
-        ] = {}
-        finished = [asyncio.Event() for _ in contributions]
-        # A Hook may declare that it only needs to wait for part of the batch
-        # (``waits_for``): the Security decision must precede a device-side
-        # Hook, but a best-effort recall Hook does not have to.  Only Hooks
-        # that sort earlier can be waited for, because the merged patch order
-        # is (priority, hook id) either way.
-        waits = [
-            tuple(
-                other
-                for other in range(index)
-                if any(
-                    fnmatch.fnmatchcase(_hook_id(contributions[other]), pattern)
-                    for pattern in contribution.waits_for
-                )
-            )
+        ] = {
+            index: asyncio.create_task(_invoke_hook(point, contribution, context))
             for index, contribution in enumerate(contributions)
-        ]
-
-        async def invoke_index(
-            index: int,
-        ) -> tuple[ContextPatch | None, BaseException | None]:
-            """Run one Hook once everything it declared a dependency on finished."""
-
-            try:
-                for dependency in waits[index]:
-                    await finished[dependency].wait()
-                return await _invoke_hook(point, contributions[index], context)
-            finally:
-                finished[index].set()
+        }
 
         try:
             for index, contribution in enumerate(contributions):
-                if index == first_parallel:
-                    for position in parallel:
-                        pending[position] = asyncio.create_task(
-                            invoke_index(position)
-                        )
-                if index in pending:
-                    patch, failure = await pending.pop(index)
-                else:
-                    patch, failure = await invoke_index(index)
+                patch, failure = await pending.pop(index)
                 if failure is not None:
                     if isinstance(
                         failure,
                         (KeyboardInterrupt, SystemExit, asyncio.CancelledError),
                     ):
                         raise failure
-                    if isinstance(failure, PermissionError) and point in _GATE_POINTS:
+                    # Any Hook at any event may terminate the Run with a
+                    # denial.  Event points describe when a Hook runs, not
+                    # whether it is allowed to veto.
+                    if isinstance(failure, PermissionError):
+                        # Hook code may deny with a bare PermissionError.  A
+                        # denial has to carry the Run-terminating marker past
+                        # the tool boundary, where the security middleware
+                        # otherwise turns it into a ToolMessage and lets the
+                        # Agent retry.  Normalize once, at the Hook boundary.
+                        if not getattr(failure, "should_terminate_run", False):
+                            from bianbu_agent.hooks import HookDenied
+
+                            failure = HookDenied(str(failure) or "Hook denied execution")
                         raise failure
                     logger.warning(
                         "plugin hook failed plugin=%s point=%s error=%s",
@@ -475,7 +471,20 @@ class PluginGeneration:
                         )
                     direct_reply = patch.direct_reply
                     direct_reply_hook = _hook_id(contribution)
+                    approval = patch.approval
                 sections.extend(patch.context_sections)
+                if patch.tool_arguments is not None:
+                    if tool_arguments is not None:
+                        raise ContributionConflictError(
+                            "multiple tool argument rewrites from hooks")
+                    tool_arguments = patch.tool_arguments
+                if patch.user_visible_text is not None:
+                    if user_visible_text is not None:
+                        raise ContributionConflictError(
+                            "multiple user-visible text rewrites from hooks")
+                    user_visible_text = patch.user_visible_text
+                if patch.stream_stand_ins is not None:
+                    stream_stand_ins.update(patch.stream_stand_ins)
                 plugin_metadata = metadata.setdefault(contribution.plugin_id, {})
                 plugin_metadata.update(patch.metadata)
         finally:
@@ -487,6 +496,10 @@ class PluginGeneration:
             context_sections=tuple(sections),
             metadata=metadata,
             direct_reply=direct_reply,
+            approval=approval,
+            tool_arguments=tool_arguments,
+            user_visible_text=user_visible_text,
+            stream_stand_ins=stream_stand_ins or None,
         )
 
 class PluginHost:
@@ -518,6 +531,8 @@ class PluginHost:
         self._retired: dict[int, PluginGeneration] = {}
         self._stopped_generation_ids: set[int] = set()
         self._lifecycle_diagnostics: list[PluginDiagnostic] = []
+        self._prewarm_tasks: set[asyncio.Task[None]] = set()
+        self._prewarm_slots = asyncio.Semaphore(_HOOK_PREWARM_CONCURRENCY)
 
     @property
     def lifecycle_diagnostics(self) -> tuple[PluginDiagnostic, ...]:
@@ -527,12 +542,16 @@ class PluginHost:
         self,
         configs: Mapping[str, Mapping[str, object]] | None = None,
         config_provenance: Mapping[str, Mapping[str, str]] | None = None,
+        *,
+        pending_catalog: "asyncio.Task[CapabilityCatalog] | None" = None,
     ) -> PluginGeneration:
         async with self._lock:
             if self._current is not None:
                 return self._current
             generation = await self._build_generation(
-                configs or {}, config_provenance or {}
+                configs or {},
+                config_provenance or {},
+                pending_catalog=pending_catalog,
             )
             self._current = generation
             return generation
@@ -608,6 +627,7 @@ class PluginHost:
         return failures
 
     async def stop(self) -> None:
+        await self._stop_prewarms()
         generations: list[PluginGeneration] = []
         async with self._lock:
             if self._current is not None:
@@ -624,12 +644,87 @@ class PluginHost:
         for generation in generations:
             await self._stop_generation(generation)
 
+    def _schedule_hook_prewarm(
+        self, hooks: tuple[HookContribution, ...],
+    ) -> None:
+        """Let resident command Hooks start while the generation comes up."""
+
+        scheduled = sorted(
+            (hook for hook in hooks if hook.prewarm is not None),
+            key=lambda hook: (_HOOK_PREWARM_ORDER.get(hook.point, 99), _hook_id(hook)),
+        )
+        for hook in scheduled:
+            task = asyncio.create_task(
+                self._prewarm_hook(hook), name=f"hook-prewarm-{_hook_id(hook)}",
+            )
+            self._prewarm_tasks.add(task)
+            task.add_done_callback(self._prewarm_tasks.discard)
+
+    async def _prewarm_hook(self, hook: HookContribution) -> None:
+        assert hook.prewarm is not None
+        async with self._prewarm_slots:
+            try:
+                await asyncio.wait_for(
+                    hook.prewarm(), timeout=_HOOK_PREWARM_TIMEOUT_SECONDS,
+                )
+            except Exception:  # noqa: BLE001 - warming is optional
+                logger.debug(
+                    "Hook prewarm failed hook=%s", _hook_id(hook), exc_info=True,
+                )
+
+    async def _stop_prewarms(self) -> None:
+        tasks = tuple(self._prewarm_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._prewarm_tasks.clear()
+
+    @staticmethod
+    def _parallel_mcp_candidates(
+        candidates: tuple[PluginCandidate, ...],
+    ) -> tuple[PluginCandidate, ...]:
+        """Return MCP leaves only when reordering them is provably safe.
+
+        MCP candidates normally have no dependencies, but a future declaration
+        could add one.  In that case -- or when a regular Plugin depends on an
+        MCP runtime -- keep the original topological order and pay the serial
+        startup cost rather than guessing.
+        """
+
+        mcp_ids = {
+            candidate.manifest.id
+            for candidate in candidates
+            if candidate.source.startswith("mcp:")
+        }
+        if not mcp_ids:
+            return ()
+        if any(
+            candidate.manifest.dependencies
+            for candidate in candidates
+            if candidate.manifest.id in mcp_ids
+        ):
+            return ()
+        if any(
+            dependency.plugin_id in mcp_ids
+            for candidate in candidates
+            if candidate.manifest.id not in mcp_ids
+            for dependency in candidate.manifest.dependencies
+        ):
+            return ()
+        return tuple(
+            candidate
+            for candidate in candidates
+            if candidate.manifest.id in mcp_ids
+        )
+
     async def _build_generation(
         self,
         configs: Mapping[str, Mapping[str, object]],
         config_provenance: Mapping[str, Mapping[str, str]] | None = None,
         *,
         capability_catalog: CapabilityCatalog | None = None,
+        pending_catalog: "asyncio.Task[CapabilityCatalog] | None" = None,
     ) -> PluginGeneration:
         runtimes: dict[str, PluginRuntime] = {}
         statuses: dict[str, PluginStatus] = {}
@@ -639,7 +734,13 @@ class PluginHost:
         generation_service_owners: dict[str, str] = {}
         generation_events: dict[str, list[EventHandler]] = {}
 
-        for candidate in self._candidates:
+        candidates = self._candidates
+        parallel_mcps = self._parallel_mcp_candidates(candidates)
+        parallel_ids = {candidate.manifest.id for candidate in parallel_mcps}
+
+        for candidate in candidates:
+            if candidate.manifest.id in parallel_ids:
+                continue
             plugin_id = candidate.manifest.id
             failed_dependencies = [
                 dependency.plugin_id
@@ -663,87 +764,74 @@ class PluginHost:
                 )
                 continue
 
-            try:
-                runtime = await self._start_candidate(
-                    candidate,
-                    configs.get(plugin_id, {}),
-                    generation_services=generation_services,
-                    generation_service_owners=generation_service_owners,
-                    generation_events=generation_events,
-                    config_provenance=(config_provenance or {}).get(plugin_id, {}),
-                )
-            except Exception as exc:
-                code = "config_invalid" if isinstance(exc, PluginConfigError) else "plugin_start_failed"
-                diagnostic = PluginDiagnostic(
-                    code=code,
-                    plugin_id=plugin_id,
-                    message=failure_message(exc),
-                )
-                diagnostics.append(diagnostic)
-                statuses[plugin_id] = PluginStatus(
-                    plugin_id=plugin_id,
-                    state=PluginState.FAILED,
-                    health=PluginHealth.unhealthy(failure_message(exc)),
-                    diagnostics=(diagnostic,),
-                )
-                continue
+            runtime, status, candidate_diagnostics = await self._start_candidate_checked(
+                candidate,
+                configs.get(plugin_id, {}),
+                generation_services=generation_services,
+                generation_service_owners=generation_service_owners,
+                generation_events=generation_events,
+                config_provenance=(config_provenance or {}).get(plugin_id, {}),
+            )
+            diagnostics.extend(candidate_diagnostics)
+            statuses[plugin_id] = status
+            if runtime is not None:
+                runtimes[plugin_id] = runtime
+                started.append(plugin_id)
 
-            try:
-                health = await runtime.instance.health()
-            except Exception as exc:
-                try:
-                    await self._stop_runtime(runtime)
-                except BaseException as cleanup_exc:
-                    self._record_cleanup_failure(plugin_id, cleanup_exc)
-                diagnostic = PluginDiagnostic(
-                    code="plugin_health_failed",
-                    plugin_id=plugin_id,
-                    message=failure_message(exc),
-                )
-                diagnostics.append(diagnostic)
-                statuses[plugin_id] = PluginStatus(
-                    plugin_id=plugin_id,
-                    state=PluginState.FAILED,
-                    health=PluginHealth.unhealthy(failure_message(exc)),
-                    diagnostics=(diagnostic,),
-                )
-                continue
-            if health.status not in {"healthy", "degraded", "preparing"}:
-                cleanup_diagnostics: list[PluginDiagnostic] = []
-                try:
-                    await self._stop_runtime(runtime)
-                except BaseException as cleanup_exc:
-                    cleanup_diagnostics.append(
-                        self._record_cleanup_failure(plugin_id, cleanup_exc)
+        if parallel_mcps:
+            logger.debug(
+                "starting %d MCP server(s) with concurrency %d",
+                len(parallel_mcps),
+                min(_MCP_START_CONCURRENCY, len(parallel_mcps)),
+            )
+            semaphore = asyncio.Semaphore(
+                min(_MCP_START_CONCURRENCY, len(parallel_mcps))
+            )
+
+            async def start_mcp(candidate: PluginCandidate):
+                async with semaphore:
+                    return await self._start_candidate_checked(
+                        candidate,
+                        configs.get(candidate.manifest.id, {}),
+                        generation_services=generation_services,
+                        generation_service_owners=generation_service_owners,
+                        generation_events=generation_events,
+                        config_provenance=(
+                            config_provenance or {}
+                        ).get(candidate.manifest.id, {}),
                     )
-                diagnostic = PluginDiagnostic(
-                    code="plugin_unhealthy",
-                    plugin_id=plugin_id,
-                    message=health.message or "plugin reported unhealthy status",
-                )
-                plugin_diagnostics = (diagnostic, *cleanup_diagnostics)
-                diagnostics.extend(plugin_diagnostics)
-                statuses[plugin_id] = PluginStatus(
-                    plugin_id=plugin_id,
-                    state=PluginState.FAILED,
-                    health=health,
-                    diagnostics=plugin_diagnostics,
-                )
-                continue
-            runtimes[plugin_id] = runtime
-            started.append(plugin_id)
-            state = (
-                PluginState.DEGRADED
-                if health.status == "degraded"
-                else PluginState.RUNNING
+
+            results = await asyncio.gather(
+                *(start_mcp(candidate) for candidate in parallel_mcps)
             )
-            statuses[plugin_id] = PluginStatus(
-                plugin_id=plugin_id,
-                state=state,
-                health=health,
-            )
+            for candidate, (
+                runtime,
+                status,
+                candidate_diagnostics,
+            ) in zip(parallel_mcps, results, strict=True):
+                plugin_id = candidate.manifest.id
+                diagnostics.extend(candidate_diagnostics)
+                statuses[plugin_id] = status
+                if runtime is not None:
+                    runtimes[plugin_id] = runtime
+                    started.append(plugin_id)
+
+        # Keep the published dictionaries in dependency order even though the
+        # MCP leaves were started after the sequential plugins.
+        statuses = {
+            candidate.manifest.id: statuses[candidate.manifest.id]
+            for candidate in candidates
+            if candidate.manifest.id in statuses
+        }
 
         try:
+            # The caller may have started building the builtin Tool catalog
+            # before the MCP children handshake; collect it here so the CPU
+            # work overlaps that wait instead of preceding it.
+            if pending_catalog is not None:
+                capability_catalog = await pending_catalog
+            if capability_catalog is not None:
+                self._capability_catalog = capability_catalog
             generation = PluginGeneration(
                 id=self._next_generation_id,
                 plugins=runtimes,
@@ -757,6 +845,11 @@ class PluginHost:
             )
             if self._generation_transform is not None:
                 generation = self._generation_transform(generation)
+            # Do not compete with MCP children for CPU: they are the dominant
+            # start-up path.  Once they are ready, the remaining startup work
+            # is short, so warming here hides the Hook cost without delaying
+            # the generation.
+            self._schedule_hook_prewarm(tuple(generation.hooks.values()))
         except BaseException:
             for plugin_id in reversed(started):
                 try:
@@ -766,6 +859,113 @@ class PluginHost:
             raise
         self._next_generation_id += 1
         return generation
+
+    async def _start_candidate_checked(
+        self,
+        candidate: PluginCandidate,
+        raw_config: Mapping[str, object],
+        *,
+        generation_services: dict[str, object],
+        generation_service_owners: dict[str, str],
+        generation_events: dict[str, list[EventHandler]],
+        config_provenance: Mapping[str, str],
+    ) -> tuple[PluginRuntime | None, PluginStatus, tuple[PluginDiagnostic, ...]]:
+        """Start one candidate and convert every startup failure into status.
+
+        The caller owns dependency checks and ordering; this helper owns the
+        setup + health + cleanup lifecycle so sequential and parallel starts
+        report failures identically.
+        """
+
+        plugin_id = candidate.manifest.id
+        try:
+            runtime = await self._start_candidate(
+                candidate,
+                raw_config,
+                generation_services=generation_services,
+                generation_service_owners=generation_service_owners,
+                generation_events=generation_events,
+                config_provenance=config_provenance,
+            )
+        except Exception as exc:
+            code = "config_invalid" if isinstance(exc, PluginConfigError) else "plugin_start_failed"
+            diagnostic = PluginDiagnostic(
+                code=code,
+                plugin_id=plugin_id,
+                message=failure_message(exc),
+            )
+            return (
+                None,
+                PluginStatus(
+                    plugin_id=plugin_id,
+                    state=PluginState.FAILED,
+                    health=PluginHealth.unhealthy(failure_message(exc)),
+                    diagnostics=(diagnostic,),
+                ),
+                (diagnostic,),
+            )
+
+        try:
+            health = await runtime.instance.health()
+        except Exception as exc:
+            try:
+                await self._stop_runtime(runtime)
+            except BaseException as cleanup_exc:
+                self._record_cleanup_failure(plugin_id, cleanup_exc)
+            diagnostic = PluginDiagnostic(
+                code="plugin_health_failed",
+                plugin_id=plugin_id,
+                message=failure_message(exc),
+            )
+            return (
+                None,
+                PluginStatus(
+                    plugin_id=plugin_id,
+                    state=PluginState.FAILED,
+                    health=PluginHealth.unhealthy(failure_message(exc)),
+                    diagnostics=(diagnostic,),
+                ),
+                (diagnostic,),
+            )
+        if health.status not in {"healthy", "degraded", "preparing"}:
+            cleanup_diagnostics: list[PluginDiagnostic] = []
+            try:
+                await self._stop_runtime(runtime)
+            except BaseException as cleanup_exc:
+                cleanup_diagnostics.append(
+                    self._record_cleanup_failure(plugin_id, cleanup_exc)
+                )
+            diagnostic = PluginDiagnostic(
+                code="plugin_unhealthy",
+                plugin_id=plugin_id,
+                message=health.message or "plugin reported unhealthy status",
+            )
+            plugin_diagnostics = (diagnostic, *cleanup_diagnostics)
+            return (
+                None,
+                PluginStatus(
+                    plugin_id=plugin_id,
+                    state=PluginState.FAILED,
+                    health=health,
+                    diagnostics=plugin_diagnostics,
+                ),
+                plugin_diagnostics,
+            )
+
+        state = (
+            PluginState.DEGRADED
+            if health.status == "degraded"
+            else PluginState.RUNNING
+        )
+        return (
+            runtime,
+            PluginStatus(
+                plugin_id=plugin_id,
+                state=state,
+                health=health,
+            ),
+            (),
+        )
 
     async def _start_candidate(
         self,

@@ -26,7 +26,6 @@ stdout 输出一个 JSON 对象；日志写入 stderr。脚本通过 `PLUGIN_ROO
 不再默认内置（用户约定 2026-09-29）：需要时由用户在 AgentHub/APM 上按需安装到
 `~/.bianbu-agent/plugins/`，安装后的优先级见下。
 
-- `bianbu.audit`：工具、完成和错误审计。
 - 同名插件的优先级：`~/.bianbu-agent/plugins/<id>/`（用户在本机装的，例如从
   AgentHub 下载的第三方插件）排在随包目录之前。两边同名时只有用户那份生效，
   随包那份被覆盖，不会在目录里并列出现；用户那份删掉后随包那份自动回来。

@@ -88,6 +88,14 @@ def test_apm_mcp_name_resolves_to_the_installed_runtime_id() -> None:
     assert resolve_mcp_selectors(("*",), {}) == ("*",)
 
 
+def test_apm_expert_case_variant_resolves_to_the_packaged_server() -> None:
+    assert resolve_mcp_selectors(("fileSystem",), {"filesystem": object()}) == (
+        "filesystem",
+    )
+    # An ambiguous folded match stays unresolved rather than guessing.
+    assert resolve_mcp_selectors(("FS",), {"fs": object(), "Fs": object()}) == ("FS",)
+
+
 def test_selects_mcp_matches_both_names_and_the_wildcard() -> None:
     assert selects_mcp(("nws",), "mcp.nws") is True
     assert selects_mcp(("mcp.nws",), "mcp.nws") is True
@@ -163,7 +171,7 @@ def test_the_prompt_reports_no_false_gap_for_a_resolved_server() -> None:
 
     section = _power_dependencies_section(spec, generation)
 
-    assert "MCP servers: declared [mcp.nws]; available [mcp.nws]" in section
+    assert "- MCP servers: mcp.nws" in section
     assert "missing" not in section
 
 

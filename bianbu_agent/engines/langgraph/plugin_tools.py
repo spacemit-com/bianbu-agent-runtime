@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping
 import inspect
 import json
 import logging
@@ -238,6 +238,7 @@ def _adapt_tool(
     hook_runner: object | None,
     hook_ids: tuple[str, ...] | None,
     hook_ids_resolver: Callable[[str], Awaitable[tuple[str, ...]]] | None,
+    excluded_before_tool_hooks: Collection[str] = (),
 ) -> StructuredTool:
     async def invoke(config: RunnableConfig, **arguments: Any) -> str:
         configurable = config.get("configurable", {})
@@ -266,26 +267,44 @@ def _adapt_tool(
                     tool_metadata=tool_metadata,
                 ),
                 selected_hook_ids,
+                exclude=excluded_before_tool_hooks,
             )
             context_sections.extend(getattr(patch, "context_sections", ()))
-            # DLP 脱敏：hook 层拿不到参数改写通道，把结果放在
-            # metadata["bianbu.security"]["securityd"]["dlp_masked_args"]，
-            # 由这里应用到实际调用。不应用的话脱敏就白算了。
+            # DLP 参数通道：Security Hook 可以在 trusted 边界把模型看到的
+            # 句柄还原成真实值（tool_arguments，私有字段），也可以下发脱敏
+            # 后的参数（dlp_masked_args，兼容既有 Hook）。还原值优先，因为
+            # 工具需要原值才能工作；两者都不进入 run metadata。
+            restored = getattr(patch, "tool_arguments", None)
             masked = _dlp_masked_args(patch)
-            if masked is not None:
+            if isinstance(restored, Mapping):
+                effective_args = dict(restored)
+                logger.info("工具 %s 的参数已按 DLP 会话映射还原", qualified_name)
+            elif masked is not None:
                 effective_args = masked
                 logger.info("工具 %s 的参数已按 DLP 策略脱敏", qualified_name)
         result = await contribution.handler(context, dict(effective_args))
+        if (tool_metadata.get("owner_plugin_id") == "bianbu.bibit.intent"
+                and qualified_name == "bianbu.bibit.intent/bibit-control/set_system_time"):
+            from bianbu_agent.runs.time_confirmation import resolve_cloud_time_confirmation
+
+            result = await resolve_cloud_time_confirmation(
+                result, target=effective_args.get("datetime"), context=context,
+                control=configurable.get("run_control"),
+            )
         tool_failed = _tool_result_failed(result)
         content = result.content
         if hook_runner is not None:
+            # AfterTool observes the call the model made, so it must see the
+            # model-facing handles, never the plaintext that was restored for
+            # the tool.  Hook stdin is projected into logs and plugin code; the
+            # restored value belongs to the tool invocation only.
             patch = await _run_hooks(
                 hook_runner,
                 HookPoint.AFTER_TOOL,
                 _hook_context(
                     context,
                     qualified_name,
-                    effective_args,
+                    arguments,
                     tool_metadata=tool_metadata,
                     result_metadata=dict(result.metadata),
                     result=content,
@@ -296,17 +315,24 @@ def _adapt_tool(
             from bianbu_agent.security.security_dlp import DLPDenied
 
             security = extract_security_metadata(patch)
-            if security.get("result_blocked"):
-                raise DLPDenied(
-                    str(security.get("block_reason") or "工具返回值被 DLP 策略拦截"),
-                    stage="post_tool_call", tool=qualified_name,
-                )
             if "dlp_masked_result" in security:
                 masked_result = security["dlp_masked_result"]
                 if not isinstance(masked_result, str):
                     raise DLPDenied("工具返回值脱敏结果无效", stage="post_tool_call",
                                     tool=qualified_name)
                 content = masked_result
+            stand_ins = getattr(patch, "stream_stand_ins", None)
+            control = configurable.get("run_control")
+            if isinstance(stand_ins, Mapping) and control is not None:
+                # AFTER_TOOL runs inside the graph: its result is masked before
+                # the next model step, so the new stand-ins must reach the Run
+                # loop that restores streamed tokens for the user.
+                existing = getattr(control, "dlp_stand_ins", None)
+                if isinstance(existing, dict):
+                    existing.update(
+                        (str(key), str(value))
+                        for key, value in stand_ins.items()
+                    )
             after_sections = tuple(getattr(patch, "context_sections", ()) or ())
             if tool_failed:
                 # 事后复核描述的是「这次调用产出了什么」：调用自己就没成功时它
@@ -350,11 +376,15 @@ def build_plugin_tools(
     hook_runner: object | None = None,
     hook_ids: tuple[str, ...] | None = None,
     hook_ids_resolver: Callable[[str], Awaitable[tuple[str, ...]]] | None = None,
+    excluded_before_tool_hooks: Collection[str] = (),
 ) -> list[StructuredTool]:
     """Translate framework-neutral contributions at the LangChain boundary."""
 
     return [
-        _adapt_tool(item, hook_runner, hook_ids, hook_ids_resolver)
+        _adapt_tool(
+            item, hook_runner, hook_ids, hook_ids_resolver,
+            excluded_before_tool_hooks,
+        )
         for item in contributions
     ]
 
@@ -378,7 +408,7 @@ def _dlp_masked_args(patch) -> dict | None:
     return dict(masked) if isinstance(masked, Mapping) else None
 
 
-async def _run_hooks(hook_runner, point, context, hook_ids):
+async def _run_hooks(hook_runner, point, context, hook_ids, *, exclude=()):
     """执行某个 hook 点，**返回聚合后的 ContextPatch**。
 
     原实现签名是 `-> None` 且丢弃返回值，导致 BEFORE_TOOL / AFTER_TOOL 的
@@ -386,6 +416,10 @@ async def _run_hooks(hook_runner, point, context, hook_ids):
     到不了中间件，脱敏形同虚设。返回出去由调用方决定怎么用。
     """
     runner = hook_runner.run_hooks
+    if "exclude" in inspect.signature(runner).parameters:
+        if "hook_ids" in inspect.signature(runner).parameters:
+            return await runner(point, context, hook_ids=hook_ids, exclude=exclude)
+        return await runner(point, context, exclude=exclude)
     if "hook_ids" in inspect.signature(runner).parameters:
         return await runner(point, context, hook_ids=hook_ids)
     return await runner(point, context)

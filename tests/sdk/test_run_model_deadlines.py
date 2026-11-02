@@ -134,66 +134,6 @@ async def test_run_manager_fails_when_model_stream_never_produces_an_event(
 
 
 @pytest.mark.asyncio
-async def test_title_model_waits_for_active_conversation_model(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A low-capacity provider must always give the user response priority."""
-
-    conversation_started = asyncio.Event()
-    release_conversation = asyncio.Event()
-    title_started = asyncio.Event()
-
-    class BlockingConversationEngine:
-        async def stream(self, prompt, **kwargs):
-            del prompt, kwargs
-            conversation_started.set()
-            await release_conversation.wait()
-            yield RunEvent("token", {"text": "conversation done"})
-            yield RunEvent("done", {})
-
-    async def title_model(*_args, **_kwargs) -> str:
-        title_started.set()
-        return "generated title"
-
-    monkeypatch.setattr(
-        "bianbu_agent.runs.manager.generate_session_title",
-        title_model,
-    )
-    store = SQLiteRunStore(tmp_path / "runs.sqlite3")
-    await store.open()
-    manager = RunManager(
-        plugin_manager=Plugins(),
-        agent_manager=Agents(),
-        model_registry=ModelRegistry(
-            default_model=Model("default"),
-            models={"fast": Model("fast")},
-        ),
-        engine_builder=lambda *_args: BlockingConversationEngine(),
-        store=store,
-    )
-
-    conversation = await manager.run("session-priority", "hi")
-    await asyncio.wait_for(conversation_started.wait(), timeout=1)
-    title = await manager.run(
-        "session-priority",
-        "hi",
-        metadata={"console_operation": "generate_title"},
-    )
-    await asyncio.sleep(0.02)
-    assert not title_started.is_set()
-
-    release_conversation.set()
-    assert (await asyncio.wait_for(conversation.wait(), timeout=1)).status == (
-        "completed"
-    )
-    assert (await asyncio.wait_for(title.wait(), timeout=1)).status == "completed"
-    assert title_started.is_set()
-    await manager.close()
-    await store.close()
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("stream_state", ["complete", "no_final_marker", "stalled", "empty_keepalives"])
 async def test_streamed_tool_arguments_refresh_model_idle_deadline(tmp_path, stream_state):
     from langchain_core.messages import AIMessageChunk, ToolMessage

@@ -35,6 +35,27 @@ def _context() -> RunContext:
     return RunContext(run_id="run", session_id="session", agent_id="agent", request="hi")
 
 
+@pytest.mark.asyncio
+async def test_time_approval_is_private_and_owned_by_intent_hook():
+    ticket = {"kind": "disable_ntp_and_set_time", "token": "secret-ticket", "id": "private-id"}
+
+    async def handler(context):
+        return ContextPatch(direct_reply="Confirm NTP", approval=ticket)
+
+    events = []
+
+    async def observe(event):
+        events.append(event)
+
+    generation = _generation((HookContribution("bianbu.bibit.intent", HookPoint.BEFORE_RUN, handler),))
+    with observe_hooks(observe):
+        patch = await generation.run_hooks(HookPoint.BEFORE_RUN, _context())
+    assert patch.approval["token"] == "secret-ticket"
+    assert "secret-ticket" not in repr(events) and "private-id" not in repr(events)
+    other = _generation((HookContribution("vendor.other", HookPoint.BEFORE_RUN, handler),))
+    assert (await other.run_hooks(HookPoint.BEFORE_RUN, _context())).approval is None
+
+
 def test_hook_failure_text_never_empty() -> None:
     from types import SimpleNamespace
 
@@ -272,7 +293,6 @@ async def test_plugin_hooks_with_same_local_id_keep_canonical_selection_ids() ->
             HookPoint.BEFORE_RUN,
             run,
             id="shared.before-run",
-            metadata={"agent_selectable": True},
         )
 
     def runtime(owner: str) -> PluginRuntime:
@@ -468,7 +488,7 @@ async def test_direct_reply_at_other_hook_point_is_isolated_as_invalid_patch(cap
     assert "error=invalid patch" in caplog.text
 
 
-def _timed_hook(name, delay, *, priority, parallel, order, waits_for=()):
+def _timed_hook(name, delay, *, priority, order):
     async def handler(_context: RunContext) -> ContextPatch:
         order.append(f"{name}:start")
         await asyncio.sleep(delay)
@@ -480,93 +500,15 @@ def _timed_hook(name, delay, *, priority, parallel, order, waits_for=()):
         HookPoint.AFTER_RUN,
         handler,
         priority=priority,
-        parallel=parallel,
         id=f"{name}.hook",
-        waits_for=waits_for,
     )
 
 
 @pytest.mark.asyncio
-async def test_waits_for_only_delays_the_named_hooks() -> None:
-    """A device-side Hook waits for the gate but not for best-effort Hooks."""
-
+async def test_hooks_overlap_and_still_merge_in_priority_order() -> None:
     order: list[str] = []
-    guard = _timed_hook("guard", 0.2, priority=100, parallel=True, order=order)
-    recall = _timed_hook("recall", 0.5, priority=100, parallel=True, order=order)
-    device = _timed_hook(
-        "device",
-        0.2,
-        priority=200,
-        parallel=True,
-        order=order,
-        waits_for=("guard.plugin/*",),
-    )
-    generation = _generation((guard, recall, device))
-
-    started = asyncio.get_running_loop().time()
-    patch = await generation.run_hooks(
-        HookPoint.AFTER_RUN,
-        _context(),
-        hook_ids=(
-            "guard.plugin/guard.hook",
-            "recall.plugin/recall.hook",
-            "device.plugin/device.hook",
-        ),
-    )
-    elapsed = asyncio.get_running_loop().time() - started
-
-    # Serial would be 0.2 + 0.5 + 0.2 = 0.9s; only the gate is waited for, so
-    # the batch costs max(0.5, 0.2 + 0.2) = 0.5s.
-    assert elapsed < 0.7
-    assert order.index("device:start") > order.index("guard:end")
-    assert order.index("device:start") < order.index("recall:end")
-    # Merging still follows (priority, hook id), not completion order.
-    assert patch.context_sections == ("guard", "recall", "device")
-
-
-@pytest.mark.asyncio
-async def test_waits_for_ignores_dependencies_that_sort_later() -> None:
-    """A pattern that only matches a later Hook must not deadlock the batch."""
-
-    order: list[str] = []
-    early = _timed_hook(
-        "early", 0.05, priority=100, parallel=True, order=order,
-        waits_for=("late.plugin/*",),
-    )
-    late = _timed_hook("late", 0.05, priority=200, parallel=True, order=order)
-    generation = _generation((early, late))
-
-    patch = await asyncio.wait_for(
-        generation.run_hooks(
-            HookPoint.AFTER_RUN,
-            _context(),
-            hook_ids=("early.plugin/early.hook", "late.plugin/late.hook"),
-        ),
-        timeout=2,
-    )
-
-    assert patch.context_sections == ("early", "late")
-
-
-def test_waits_for_requires_parallel() -> None:
-    async def handler(_context: RunContext) -> ContextPatch:
-        return ContextPatch()
-
-    with pytest.raises(ValueError, match="waits_for requires parallel"):
-        HookContribution(
-            "device.plugin",
-            HookPoint.BEFORE_RUN,
-            handler,
-            id="device.hook",
-            waits_for=("bianbu.security/*",),
-        )
-
-
-@pytest.mark.asyncio
-async def test_parallel_hooks_overlap_and_still_merge_in_priority_order() -> None:
-    order: list[str] = []
-    slow = _timed_hook("slow", 0.4, priority=100, parallel=True, order=order)
-    fast = _timed_hook("fast", 0.1, priority=200, parallel=True, order=order)
+    slow = _timed_hook("slow", 0.4, priority=100, order=order)
+    fast = _timed_hook("fast", 0.1, priority=200, order=order)
     generation = _generation((slow, fast))
 
     started = asyncio.get_running_loop().time()
@@ -585,7 +527,37 @@ async def test_parallel_hooks_overlap_and_still_merge_in_priority_order() -> Non
 
 
 @pytest.mark.asyncio
-async def test_parallel_gate_denial_stops_later_serial_hooks() -> None:
+async def test_a_slow_later_hook_does_not_delay_a_faster_one() -> None:
+    """No Hook can make another wait: the batch is only as slow as its slowest."""
+
+    order: list[str] = []
+    quick = _timed_hook("quick", 0.05, priority=100, order=order)
+    early = _timed_hook("early", 0.5, priority=100, order=order)
+    late = _timed_hook("late", 0.05, priority=200, order=order)
+    generation = _generation((quick, early, late))
+
+    started = asyncio.get_running_loop().time()
+    patch = await generation.run_hooks(
+        HookPoint.AFTER_RUN,
+        _context(),
+        hook_ids=(
+            "quick.plugin/quick.hook",
+            "early.plugin/early.hook",
+            "late.plugin/late.hook",
+        ),
+    )
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert elapsed < 0.6
+    # The later Hook starts at once instead of queueing behind `early`.
+    assert order.index("late:start") < order.index("early:end")
+    # Merge order stays (priority, hook id): same priority, so `early` precedes
+    # `quick` even though `quick` finished first.
+    assert patch.context_sections == ("early", "quick", "late")
+
+
+@pytest.mark.asyncio
+async def test_gate_denial_fails_the_batch_even_though_all_hooks_start() -> None:
     ran: list[str] = []
 
     async def deny(_context: RunContext) -> ContextPatch:
@@ -598,7 +570,7 @@ async def test_parallel_gate_denial_stops_later_serial_hooks() -> None:
     generation = _generation((
         HookContribution(
             "guard.plugin", HookPoint.BEFORE_TOOL, deny, priority=100,
-            parallel=True, id="guard.hook",
+            id="guard.hook",
         ),
         HookContribution(
             "after.plugin", HookPoint.BEFORE_TOOL, later, priority=200,
@@ -606,17 +578,19 @@ async def test_parallel_gate_denial_stops_later_serial_hooks() -> None:
         ),
     ))
 
+    # Overlapping Hooks share the batch: the denial still fails the gate and
+    # therefore the Run, while a sibling that already started is not rolled back.
     with pytest.raises(PermissionError, match="denied by guard"):
         await generation.run_hooks(
             HookPoint.BEFORE_TOOL,
             _context(),
             hook_ids=("guard.plugin/guard.hook", "after.plugin/after.hook"),
         )
-    assert ran == []
+    assert ran == ["later"]
 
 
 @pytest.mark.asyncio
-async def test_cancelling_run_hooks_cleans_up_pending_parallel_hooks() -> None:
+async def test_cancelling_run_hooks_cleans_up_pending_hooks() -> None:
     cleaned: list[str] = []
 
     async def slow(_context: RunContext) -> ContextPatch:
@@ -632,11 +606,11 @@ async def test_cancelling_run_hooks_cleans_up_pending_parallel_hooks() -> None:
 
     generation = _generation((
         HookContribution(
-            "slow.plugin", HookPoint.AFTER_RUN, slow, priority=100, parallel=True,
+            "slow.plugin", HookPoint.AFTER_RUN, slow, priority=100,
             id="slow.hook",
         ),
         HookContribution(
-            "quick.plugin", HookPoint.AFTER_RUN, quick, priority=200, parallel=True,
+            "quick.plugin", HookPoint.AFTER_RUN, quick, priority=200,
             id="quick.hook",
         ),
     ))
@@ -654,7 +628,27 @@ async def test_cancelling_run_hooks_cleans_up_pending_parallel_hooks() -> None:
 
 
 @pytest.mark.asyncio
-async def test_parallel_non_gate_failure_stays_fail_open() -> None:
+@pytest.mark.parametrize("point", list(HookPoint))
+async def test_denial_terminates_at_every_event_point(point: HookPoint) -> None:
+    """A veto is not limited to "gate" events: the event name only says when."""
+
+    async def deny(_context: RunContext) -> ContextPatch:
+        raise PermissionError("denied by guard")
+
+    generation = _generation((
+        HookContribution("guard.plugin", point, deny, id="guard.hook"),
+    ))
+
+    with pytest.raises(PermissionError, match="denied by guard") as caught:
+        await generation.run_hooks(point, _context())
+    # A bare PermissionError from plugin code must still terminate the Run at
+    # the tool boundary; the security middleware otherwise converts it into a
+    # ToolMessage and lets the Agent try another path.
+    assert caught.value.should_terminate_run is True
+
+
+@pytest.mark.asyncio
+async def test_non_gate_failure_stays_fail_open() -> None:
     async def broken(_context: RunContext) -> ContextPatch:
         raise ValueError("best effort")
 
@@ -664,11 +658,11 @@ async def test_parallel_non_gate_failure_stays_fail_open() -> None:
     generation = _generation((
         HookContribution(
             "broken.plugin", HookPoint.AFTER_RUN, broken, priority=100,
-            parallel=True, id="broken.hook",
+            id="broken.hook",
         ),
         HookContribution(
             "healthy.plugin", HookPoint.AFTER_RUN, healthy, priority=200,
-            parallel=True, id="healthy.hook",
+            id="healthy.hook",
         ),
     ))
 

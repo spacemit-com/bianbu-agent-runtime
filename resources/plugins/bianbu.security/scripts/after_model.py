@@ -37,17 +37,30 @@ async def after_model(run: dict) -> dict | None:
     meta.pop("_handler_trace", None)
     payload.update(meta)
     if result.decision.value == "BLOCK":
-        # AFTER_MODEL 不在重抛白名单 → 落标记 + 记审计
-        payload["output_blocked"] = True
-        payload["block_reason"] = result.message
         bridge.audit(agent_id, "hook:post_model_call", "BLOCK",
                      str(result.message)[:200])
+        raise SecurityDenied(
+            tool="<model>", capability="model.output",
+            reason=result.message or "模型输出含受限敏感信息",
+        )
     if result.decision.value == "MODIFY" and result.modified_data is not None:
         payload["dlp_masked_output"] = result.modified_data
-    return dict(metadata={"securityd": payload})
+    return dict(
+        metadata={"securityd": payload},
+        # Read after ``invoke``: masking a tool result or model output creates
+        # stand-ins that did not exist when the Hook started.
+        stream_stand_ins=bridge.session_state(run["session_id"]).get("pii_map") or None,
+    )
+
+
+def _warmup():
+    _bootstrap()
+    from lib import warm_bridge
+
+    warm_bridge()
 
 
 if __name__ == "__main__":
     from protocol import main
 
-    main(after_model)
+    main(after_model, warmup=_warmup)

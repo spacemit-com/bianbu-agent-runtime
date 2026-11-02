@@ -97,17 +97,6 @@ class SessionInputBroker:
     async def _active_run(self, session_id: str):
         records = await self._runtime.runs.list(session_id=session_id)
         for record in reversed(records):
-            request = getattr(record, "request", {})
-            metadata = (
-                request.get("metadata", {})
-                if isinstance(request, Mapping)
-                else {}
-            )
-            if (
-                isinstance(metadata, Mapping)
-                and metadata.get("console_operation") == "generate_title"
-            ):
-                continue
             if str(getattr(record, "status", "")) not in _TERMINAL:
                 reconciled = await self._runtime.runs.get_record(record.request_id)
                 if (

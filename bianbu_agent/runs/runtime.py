@@ -98,10 +98,6 @@ def compose_agent_request(spec: AgentSpec, request: str) -> str:
     ]
     if spec.soul:
         profile.append(f"Soul:\n{spec.soul}")
-    if spec.tools:
-        profile.append("Available tools: " + ", ".join(spec.tools) + ".")
-    else:
-        profile.append("Available tools: none.")
     if spec.skills:
         profile.append("Enabled skills: " + ", ".join(spec.skills) + ".")
     else:

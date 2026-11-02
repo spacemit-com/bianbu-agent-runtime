@@ -21,10 +21,27 @@ def _capture_system_prompt(
     model_tool_names: tuple[str, ...] = (),
     model=None,
 ) -> str:
+    return str(_capture_graph_kwargs(
+        monkeypatch,
+        agent,
+        generation,
+        model_tool_names=model_tool_names,
+        model=model,
+    )["system_prompt"])
+
+
+def _capture_graph_kwargs(
+    monkeypatch,
+    agent: AgentSpec,
+    generation,
+    *,
+    model_tool_names: tuple[str, ...] = (),
+    model=None,
+) -> dict[str, object]:
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(
-        "bianbu_agent.engines.default.build_plugin_tools",
+        "bianbu_agent.engines.langgraph.build_plugin_tools",
         lambda *args, **kwargs: [
             SimpleNamespace(name=name) for name in model_tool_names
         ],
@@ -39,11 +56,11 @@ def _capture_system_prompt(
         return object()
 
     monkeypatch.setattr(
-        "bianbu_agent.engines.default.build_langgraph_agent",
+        "bianbu_agent.engines.langgraph.build_langgraph_agent",
         capture_graph,
     )
     build_default_engine(agent, generation, model if model is not None else object())
-    return str(captured["system_prompt"])
+    return captured
 
 
 @pytest.mark.parametrize("architecture", ["riscv64", "x86_64", ""])
@@ -167,13 +184,12 @@ def test_default_engine_includes_complete_agent_profile_before_skills(monkeypatc
         "喜欢跳舞\n"
         "\n"
         "## Power Dependencies\n"
+        "\n"
+        "- Skills: rhythm\n"
+        "- MCP servers: none\n"
+        "- Plugins: none\n"
     )
     assert body.endswith(
-        "## Tool Policy\n"
-        "\n"
-            "Available tool names: none. Never call or invent a tool that is not "
-        "in this list.\n"
-        "\n"
         "## Skill: Rhythm\n"
         "\n"
         "Keep rhythm."
@@ -182,9 +198,9 @@ def test_default_engine_includes_complete_agent_profile_before_skills(monkeypatc
         body.index("## Agent Profile")
         < body.index("## Agent Soul")
         < body.index("## Power Dependencies")
-        < body.index("## Tool Policy")
         < body.index("## Skill: Rhythm")
     )
+    assert "## Tool Policy" not in body
 
 
 def test_default_engine_states_the_skills_the_user_attached(monkeypatch):
@@ -252,14 +268,15 @@ def test_default_engine_emits_name_only_profile_when_optional_fields_are_empty(
         "## Power Dependencies\n"
     )
     assert body.endswith(
-        "## Tool Policy\n"
+        "## Power Dependencies\n"
         "\n"
-            "Available tool names: none. Never call or invent a tool that is not "
-        "in this list."
+        "- Skills: none\n"
+        "- MCP servers: none\n"
+        "- Plugins: none"
     )
 
 
-def test_default_engine_system_prompt_forbids_unbound_tool_names(monkeypatch):
+def test_default_engine_binds_tool_schemas_without_repeating_their_names(monkeypatch):
     agent = AgentSpec(
         id="browser-only",
         name="Browser Only",
@@ -272,15 +289,19 @@ def test_default_engine_system_prompt_forbids_unbound_tool_names(monkeypatch):
         audit=object(),
     )
 
-    system_prompt = _capture_system_prompt(
+    captured = _capture_graph_kwargs(
         monkeypatch,
         agent,
         generation,
         model_tool_names=("mcp__browser__browser_navigate",),
     )
+    system_prompt = str(captured["system_prompt"])
 
-    assert "Available tool names: mcp__browser__browser_navigate." in system_prompt
-    assert "Never call or invent a tool that is not in this list." in system_prompt
+    assert [tool.name for tool in captured["tools"]] == [
+        "mcp__browser__browser_navigate"
+    ]
+    assert "## Tool Policy" not in system_prompt
+    assert "mcp__browser__browser_navigate" not in system_prompt
 
 
 def test_minimax_streaming_requests_token_usage() -> None:
@@ -310,6 +331,42 @@ def test_openai_compatible_model_sets_bounded_request_timeout() -> None:
     )
 
     assert model.request_timeout == 12.5
+
+
+@pytest.mark.parametrize("effort,expected", [
+    ("off", {}),
+    ("low", {"reasoning_effort": "low"}),
+    ("high", {"reasoning_effort": "high"}),
+    ("max", {"reasoning_effort": "max"}),
+])
+def test_openai_compatible_model_sends_selected_effort(effort, expected) -> None:
+    model = to_langchain_model(OpenAICompatibleModel(
+        model="reasoning-model", api_key="test-key",
+        base_url="https://example.test/v1", reasoning_effort=effort,
+    ))
+
+    payload = model._get_request_payload("hello")
+
+    assert {key: payload.get(key) for key in expected} == expected
+    assert ("reasoning_effort" in payload) is bool(expected)
+
+
+def test_deepseek_effort_disables_and_enables_thinking() -> None:
+    enabled = to_langchain_model(OpenAICompatibleModel(
+        model="deepseek-flash", api_key="test-key",
+        base_url="https://api.deepseek.com/v1", reasoning_effort="max",
+        thinking_format="deepseek",
+    ))._get_request_payload("hello")
+    disabled = to_langchain_model(OpenAICompatibleModel(
+        model="deepseek-flash", api_key="test-key",
+        base_url="https://api.deepseek.com/v1", reasoning_effort="off",
+        thinking_format="deepseek",
+    ))._get_request_payload("hello")
+
+    assert enabled["reasoning_effort"] == "max"
+    assert enabled["extra_body"]["thinking"] == {"type": "enabled"}
+    assert "reasoning_effort" not in disabled
+    assert disabled["extra_body"]["thinking"] == {"type": "disabled"}
 
 
 def test_openai_compatible_model_preserves_reasoning_content() -> None:
@@ -396,7 +453,9 @@ def test_provider_payload_answers_tool_calls_langchain_rejected() -> None:
 
 
 @pytest.mark.parametrize("model_name,with_tools,expected", [
+    ("deepseek-flash", True, True),
     ("deepseek-v4-flash", True, True),
+    ("deepseek-v4-pro", True, True),
     ("deepseek-v4-flash", False, False),
     ("other-model", True, False),
 ])
@@ -421,11 +480,44 @@ def test_nonstreaming_deepseek_preserves_reasoning_for_child_tools() -> None:
     assert result.generations[0].message.additional_kwargs["reasoning_content"] == "plan"
 
 
+def test_default_engine_skips_skill_dlp_without_security_plugin(monkeypatch):
+    agent = AgentSpec(
+        id="bianbu-agent-default",
+        name="default",
+        skills=("rhythm",),
+    )
+    generation = SimpleNamespace(
+        tools={},
+        skills={
+            "rhythm": SimpleNamespace(
+                spec=SimpleNamespace(
+                    display_name="Rhythm",
+                    description="Keep rhythm.",
+                    instructions="Keep time.",
+                )
+            )
+        },
+        policy=object(),
+        audit=object(),
+    )
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("non-security Agent must not run Skill DLP")
+
+    monkeypatch.setattr(
+        "bianbu_agent.security.security_skill_dlp.scan_skill_sections", forbidden
+    )
+    prompt = _capture_system_prompt(monkeypatch, agent, generation)
+
+    assert "Rhythm" in prompt
+
+
 def test_default_engine_scans_skills_with_security_agent_namespace(monkeypatch):
     agent = AgentSpec(
         id="bianbu-agent-default",
         name="default",
         skills=("rhythm",),
+        plugins=("bianbu.security",),
     )
     generation = SimpleNamespace(
         tools={},
@@ -463,6 +555,7 @@ def test_default_engine_scans_skills_with_managed_worker_security_namespace(
         id="bianbu-agent-default",
         name="default",
         skills=("rhythm",),
+        plugins=("bianbu.security",),
     )
     generation = SimpleNamespace(
         tools={},
@@ -501,7 +594,7 @@ async def test_default_engine_carries_resolved_provider_identity_into_runtime(
     graph = object()
     callback = object()
     monkeypatch.setattr(
-        "bianbu_agent.engines.default.build_plugin_tools",
+        "bianbu_agent.engines.langgraph.build_plugin_tools",
         lambda *args, **kwargs: [],
     )
     monkeypatch.setattr(
@@ -509,7 +602,7 @@ async def test_default_engine_carries_resolved_provider_identity_into_runtime(
         lambda model: model,
     )
     monkeypatch.setattr(
-        "bianbu_agent.engines.default.build_langgraph_agent",
+        "bianbu_agent.engines.langgraph.build_langgraph_agent",
         lambda **kwargs: graph,
     )
     store = YAMLModelStore(tmp_path / "models")
@@ -544,7 +637,7 @@ def test_agent_profile_contains_resolved_model_without_credentials(monkeypatch, 
     model = OpenAICompatibleModel(model=name, provider_id=provider, api_key="secret-test-key",
                                   base_url="https://private-endpoint.invalid/v1")
     prompt = _capture_system_prompt(monkeypatch, agent, SimpleNamespace(tools={}, skills={}, hooks={}), model=model)
-    profile = prompt.split("## Tool Policy")[0]
+    profile = prompt.split("## Platform Context")[0]
     assert f'Model: {name}' in profile
     assert f'Model provider ID: {provider}' in profile
     assert "old-model" not in profile

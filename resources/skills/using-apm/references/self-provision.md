@@ -8,10 +8,10 @@ Power dependencies and the only target this flow installs for. For `codex`, `cla
 `hermes-agent`, keep using the user-driven flow in the [CLI reference](cli.md).
 
 Every expert the Runtime serves gets this handbook and a `## Power Dependencies` section in its context. That
-section lists the Powers its own `agent.yaml` declares, which of them this device has, and which are missing,
-plus the execution mode the Runtime actually started it under (`host`, `sandbox`, or `unknown` when the process
-was not started by the Runtime). A declared Power that is missing never stops the expert from running: closing
-that gap is what this flow is for.
+section names the Skills, MCP servers and Plugins resolved for this session; it does not report what is missing.
+The execution mode is stated in `## Platform Context` (`host`, `sandbox`, or `unknown` when the process was not
+started by the Runtime). A declared Power that is missing never stops the expert from running: closing that gap
+is what this flow is for.
 
 ### Runtime: the sandbox cannot install
 
@@ -35,8 +35,8 @@ Read your own identity declaration from the `agent.yaml` of the expert you are r
 root (default `~/.bianbu-agent/agents/<name>/agent.yaml`, overridden by `BIANBU_AGENT_HOME`; the runtime may point
 `data_dir` elsewhere). If the session does not make your own identity or the data root identifiable,
 ask the user instead of guessing: do not install on a guess. Reading the installed `agents/` directory is fine;
-editing it is not. When your context already carries `## Power Dependencies`, treat it as the declaration and
-skip the file read.
+editing it is not. `## Power Dependencies` lists resolved names, not the declaration, so read `agent.yaml` when
+you need to know what was declared.
 
 Installed Skills and Plugins sit in the same root (`<root>/skills/<name>`, `<root>/plugins/<name>`), so a
 declared dependency that is missing there is missing for this session too. Bibit's MCP server definitions live

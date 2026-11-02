@@ -232,9 +232,13 @@ const I18N = {
         agents_description_zh: '中文简介', agents_description_zh_placeholder: '简要说明这个专家擅长什么',
         agents_soul: 'Soul', agents_soul_placeholder: '描述专家、目标、工作方式和输出要求...',
         agents_model: '模型', agents_default_model: '使用默认主模型',
+        agents_effort: '推理强度',
+        effort_off: '关闭（off）', effort_low: '低（low，默认）',
+        effort_high: '高（high）', effort_max: '最高（max）',
         agents_tools: '工具', agents_skills: '技能', agents_plugins: '插件', agents_mcps: 'MCP', agents_select_all: '全选',
         agents_no_capabilities: '暂无可用项目', agents_name_required: '请填写专家名称',
         agents_capability_preset: '默认能力，所有专家固定启用',
+        agents_capability_private: '此专家私有能力，不可取消',
         agents_saved: '专家已保存', agents_save_failed: '保存失败',
         agents_delete_title: '删除专家', agents_delete_confirm: '确定删除这个专家吗？此操作无法撤销。',
         agents_use: '使用并新建会话', agents_chatting_with: '当前主 Agent', agents_bound: '已绑定',
@@ -298,20 +302,21 @@ const I18N = {
         example_skill_title: '技能系统', example_skill_text: '查看所有支持的工具和技能',
         example_web_title: '指令中心', example_web_text: '查看全部命令',
         stop_active: '停止当前任务',
-        skill_picker_title: '临时使用技能',
+        skill_picker_title: '选择常驻技能',
         skill_picker_search: '搜索全部可用技能',
         skill_picker_loading: '正在加载技能…',
         skill_picker_empty: '没有匹配的可用技能',
         skill_picker_error: '技能加载失败，请重试',
         skill_picker_selected: '已选择',
         skill_picker_close: '关闭技能选择器',
-        skill_picker_remove: '移除临时技能',
-        skill_picker_selected_skills: '下一条消息临时使用的技能',
-        input_placeholder: '输入消息，@ 切换专家，/ 临时使用技能',
+        skill_picker_remove: '取消常驻技能',
+        skill_picker_selected_skills: '当前会话已启用的技能',
+        input_placeholder: '输入消息，@ 切换专家，/ 选择技能',
         conversation_chat: '对话', conversation_trajectory: '轨迹',
         trajectory_search: '搜索轨迹', trajectory_load_older: '加载更早轨迹',
         trajectory_empty: '当前会话暂无轨迹', trajectory_no_results: '没有匹配的轨迹记录',
         trajectory_turn: '轮次', trajectory_records: '条记录', trajectory_turns: '个轮次',
+        trajectory_turn_title: '标题', trajectory_turn_run: '运行',
         trajectory_duration: '耗时', trajectory_input: '输入', trajectory_output: '输出',
         trajectory_metadata: '元数据', trajectory_select: '选择一条记录查看详情',
         trajectory_waiting: '等待', trajectory_nested: '时间已计入上一层记录',
@@ -431,7 +436,7 @@ const I18N = {
         security_unavailable_title: '安全服务不可用，高危操作已拦截',
         security_unavailable_hint: '判权服务（bianbu-securityd）暂时不可达，高危能力按 fail-closed 拦截。请检查服务状态后重试。',
         network_policy_blocked_title: '无法连接到模型服务',
-        network_policy_blocked_hint: '请在安全控制中心的能力管理页更新该工具的策略或网络范围，保存后重启此 Agent。',
+        network_policy_blocked_hint: '请在安全控制中心的能力管理页更新该工具的策略或网络范围；保存后下次请求会自动重启此 Agent 并生效。',
         provider_connection_failed_title: '模型服务暂时无法连接',
         provider_connection_failed_hint: '请检查网络、Provider 地址和服务状态后重试；若刚改过网络策略，需重启此 Agent 才会生效。',
         provider_timeout_title: '模型服务响应超时',
@@ -473,9 +478,13 @@ const I18N = {
         agents_description_zh: 'Chinese description', agents_description_zh_placeholder: 'What is this expert especially good at, in Chinese?',
         agents_soul: 'Soul', agents_soul_placeholder: "Describe the expert's goals, workflow, and output requirements...",
         agents_model: 'Model', agents_default_model: 'Use default main model',
+        agents_effort: 'Reasoning effort',
+        effort_off: 'Off', effort_low: 'Low (default)',
+        effort_high: 'High', effort_max: 'Max',
         agents_tools: 'Tools', agents_skills: 'Skills', agents_plugins: 'Plugins', agents_mcps: 'MCP', agents_select_all: 'Select all',
         agents_no_capabilities: 'No items available', agents_name_required: 'Enter an expert name',
         agents_capability_preset: 'Default capability, always on for every expert',
+        agents_capability_private: 'Private to this expert; cannot be turned off',
         agents_saved: 'Expert saved', agents_save_failed: 'Could not save expert',
         agents_delete_title: 'Delete Expert', agents_delete_confirm: 'Delete this expert? This action cannot be undone.',
         agents_use: 'Use in new session', agents_chatting_with: 'Main Agent', agents_bound: 'Bound',
@@ -539,20 +548,21 @@ const I18N = {
         example_skill_title: 'Skills', example_skill_text: 'Show current tools and skills',
         example_web_title: 'Commands', example_web_text: 'Show all commands',
         stop_active: 'Stop active task',
-        skill_picker_title: 'Use skills temporarily',
+        skill_picker_title: 'Select resident skills',
         skill_picker_search: 'Search all available skills',
         skill_picker_loading: 'Loading skills…',
         skill_picker_empty: 'No matching available skills',
         skill_picker_error: 'Could not load skills. Try again.',
         skill_picker_selected: 'Selected',
         skill_picker_close: 'Close skill picker',
-        skill_picker_remove: 'Remove temporary skill',
-        skill_picker_selected_skills: 'Skills used temporarily for the next message',
-        input_placeholder: 'Type a message, @ to switch Experts, / to use a skill temporarily',
+        skill_picker_remove: 'Remove resident skill',
+        skill_picker_selected_skills: 'Skills enabled for this conversation',
+        input_placeholder: 'Type a message, @ to switch Experts, / to select a skill',
         conversation_chat: 'Chat', conversation_trajectory: 'Trajectory',
         trajectory_search: 'Search trajectory', trajectory_load_older: 'Load earlier trajectory',
         trajectory_empty: 'No trajectory for this session', trajectory_no_results: 'No matching trajectory records',
         trajectory_turn: 'Turn', trajectory_records: 'records', trajectory_turns: 'turns',
+        trajectory_turn_title: 'Title', trajectory_turn_run: 'Run',
         trajectory_duration: 'Duration', trajectory_input: 'Input', trajectory_output: 'Output',
         trajectory_metadata: 'Metadata', trajectory_select: 'Select a record to inspect it',
         trajectory_waiting: 'Waiting', trajectory_nested: 'Time counted in the record above',
@@ -673,7 +683,7 @@ const I18N = {
         security_unavailable_title: 'Security service unavailable; high-risk operation blocked',
         security_unavailable_hint: 'The authorization service (bianbu-securityd) is unreachable, so high-risk capabilities are blocked fail-closed. Check the service and retry.',
         network_policy_blocked_title: 'Unable to connect to the model service',
-        network_policy_blocked_hint: 'Update the tool policy or network scope in Security Control Center > Capabilities, then restart this Agent.',
+        network_policy_blocked_hint: 'Update the tool policy or network scope in Security Control Center > Capabilities. The Agent restarts automatically on the next request.',
         provider_connection_failed_title: 'Model service is temporarily unreachable',
         provider_connection_failed_hint: 'Check the network, Provider URL, and service status, then retry. If you just changed the network policy, restart this Agent for it to take effect.',
         provider_timeout_title: 'Model service timed out',
@@ -1750,7 +1760,14 @@ function createTrajectoryRecord(record) {
     button.setAttribute('aria-pressed', String(record.key === selectedTrajectoryKey));
     const index = document.createElement('span');
     index.className = 'trajectory-record-index';
-    index.textContent = record.kind === 'wait' ? '—' : `#${record.seq}`;
+    // 历史读模型会把相邻的流式分片折叠成一条事件；行号必须写出它覆盖的
+    // seq 区间，否则被折叠的序号看起来像没有记录。
+    const span = Array.isArray(record.seq_range)
+        ? record.seq_range
+        : [record.seq, record.end_seq == null ? record.seq : record.end_seq];
+    index.textContent = record.kind === 'wait'
+        ? '—'
+        : span[1] > span[0] ? `#${span[0]}–${span[1]}` : `#${record.seq}`;
     const time = document.createElement('time');
     time.className = 'trajectory-record-time';
     time.textContent = trajectoryClock(record.started_at);
@@ -1799,7 +1816,14 @@ function renderTrajectorySnapshot(sid = sessionId, preserveScroll = false) {
         section.className = 'trajectory-turn';
         const header = document.createElement('header');
         const heading = document.createElement('h3');
-        heading.textContent = `${t('trajectory_turn')} ${turn.turn}`;
+        // Trajectory accepts two input kinds: a Run, and Session-level title
+        // work that owns no Run.  Name the kind so the two are never confused.
+        const kindLabel = turn.kind === 'title'
+            ? t('trajectory_turn_title')
+            : t('trajectory_turn_run');
+        heading.textContent = turn.kind === 'title' && turn.title
+            ? `${t('trajectory_turn')} ${turn.turn} · ${kindLabel} · ${turn.title}`
+            : `${t('trajectory_turn')} ${turn.turn} · ${kindLabel}`;
         const details = document.createElement('span');
         const waiting = turn.waiting
             ? ` · ${t('trajectory_waiting')} ${trajectorySeconds(turn.waiting)}` : '';
@@ -2099,12 +2123,7 @@ function renderSessionModelSnapshot(sid) {
             return;
         }
         if (message.role === 'system' && message.kind === 'model_recovery') {
-            const notice = document.createElement('div');
-            notice.className = 'context-compression-divider';
-            notice.setAttribute('role', 'status');
-            notice.textContent = message.message || '正在保留已有进度并分步继续。';
-            notice.dataset.sessionMessageKey = sessionMessageKey(message);
-            messagesDiv.appendChild(notice);
+            messagesDiv.appendChild(createModelRecoveryNotice(message));
             return;
         }
         let element;
@@ -2153,6 +2172,20 @@ function sessionMessageKey(message) {
         return `${message.run_id || ''}:user:${message.message_id || 'initial'}`;
     }
     return `${message.run_id || ''}:assistant:${message.segment_id || ''}`;
+}
+
+function modelRecoveryMessageKey(message) {
+    return `${message.run_id || ''}:system:model_recovery:`
+        + `${message.created_at || ''}:${message.attempt || ''}`;
+}
+
+function createModelRecoveryNotice(message) {
+    const notice = document.createElement('div');
+    notice.className = 'context-compression-divider';
+    notice.setAttribute('role', 'status');
+    notice.textContent = message.message || '正在保留已有进度并分步继续。';
+    notice.dataset.sessionMessageKey = modelRecoveryMessageKey(message);
+    return notice;
 }
 
 function ensureOlderHistoryControl(sid, visible) {
@@ -2376,6 +2409,21 @@ function renderLiveSessionModelSnapshot(sid) {
             appendContextCompressionDivider(messagesDiv, message);
             return;
         }
+        if (message.role === 'system') {
+            if (message.kind === 'model_recovery') {
+                const key = modelRecoveryMessageKey(message);
+                const exists = Array.from(
+                    messagesDiv.querySelectorAll('[data-session-message-key]')
+                ).some(element => element.dataset.sessionMessageKey === key);
+                if (!exists) {
+                    const loading = messagesDiv.querySelector('.chat-loading-indicator');
+                    messagesDiv.insertBefore(
+                        createModelRecoveryNotice(message), loading,
+                    );
+                }
+            }
+            return;
+        }
         if (message.role === 'user') {
             let user;
             if (message.message_id) {
@@ -2578,11 +2626,6 @@ function renderSelectedSkills() {
     });
 }
 
-function consumeSelectedSkills(skillIds) {
-    skillIds.forEach(skillId => selectedSkills.delete(skillId));
-    renderSelectedSkills();
-}
-
 function clearSelectedSkills() {
     selectedSkills.clear();
     renderSelectedSkills();
@@ -2590,8 +2633,8 @@ function clearSelectedSkills() {
 
 // 专家已经在跑的 Skill 有两类：它自己点名的，以及它选的 Plugin 附带的 —— Plugin
 // 一旦进会话，名下 Skill 就跟着一起跑（Tool / MCP 也会把它们的 Plugin 拉进来，所以
-// 声明里带 `插件id/成员名` 的条目同样算这个 Plugin 在场）。两类都不该再出现在临时
-// 技能里：用户以为"临时加一次"，其实它本来就在跑。预设 Skill 固定启用，同理排除。
+// 声明里带 `插件id/成员名` 的条目同样算这个 Plugin 在场）。两类都不该再出现在可选
+// 技能里：用户以为额外加了一次，其实它本来就在跑。预设 Skill 固定启用，同理排除。
 function expertOwnedSelectors() {
     const skills = new Set((activeAgent?.skills || []).map(String));
     const plugins = new Set((activeAgent?.plugins || []).map(String));
@@ -3144,6 +3187,13 @@ async function uploadDirectory(rootName, entries) {
 async function addAttachments(files) {
     const list = Array.from(files || []);
     if (list.length === 0) return;
+    try {
+        await ensureDraftSession();
+    } catch (error) {
+        console.warn('[session.materialize]', error);
+        showComposerNotice(t('error_send'));
+        return;
+    }
     if (list.some(isImageFile)) {
         const support = await visionSupport();
         if (!support.available) showComposerNotice(support.message);
@@ -3154,6 +3204,13 @@ async function addAttachments(files) {
 async function addFolderAttachments(files) {
     const groups = _groupDirectoryFiles(files);
     if (groups.size === 0) return;
+    try {
+        await ensureDraftSession();
+    } catch (error) {
+        console.warn('[session.materialize]', error);
+        showComposerNotice(t('error_send'));
+        return;
+    }
     await Promise.all(
         Array.from(groups.entries()).map(([root, entries]) => uploadDirectory(root, entries)),
     );
@@ -3252,7 +3309,7 @@ chatInput.addEventListener('compositionend', () => {
 });
 
 // ── Slash Menu ───────────────────────────────────────────────
-// 「/」只做一件事：为下一条消息临时选技能。候选取自同一个技能目录，并且只保留
+// 「/」只做一件事：选择常驻技能。候选取自同一个技能目录，并且只保留
 // 这个专家还没有的技能（见 skillCandidate）；命令列表不再出现在菜单里。
 const slashMenu = document.getElementById('slash-menu');
 let slashActiveIdx = 0;
@@ -3262,6 +3319,12 @@ let slashLastFilter = null;
 let slashLastMouseX = -1;
 let slashLastMouseY = -1;
 let slashSkillsLoading = false;
+// One catalog refresh per menu opening.  Without this, an empty catalog would
+// re-enter the loader every time the refresh finished.
+let slashSkillsRefreshed = false;
+// A refresh asked for while the previous fetch is still in flight must not be
+// dropped: reopening the menu faster than the network is normal.
+let slashSkillsReload = false;
 
 function slashItems(filter) {
     return matchSkills(String(filter || '').replace(/^\/+/, '')).map(skill => ({
@@ -3270,31 +3333,59 @@ function slashItems(filter) {
     }));
 }
 
-function showSlashMenu(filter) {
+function renderSlashMenu(filter) {
     const q = String(filter || '');
-    if (q === slashLastFilter && !slashMenu.classList.contains('hidden')) return;
     slashLastFilter = q;
     slashFiltered = slashItems(q);
     if (!slashFiltered.length) {
-        hideSlashMenu();
-        if (!availableSkills.length && !slashSkillsLoading) void loadSlashSkills(q);
+        // Clearing the list is not the same as closing the menu: the catalog
+        // refresh is still in flight, and resetting the per-opening latch here
+        // would make the next letter start a second fetch.
+        slashMenu.classList.add('hidden');
+        slashMenu.innerHTML = '';
+        slashActiveIdx = -1;
+        slashNavByKeyboard = false;
         return;
     }
     slashActiveIdx = Math.min(Math.max(slashActiveIdx, 0), slashFiltered.length - 1);
     slashNavByKeyboard = true;
     renderSlashItems();
     slashMenu.classList.remove('hidden');
-    if (!availableSkills.length && !slashSkillsLoading) void loadSlashSkills(q);
 }
 
-// 技能目录按需拉取一次；拉回来后按当前输入重新渲染，收起菜单会顺手作废这次结果。
+function showSlashMenu(filter) {
+    const q = String(filter || '');
+    const opening = slashMenu.classList.contains('hidden');
+    if (!opening && q === slashLastFilter) return;
+    // A Skill installed while the console stays open must appear on the very
+    // next `/`.  The catalog used to be fetched only when it was empty, so a
+    // long-lived page kept serving whatever it had loaded on first use.
+    const refresh = opening && !slashSkillsRefreshed;
+    if (refresh) {
+        slashSkillsRefreshed = true;
+        if (slashSkillsLoading) slashSkillsReload = true;
+        else void loadSlashSkills(q);
+    }
+    renderSlashMenu(q);
+}
+
+// 每次打开菜单都刷新技能目录；拉回来后按当前输入重新渲染，收起菜单会顺手作废这次结果。
 async function loadSlashSkills(filter) {
+    if (slashSkillsLoading) {
+        slashSkillsReload = true;
+        return;
+    }
     slashSkillsLoading = true;
     try {
-        await loadAvailableSkills();
-    } catch (error) {
-        console.warn('[skills.slash]', error);
-        return;
+        do {
+            slashSkillsReload = false;
+            try {
+                await loadAvailableSkills();
+            } catch (error) {
+                console.warn('[skills.slash]', error);
+                return;
+            }
+        } while (slashSkillsReload);
     } finally {
         slashSkillsLoading = false;
     }
@@ -3303,14 +3394,14 @@ async function loadSlashSkills(filter) {
     // for showing the result: wait for the composer instead, and re-read it
     // because the user may have typed past the filter we loaded for.
     if (!chatInput.value.startsWith('/')) return;
-    slashLastFilter = null;
-    showSlashMenu(chatInput.value);
+    renderSlashMenu(chatInput.value);
 }
 
 function hideSlashMenu() {
     slashMenu.classList.add('hidden');
     slashMenu.innerHTML = '';
     slashFiltered = [];
+    slashSkillsRefreshed = false;
     slashActiveIdx = -1;
     slashLastFilter = '';
     slashNavByKeyboard = false;
@@ -3527,7 +3618,7 @@ async function sendVoiceMessage(text, audioUrl) {
     historySavedDraft = '';
 
     const conversation = prepareConversationSend();
-    if (conversation.draft) {
+    if (conversation.draft && !conversation.created) {
         const created = await fetch(`${PUBLIC_API_BASE}/sessions`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -3540,6 +3631,9 @@ async function sendVoiceMessage(text, audioUrl) {
             restoreRejectedSendInput(text, pendingAttachments);
             addBotMessage(t('error_send'), new Date());
             return;
+        }
+        if (newChatDraft?.sessionId === conversation.sessionId) {
+            newChatDraft.created = true;
         }
     }
     const ws = document.getElementById('welcome-screen');
@@ -3744,7 +3838,6 @@ async function submitActiveRunText(runId, text) {
             addBotMessage(t('error_send'), new Date());
             return;
         }
-        if (ownerSession === sessionId) consumeSelectedSkills(skillIds);
         const alreadyRendered = Array.from(
             messagesDiv.querySelectorAll('[data-message-id]')
         ).some(element => element.dataset.messageId === messageId);
@@ -3756,10 +3849,7 @@ async function submitActiveRunText(runId, text) {
         const rendered = Array.from(
             messagesDiv.querySelectorAll('[data-message-id]')
         ).some(element => element.dataset.messageId === messageId);
-        if (rendered) {
-            if (ownerSession === sessionId) consumeSelectedSkills(skillIds);
-            return;
-        }
+        if (rendered) return;
         restoreRejectedSendInput(text, attachments);
         addBotMessage(t('error_send'), new Date());
     }
@@ -3775,7 +3865,7 @@ async function dispatchComposerSubmission() {
     return sendNewRun();
 }
 
-// 手打 `/skills` 是打开临时技能选择器的入口（输入区没有别的按钮），所以它优先于
+// 手打 `/skills` 是打开技能选择器的入口（输入区没有别的按钮），所以它优先于
 // 建议列表：菜单里恰好命中 "skills" 的技能（本机是 `superpowers:writing-skills`）
 // 过去会把 Enter 吃掉，别名等于形同虚设。方向键加 Tab 一样能选中那一行。
 const SKILL_PICKER_ALIASES = ['/skills', '/skill'];
@@ -3821,7 +3911,7 @@ async function sendNewRun() {
     }
 
     const conversation = prepareConversationSend();
-    if (conversation.draft) {
+    if (conversation.draft && !conversation.created) {
         try {
             const created = await fetch(`${PUBLIC_API_BASE}/sessions`, {
                 method: 'POST',
@@ -3839,6 +3929,9 @@ async function sendNewRun() {
             console.warn('[session.create]', error);
             addBotMessage(t('error_send'), new Date());
             return;
+        }
+        if (newChatDraft?.sessionId === conversation.sessionId) {
+            newChatDraft.created = true;
         }
     }
     const foreground = conversation.sessionId === sessionId;
@@ -3873,7 +3966,6 @@ async function sendNewRun() {
         if (sessionModel.discardPendingInput(messageId)) return false;
         if (conversation.draft) promoteNewChatDraft(conversation.sessionId);
         if (foreground) renderLiveSessionModelSnapshot(conversation.sessionId);
-        if (conversation.sessionId === sessionId) consumeSelectedSkills(skillIds);
         return true;
     }
 
@@ -3925,7 +4017,6 @@ async function sendNewRun() {
                 if (conversation.draft) {
                     promoteNewChatDraft(conversation.sessionId);
                 }
-                if (conversation.sessionId === sessionId) consumeSelectedSkills(skillIds);
                 const requestId = data.data.run_id;
                 if (requestId) {
                     if (foreground) setActiveRunControls(requestId);
@@ -4869,6 +4960,7 @@ function prepareConversationSend() {
             sessionId,
             agentId: activeAgent?.id || null,
             draft: false,
+            created: false,
         };
     }
     if (!newChatDraft.sessionId) {
@@ -4879,7 +4971,36 @@ function prepareConversationSend() {
         sessionId,
         agentId: newChatDraft.agent.id,
         draft: true,
+        created: !!newChatDraft.created,
     };
+}
+
+// A new chat is a local draft until its first prompt creates the Session
+// record.  An attachment, however, is stored through a Session route, so
+// attaching before that prompt used to POST to `/sessions/null/attachments`
+// and fail with 404.  Materialize the draft before the first upload; the send
+// path then reuses the same record instead of creating a second one.
+async function ensureDraftSession() {
+    if (!newChatDraft) return sessionId;
+    if (newChatDraft.created) return newChatDraft.sessionId;
+    if (!newChatDraft.sessionId) newChatDraft.sessionId = generateSessionId();
+    const draftId = newChatDraft.sessionId;
+    const created = await fetch(`${PUBLIC_API_BASE}/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: draftId, agent_id: newChatDraft.agent.id }),
+    }).then(responseJson);
+    if (created.status !== 'success') {
+        // Another tab may have materialized the same draft first; an existing
+        // record is success, anything else is a real failure.
+        const exists = await fetch(
+            `${PUBLIC_API_BASE}/sessions/${encodeURIComponent(draftId)}`,
+        ).then(response => response.ok).catch(() => false);
+        if (!exists) throw new Error('session create failed');
+    }
+    newChatDraft.created = true;
+    sessionId = draftId;
+    return sessionId;
 }
 
 function promoteNewChatDraft(acceptedSessionId) {
@@ -5495,8 +5616,10 @@ function deleteSession(sid) {
 
 function preferredBibitAgent() {
     const available = agentsState.filter(agent => agentCanStartSession(agent));
-    return available.find(agent => agent.origin === 'system'
-        && agent.name === 'BibitEdgeAssistant')
+    const initialId = String(window.__BIANBU_INITIAL_AGENT__ || '').trim();
+    return (initialId ? available.find(agent => agent.id === initialId) : undefined)
+        || available.find(agent => agent.origin === 'system'
+            && agent.name === 'BibitEdgeAssistant')
         || available.find(agent => agent.name === 'BibitEdgeAssistant');
 }
 
@@ -5509,6 +5632,9 @@ function resolveNewChatAgent() {
     return preferredBibitAgent()
         || startable.find(agent => agent.id === activeAgent?.id)
         || startable[0]
+        || (String(window.__BIANBU_INITIAL_AGENT__ || '').trim()
+            ? agentsState.find(agent => agent.id === String(window.__BIANBU_INITIAL_AGENT__).trim())
+            : undefined)
         || agentsState.find(agent => agent.name === 'BibitEdgeAssistant')
         || agentsState[0]
         || null;
@@ -6354,7 +6480,10 @@ function renderPluginAdminView() {
         remove.className = 'plugin-admin-delete text-xs text-red-500';
         remove.textContent = 'Delete';
         remove.addEventListener('click', () => deletePluginAdmin(pluginId));
-        actions.append(inspect, remove);
+        actions.append(inspect);
+        // A Plugin inside an Expert package is not a device-wide install.
+        // Deleting it would only make the Expert package disagree with itself.
+        if (plugin.private !== true) actions.append(remove);
         card.append(name, members);
         if (mcpRows.length) {
             const block = document.createElement('div');
@@ -6626,6 +6755,28 @@ function renderAgentAvatarPicker(avatar) {
         </button>
     `).join('');
     selectAgentAvatar(avatar || '🤖', false);
+}
+
+const AGENT_EFFORTS = ['off', 'low', 'high', 'max'];
+
+function agentEffortLabel(effort) {
+    return t(`effort_${AGENT_EFFORTS.includes(effort) ? effort : 'low'}`);
+}
+
+function initAgentEffortDropdown(selected) {
+    const dropdown = document.getElementById('agent-form-effort');
+    if (!dropdown) return;
+    initDropdown(
+        dropdown,
+        AGENT_EFFORTS.map(value => ({value, label: agentEffortLabel(value)})),
+        AGENT_EFFORTS.includes(selected) ? selected : 'low',
+        () => {},
+    );
+}
+
+function selectedAgentEffort() {
+    const value = getDropdownValue(document.getElementById('agent-form-effort'));
+    return AGENT_EFFORTS.includes(value) ? value : 'low';
 }
 
 async function uploadAgentAvatar(input) {
@@ -7085,7 +7236,7 @@ function renderAgentsView() {
 function agentModelLabel(agent) {
     if (!agent.model?.provider || !agent.model?.name) return t('agents_unavailable');
     const provider = agentCatalog?.providers?.find(item => item.id === agent.model.provider);
-    return `${provider?.name || agent.model.provider} · ${agent.model.name}`;
+    return `${provider?.name || agent.model.provider} · ${agent.model.name} · ${agentEffortLabel(agent.model.effort)}`;
 }
 
 async function ensureAgentCatalog() {
@@ -7149,9 +7300,11 @@ function selectedAgentCapabilityIds(type) {
 
 function newAgentCapabilitySelection(type, items) {
     // Preset capabilities come from the Runtime configuration and are forced
-    // onto every Agent; the editor only mirrors them as locked entries.
+    // onto every Agent; the editor only mirrors them as locked entries.  A
+    // private capability belongs to the Agent package itself and is locked the
+    // same way.
     return items
-        .filter(item => item.preset === true && item.enabled !== false)
+        .filter(item => (item.preset === true || item.private === true) && item.enabled !== false)
         .map(item => String(item.name || item.id || ''));
 }
 
@@ -7179,7 +7332,7 @@ function renderAgentCapabilityOptions(type, items, selected) {
     target.onchange = () => {
         target.dataset.touched = 'true';
     };
-    items = items.filter(item => type === 'plugins' || !(item.plugin_id || item.owner_plugin_id));
+    items = items.filter(item => type === 'plugins' || item.private === true || !(item.plugin_id || item.owner_plugin_id));
     target.dataset.pending = 'false';
     target.dataset.selection = JSON.stringify(selected || []);
     const known = new Set(items.map(item => String(item.name || item.id || '')));
@@ -7197,10 +7350,12 @@ function renderAgentCapabilityOptions(type, items, selected) {
         const description = localizedCapabilityDescription(item);
         const unavailableReason = item.enabled === false ? (item.unavailable_reason || '') : '';
         const presetNote = item.preset === true ? t('agents_capability_preset') : '';
-        const details = [description, unavailableReason, presetNote].filter(Boolean).join(' · ');
-        const locked = item.enabled === false || item.preset === true;
+        const privateNote = item.private === true ? t('agents_capability_private') : '';
+        const details = [description, unavailableReason, presetNote, privateNote].filter(Boolean).join(' · ');
+        const forced = item.preset === true || item.private === true;
+        const locked = item.enabled === false || forced;
         return `<label class="agent-capability-item${item.enabled === false ? ' opacity-60' : ''}" title="${escapeAttribute(details)}">
-            <input type="checkbox" value="${escapeAttribute(name)}" data-preset="${item.preset === true ? 'true' : 'false'}" ${item.preset === true || selectsAll || selectedSet.has(name) ? 'checked' : ''} ${locked ? 'disabled' : ''}>
+            <input type="checkbox" value="${escapeAttribute(name)}" data-preset="${forced ? 'true' : 'false'}" ${forced || selectsAll || selectedSet.has(name) ? 'checked' : ''} ${locked ? 'disabled' : ''}>
             <span><strong>${escapeHtml(label)}</strong>${details ? `<small>${escapeHtml(details)}</small>` : ''}</span>
         </label>`;
     }).join('');
@@ -7232,6 +7387,7 @@ async function openAgentEditor(agent = null) {
     document.body.classList.add('agent-editor-open');
     document.getElementById('agent-form-name').focus();
     document.getElementById('agent-form-model-name').value = agent?.model?.name || '';
+    initAgentEffortDropdown(agent?.model?.effort);
     ['tools', 'skills', 'plugins', 'mcps'].forEach(type => {
         const target = document.getElementById(`agent-form-${type}`);
         target.dataset.selection = JSON.stringify(agent?.[type] || []);
@@ -7241,10 +7397,13 @@ async function openAgentEditor(agent = null) {
         const button = document.querySelector(`[onclick="toggleAllAgentCapabilities('${type}')"]`);
         if (button) button.disabled = true;
         const path = type === 'mcps' ? 'mcp-servers' : type === 'plugins' ? 'plugins' : `capabilities/${{ tools: 'tool', skills: 'skill' }[type]}`;
-        void fetch(`${PUBLIC_API_BASE}/${path}`).then(responseJson).then(result => {
+        const scopedPath = agent ? `${path}?agent_id=${encodeURIComponent(agent.id)}` : path;
+        void fetch(`${PUBLIC_API_BASE}/${scopedPath}`).then(responseJson).then(result => {
             if (epoch !== agentEditorEpoch) return;
             if (result.status !== 'success') throw Error(result.message || 'Catalog unavailable');
-            const items = (result.data || []).filter(item => type === 'plugins' || !(item.plugin_id || item.owner_plugin_id)).map(item => type === 'plugins' ? { ...item, name: item.id, display_name: item.name || item.id } : item);
+            const items = (result.data || [])
+                .filter(item => type === 'plugins' || item.private === true || !(item.plugin_id || item.owner_plugin_id))
+                .map(item => type === 'plugins' ? { ...item, name: item.id, display_name: item.name || item.id } : item);
             const selected = agent ? agent[type] : newAgentCapabilitySelection(type, items);
             agentCapabilityCatalog[type] = {items, selected, pending: false};
             renderAgentCapabilityOptions(type, items, selected);
@@ -7352,7 +7511,9 @@ async function saveAgent() {
         description: document.getElementById('agent-form-description').value.trim(),
         description_zh: document.getElementById('agent-form-description-zh').value.trim(),
         soul: document.getElementById('agent-form-soul').value.trim(),
-        model: modelName ? { provider, name: modelName } : null,
+        model: modelName
+            ? { provider, name: modelName, effort: selectedAgentEffort() }
+            : null,
         tools: selected('tools'),
         skills: selected('skills'),
         plugins: selected('plugins'),
@@ -9088,7 +9249,7 @@ navigateTo = function(viewId) {
     else if (viewId === 'runtime-monitor') loadRuntimeStatusView();
     else if (viewId === 'api-capture') loadProviderCaptureView();
     else if (viewId === 'logs') startLogStream();
-    else if (viewId === 'security') { syncSecuritySyscallPanel('agents'); loadSecurityOtherView('agents'); }
+    else if (viewId === 'security') { syncSecuritySyscallPanel('agents'); loadSecurityCenter(); }
 
     if (restoreModalFocus) {
         const destination = document.querySelector(`[data-view="${viewId}"]`);
@@ -9103,13 +9264,133 @@ navigateTo = function(viewId) {
 
 // Runtime-native security control center. All mutations are proxied through
 // /security-api/invoke and ultimately executed by bianbu_security_client.
-let _securityCatalog = [], _securityPolicy = null, _securityAuditFilter = 'all';
+let _securityCatalog = [], _securityPolicy = null;
 let _securityAuditPage = { cursor: 0, history: [] };
+let _securityAuditAttention = true, _securityAuditCategory = '';
+let _securityAuditOutcome = '', _securityAuditRange = 'all';
 let _securityOtherRequest = 0;
 let securitySelectedAgent = localStorage.getItem('bianbu.security.selected_agent') || '';
 let securityAgents = [];
 function securityAgentId(agent) { return String(agent?.id || agent?.agent_id || ''); }
 function securityAgentName(agent) { return String(agent?.name || agent?.display_name || securityAgentId(agent)); }
+// The backend uses the ``safe`` / ``yolo`` enum.  The console
+// speaks in terms of the two modes users actually choose:
+//   safe   = 安全模式, enforced by a sandbox Worker
+//   yolo   = 正常模式, a host Worker with tools allowed and DLP/approval skipped
+// The Agent page owns the mode switch.  Other pages only read the mode and
+// explain what each mode does, so the capabilities table stays read-only.
+const SECURITY_AGENT_MODES = {
+    safe: '安全模式 · sandbox',
+    yolo: '正常模式 · YOLO host',
+};
+const SECURITY_DEFAULT_AGENT_MODE = 'yolo';
+const _securityKnownModes = {};
+function securityRememberMode(agentId, mode) {
+    const aid = String(agentId || '');
+    if (aid && mode) _securityKnownModes[aid] = String(mode);
+}
+function securityKnownMode(agentId) {
+    return _securityKnownModes[String(agentId || '')] || '';
+}
+function securityAgentModeBadge(mode) {
+    if (!mode) return '<span class="security-permission-hint">读取失败</span>';
+    const label = SECURITY_AGENT_MODES[mode] || mode;
+    const risk = mode === 'yolo' ? ' security-mode-card__status--risk' : '';
+    return `<span class="security-mode-card__status security-agent-mode-badge${risk}">${escapeHtml(label)}</span>`;
+}
+// Agent 页是唯一可以切换模式的入口。切换 yolo 会让 Agent 跑在 host 上，
+// 所以先确认；失败时把下拉框恢复原值，避免界面显示并未生效的模式。
+function securityAgentModeControl(agent, mode) {
+    const aid = securityAgentId(agent);
+    if (!mode) return '<span class="security-permission-hint">读取失败</span>';
+    const options = Object.entries(SECURITY_AGENT_MODES)
+        .map(([value, label]) => `<option value="${value}" ${mode === value ? 'selected' : ''}>${label}</option>`)
+        .join('');
+    return `<select class="security-agent-mode security-config-control" data-agent="${escapeAttribute(aid)}" data-current-mode="${escapeAttribute(mode)}">${options}</select>`;
+}
+async function changeSecurityAgentMode(select) {
+    const aid = String(select.dataset.agent || '');
+    const mode = String(select.value || '');
+    const previous = String(select.dataset.currentMode || (mode === 'yolo' ? 'safe' : 'yolo'));
+    if (mode === 'yolo' && !window.confirm('切换为正常模式（YOLO）后 Agent 运行在主机模式：没有沙箱，安全权限范围与系统调用黑名单不再生效，所有工具默认放行，跳过 DLP 扫描与审批，仅保留审计。确认切换？')) {
+        select.value = previous;
+        return;
+    }
+    select.disabled = true;
+    try {
+        await securityInvoke('agents.security-mode.update.v1', {agent_id: aid, mode});
+    } catch (error) {
+        select.value = previous;
+        select.disabled = false;
+        alert(error && error.message ? error.message : String(error));
+        return;
+    }
+    select.disabled = false;
+    securityRememberMode(aid, mode);
+    loadSecurityOtherView('agents');
+}
+// 每个页面两种模式的实际行为。模式只读，页面只负责把差异说清楚。
+const SECURITY_MODE_BEHAVIOR = {
+    agents: {
+        safe: ['每个 Agent 各自决定后端：安全模式的 Agent 跑在沙箱 Worker 中。', '在本页切换该 Agent 的模式；其它页面只读展示。'],
+        yolo: ['每个 Agent 各自决定后端：正常模式的 Agent 跑在 host Worker 中，没有沙箱。', '在本页切换该 Agent 的模式；其它页面只读展示。'],
+    },
+    capabilities: {
+        safe: ['逐工具执行 allow / ask / deny：ask 弹审批，deny 直接终止本轮。', '策略改动在下一次工具调用时生效，不重建 Worker。'],
+        yolo: ['所有工具默认放行，不弹审批，也不执行 deny。', '已保存的 allow / ask / deny 策略保留，切回安全模式后继续生效。'],
+    },
+    permissions: {
+        safe: ['可读 / 可写范围、网络白名单由沙箱命名空间落实。', '系统调用黑名单由 seccomp 落实；保存后下次请求自动重启 Worker 生效。'],
+        yolo: ['host 模式没有沙箱命名空间与 seccomp，这些范围与黑名单都不落实。', '只剩 systemd 单元约束与审计；网络访问仍会被动记录。'],
+    },
+    syscalls: {
+        safe: ['勾选并保存后，下一次请求会自动重启 Worker 并装载新的 seccomp 黑名单。', '无需手动重启；若当时仍有任务在执行，则在之后的空闲请求中重启。拦截事件写入独立 syscall 审计链。'],
+        yolo: ['host Worker 不装载 seccomp 过滤器，勾选列表保留但不拦截。', '策略与事件仍会记录，便于切回安全模式后继续使用。'],
+    },
+    dlp: {
+        safe: ['按 PII 动作扫描输入、模型输出、工具参数 / 结果与最终输出。', 'mask 脱敏后放行，allow 原样放行，并统计干预次数。'],
+        yolo: ['不执行 DLP 扫描，也不产生脱敏或拦截。', '已保存规则与历史统计保留；审计只记 checks=skipped。'],
+    },
+    audit: {
+        safe: ['记录判权、DLP、Hook 与系统调用事件，可查看拒绝原因。', '每条记录对应实际执行的检查结果。'],
+        yolo: ['仍记录判权与 Hook 审计，但被跳过的阶段只记 mode=yolo;checks=skipped。', '没有 DLP 命中内容；网络访问记录继续采集。'],
+    },
+};
+function securityModeBehaviorCard(tab, mode) {
+    const behavior = SECURITY_MODE_BEHAVIOR[tab];
+    if (!behavior) return '';
+    const current = mode === 'safe' || mode === 'yolo' ? mode : '';
+    const column = (value, title, items) => `
+      <div class="security-mode-behavior__column${current === value ? ' is-current' : ''}">
+        <h5>${title}${current === value ? '<span class="security-mode-behavior__current">当前</span>' : ''}</h5>
+        <ul>${items.map(item => `<li>${item}</li>`).join('')}</ul>
+      </div>`;
+    const note = tab === 'agents'
+        ? '模式由 securityd 按 Agent 保存；本页可以切换，其它页面只读展示。'
+        : '模式由 securityd 按 Agent 保存；本页只读展示，切换请到 Agent 页。';
+    return `<section class="security-mode-behavior" aria-label="两种模式的行为差异">
+      <div class="security-mode-behavior__heading"><h4>两种模式的行为差异</h4><p>${note}</p></div>
+      <div class="security-mode-behavior__grid">
+        ${column('safe', '安全模式 · sandbox', behavior.safe)}
+        ${column('yolo', '正常模式 · YOLO host', behavior.yolo)}
+      </div>
+    </section>`;
+}
+// 六个安全页面共用同一套骨架：页头（eyebrow / 标题 / 说明 / 操作）、
+// 模式差异卡、正文。各页面只负责正文，避免出现两套标题层级和间距。
+function securityPageHeader({eyebrow = '', title = '', description = '', actions = ''}) {
+    return `<div class="security-page-header">
+      <div class="security-page-heading">
+        ${eyebrow ? `<span class="security-eyebrow">${escapeHtml(eyebrow)}</span>` : ''}
+        <h3>${escapeHtml(title)}</h3>
+        ${description ? `<p>${description}</p>` : ''}
+      </div>
+      ${actions ? `<div class="security-page-actions">${actions}</div>` : ''}
+    </div>`;
+}
+function securityPage(tab, mode, header, body) {
+    return `<div class="security-page" data-security-page="${tab}">${header}${securityModeBehaviorCard(tab, mode)}${body}</div>`;
+}
 function setSecurityAgentContext(agentId, reload = true) {
     securitySelectedAgent = String(agentId || '');
     if (securitySelectedAgent) localStorage.setItem('bianbu.security.selected_agent', securitySelectedAgent);
@@ -9147,27 +9428,83 @@ async function securityInvoke(operationId, params = {}) {
     if (!data.ok) throw new Error(data.error?.message || 'securityd unavailable');
     return data.result || {};
 }
-async function loadSecuritySyscallView() {
+// Agent 清单接口不带模式（模式是独立的 per-Agent 行），这里一次并发取齐。
+// 单个 Agent 读失败只影响它的模式列，不清空整张清单。
+async function securityAgentModes(agents) {
+    const entries = await Promise.all((agents || []).map(async agent => {
+        const aid = securityAgentId(agent);
+        try {
+            const result = await securityInvoke('agents.security-mode.get.v1', {agent_id: aid});
+            const mode = String(result.mode || SECURITY_DEFAULT_AGENT_MODE);
+            securityRememberMode(aid, mode);
+            return [aid, mode];
+        } catch (_) {
+            return [aid, ''];
+        }
+    }));
+    return Object.fromEntries(entries);
+}
+// 当前 Agent 选择器是整页共用的，必须在进入安全页时就加载，而不是等用户
+// 打开「系统调用黑名单」才填充——否则下拉框会一直停在「加载中...」。
+// 并发调用共享同一个请求，避免切页时重复打 agents.list.v1。
+let _securityAgentsPromise = null;
+async function loadSecurityAgents(force = false) {
+    if (!force && _securityAgentsPromise) return _securityAgentsPromise;
+    const promise = (async () => {
+        const status = document.getElementById('security-runtime-status');
+        try {
+            const result = await securityInvoke('agents.list.v1', {});
+            const list = result.agents || result.items || (Array.isArray(result) ? result : []);
+            renderSecurityAgentOptions(list);
+            if (status) {
+                status.textContent = 'securityd 已连接';
+                status.className = 'text-xs px-3 py-1.5 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600';
+            }
+            return { list, error: '' };
+        } catch (e) {
+            // Always resolve the initial loading placeholder, even when securityd
+            // is offline.  Leaving it in place makes the control center look
+            // stuck and hides the actionable service error shown below.
+            renderSecurityAgentOptions([]);
+            if (status) {
+                status.textContent = 'securityd 不可用';
+                status.className = 'text-xs px-3 py-1.5 rounded-full bg-red-100 dark:bg-red-900/30 text-red-600';
+            }
+            return { list: [], error: e && e.message ? e.message : String(e) };
+        }
+    })();
+    _securityAgentsPromise = promise;
+    try { return await promise; }
+    finally {
+        // 共享只覆盖并发请求，不缓存结果：装/删 Agent 后切页能看到新清单。
+        if (_securityAgentsPromise === promise) _securityAgentsPromise = null;
+    }
+}
+async function loadSecuritySyscallView(force = false, preloaded = null) {
     const status = document.getElementById('security-runtime-status'), agentSelect = document.getElementById('security-agent-select');
     if (!status || !agentSelect) return;
-    let serviceOnline = false;
-    try {
-        const agents = await securityInvoke('agents.list.v1', {});
-        serviceOnline = true;
-        const list = agents.agents || agents.items || agents || [];
-        renderSecurityAgentOptions(list);
-        status.textContent = 'securityd 已连接'; status.className = 'text-xs px-3 py-1.5 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600';
-    } catch (e) {
-        // Always resolve the initial loading placeholder, even when securityd
-        // is offline.  Leaving it in place makes the control center look
-        // stuck and hides the actionable service error shown below.
-        renderSecurityAgentOptions([]);
-        status.textContent = 'securityd 不可用'; status.className = 'text-xs px-3 py-1.5 rounded-full bg-red-100 dark:bg-red-900/30 text-red-600';
+    const loaded = preloaded || await loadSecurityAgents(force);
+    const serviceOnline = !loaded.error;
+    if (!serviceOnline) {
         const target = document.getElementById('security-other-content');
-        if (target && !target.textContent.trim()) target.innerHTML = `<div class="rounded-lg border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-900/20 p-4 text-sm text-red-700 dark:text-red-300">安全服务暂不可用：${escapeHtml(e.message)}<br>请确认 securityd 已启动后点击刷新。</div>`;
+        if (target && !target.textContent.trim()) target.innerHTML = `<div class="rounded-lg border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-900/20 p-4 text-sm text-red-700 dark:text-red-300">安全服务暂不可用：${escapeHtml(loaded.error)}<br>请确认 securityd 已启动后点击刷新。</div>`;
     }
     try {
-        _securityCatalog = (await securityInvoke('syscall-catalog.v1', {arch: document.getElementById('security-syscall-arch').value})).syscalls || [];
+        // 架构默认跟随本机内核：riscv64 板子上把 x86_64 的编号写进策略既是错的
+        // 也在目标架构上不可用。只有调用方显式改过选择器才用选定值。
+        const archSelect = document.getElementById('security-syscall-arch');
+        const catalog = await securityInvoke('syscall-catalog.v1', {arch: archSelect.dataset.userSelected === '1' ? archSelect.value : ''});
+        if (catalog && catalog.arch) archSelect.value = catalog.arch;
+        _securityCatalog = catalog.syscalls || [];
+        const modeNote = document.getElementById('security-syscall-mode-note');
+        if (modeNote) {
+            let mode = securityKnownMode(securitySelectedAgent);
+            try {
+                mode = String((await securityInvoke('agents.security-mode.get.v1', {agent_id: securitySelectedAgent})).mode || SECURITY_DEFAULT_AGENT_MODE);
+                securityRememberMode(securitySelectedAgent, mode);
+            } catch (_) {}
+            modeNote.innerHTML = securityModeBehaviorCard('syscalls', mode);
+        }
         await loadSecuritySyscallPolicy();
         await loadSecuritySyscallAudit();
     } catch (e) {
@@ -9182,9 +9519,9 @@ async function loadSecuritySyscallPolicy() {
     const aid = securitySelectedAgent || document.getElementById('security-agent-select')?.value || document.getElementById('security-syscall-agent')?.value, arch = document.getElementById('security-syscall-arch').value;
     if (!aid) return; _securityPolicy = await securityInvoke('syscall-policy.get.v1', {agent_id: aid, arch});
     const additions = new Set(_securityPolicy.agent_additions || []), selected = new Set(additions);
-    document.getElementById('security-syscall-list').innerHTML = `<div class="security-table-wrap"><table class="security-table"><thead><tr><th>启用</th><th>系统调用</th><th>编号</th><th>说明</th><th>类型</th></tr></thead><tbody>${_securityCatalog.map(s => { const name = s.name || s.syscall || s; return `<tr><td><input type="checkbox" value="${escapeHtml(String(name))}" ${selected.has(name)?'checked':''} class="security-syscall-check"></td><td><strong>${escapeHtml(String(name))}</strong></td><td>${escapeHtml(String(s.number ?? '-'))}</td><td>${escapeHtml(String(s.description || s.reason || '危险系统调用'))}</td><td><span class="security-pill">${selected.has(name)?'已拦截':'可拦截'}</span></td></tr>`; }).join('')}</tbody></table></div><div class="flex flex-wrap gap-3 text-xs text-slate-500 dark:text-slate-400 mt-3"><span>策略版本：${escapeHtml(String(_securityPolicy.policy_version ?? '-'))}</span><span>已应用版本：${escapeHtml(String(_securityPolicy.applied_policy_version ?? '-'))}</span><span class="${_securityPolicy.pending_restart?'text-amber-600 dark:text-amber-400':''}">${_securityPolicy.pending_restart?'待重启 Worker 生效':'已应用'}</span></div>`;
+    document.getElementById('security-syscall-list').innerHTML = `<div class="security-table-wrap"><table class="security-table"><thead><tr><th>启用</th><th>系统调用</th><th>编号</th><th>说明</th><th>类型</th></tr></thead><tbody>${_securityCatalog.map(s => { const name = s.name || s.syscall || s; return `<tr><td><input type="checkbox" value="${escapeHtml(String(name))}" ${selected.has(name)?'checked':''} class="security-syscall-check"></td><td><strong>${escapeHtml(String(name))}</strong></td><td>${escapeHtml(String(s.number ?? '-'))}</td><td>${escapeHtml(String(s.description || s.reason || '危险系统调用'))}</td><td><span class="security-pill">${selected.has(name)?'已拦截':'可拦截'}</span></td></tr>`; }).join('')}</tbody></table></div><div class="flex flex-wrap gap-3 text-xs text-slate-500 dark:text-slate-400 mt-3"><span>策略版本：${escapeHtml(String(_securityPolicy.policy_version ?? '-'))}</span><span>已应用版本：${escapeHtml(String(_securityPolicy.applied_policy_version ?? '-'))}</span><span class="${_securityPolicy.pending_restart?'text-amber-600 dark:text-amber-400':''}">${_securityPolicy.pending_restart?'下次请求自动重启 Worker 生效':'已应用'}</span></div>`;
 }
-async function saveSecuritySyscallPolicy() { const aid = securitySelectedAgent, arch = document.getElementById('security-syscall-arch').value; const additions = [...document.querySelectorAll('.security-syscall-check:checked')].map(x=>x.value); const msg = document.getElementById('security-syscall-message'); try { const result = await securityInvoke('syscall-policy.agent.update.v1',{agent_id:aid,arch,additions}); msg.textContent = `已保存，策略版本 ${result.version || result.policy_version || '-'}；重启 Worker 后生效`; await loadSecuritySyscallPolicy(); } catch(e) { msg.textContent = e.message; } }
+async function saveSecuritySyscallPolicy() { const aid = securitySelectedAgent, arch = document.getElementById('security-syscall-arch').value; const additions = [...document.querySelectorAll('.security-syscall-check:checked')].map(x=>x.value); const msg = document.getElementById('security-syscall-message'); try { const result = await securityInvoke('syscall-policy.agent.update.v1',{agent_id:aid,arch,additions}); msg.textContent = `已保存，策略版本 ${result.version || result.policy_version || '-'}；下次请求会自动重启 Worker 并生效`; await loadSecuritySyscallPolicy(); } catch(e) { msg.textContent = e.message; } }
 async function loadSecuritySyscallAudit() { const target=document.getElementById('security-syscall-audit-list'); if(!target) return; try { const result=await securityInvoke('syscall-audit.events.v1',{agent_id:securitySelectedAgent||'',limit:100,cursor:0}); const rows=Array.isArray(result)?result:(result.events||result.records||result.value||[]); target.innerHTML=rows.length?`<table class="security-table"><thead><tr><th>时间</th><th>Agent</th><th>系统调用</th><th>PID</th><th>后端</th><th>结果</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${escapeHtml(securityClockTime(r.ts) || r.ts || '-')}</td><td>${escapeHtml(r.worker_agent_id||r.agent_id||'-')}</td><td><strong>${escapeHtml(r.syscall||'-')}</strong> (${escapeHtml(String(r.number??'-'))})</td><td>${escapeHtml(String(r.pid??'-'))}</td><td>${escapeHtml(r.backend||'-')}</td><td>${escapeHtml(r.action||'deny')}</td></tr>`).join('')}</tbody></table>`:'<div class="text-sm text-slate-500 p-3">暂无系统调用拦截事件</div>'; } catch(e) { target.innerHTML=`<div class="text-sm text-red-600 dark:text-red-400 p-3">无法读取独立审计：${escapeHtml(e.message)}</div>`; } }
 function securityTimeValue(value) {
     // securityd 的 last_seen/installed_at/审计时间都是 ISO-8601 UTC。老数据里的裸
@@ -9232,15 +9569,108 @@ function securityActivityCell(agent) {
         : '';
     return `<span class="text-slate-400"${title}>${escapeHtml(label)}</span>`;
 }
+// AUDIT VIEW HELPERS: product wording and grouping live here so the audit
+// loader stays a thin fetch/render function.
+const SECURITY_AUDIT_CATEGORIES = [
+    ['identity', '谁接入了'],
+    ['decision', '想做什么'],
+    ['confirmation', '征求过你的同意'],
+    ['change', '设置被改了'],
+    ['anomaly', '出过什么问题'],
+];
+const SECURITY_AUDIT_OUTCOME_GROUPS = [
+    ['blocked', '被拒绝'],
+    ['pending', '等待确认'],
+    ['approved', '已批准'],
+    ['failed', '失败'],
+];
+const SECURITY_AUDIT_SEVERITY_RANK = {critical: 3, warning: 2, info: 1};
+function securityAuditIso(date) {
+    return date.toISOString().replace('Z', '+00:00');
+}
+function securityAuditRange(value) {
+    if (value !== 'today' && value !== '7d') return {};
+    const now = new Date();
+    if (value === 'today') {
+        const start = new Date(now);
+        start.setHours(0, 0, 0, 0);
+        return {from: securityAuditIso(start), to: securityAuditIso(now)};
+    }
+    return {from: securityAuditIso(new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)),
+            to: securityAuditIso(now)};
+}
+function securityAuditTime(record) {
+    return securityClockTime(record.ts) || record.ts || '-';
+}
+function securityAuditOutcomeClass(record) {
+    const group = record.outcome_group || record.outcome;
+    if (group === 'blocked' || group === 'failed') return 'security-pill--error';
+    if (group === 'pending' || group === 'approved') return 'security-pill--warn';
+    return 'security-pill--ok';
+}
+function securityAuditTechnical(record) {
+    const technical = record.technical || record;
+    const fields = [
+        ['序号', technical.seq], ['事件', technical.op_type],
+        ['目标', technical.target], ['结果', technical.result],
+    ];
+    return `<details class="security-audit-tech"><summary>技术详情</summary><dl class="security-audit-fields">${fields.map(([label, value]) =>
+        `<div><dt>${label}</dt><dd>${escapeHtml(value ?? '-')}</dd></div>`).join('')}</dl></details>`;
+}
+function securityAuditCard(record) {
+    return `<article class="security-audit-item security-audit-item--${escapeHtml(record.severity || 'info')}">
+      <div class="security-audit-item__head"><span class="security-audit-dot" aria-hidden="true"></span>
+        <div class="security-audit-item__copy"><p class="security-audit-item__title">${escapeHtml(record.title)}</p>
+          <p class="security-audit-item__meta"><span>${escapeHtml(securityAuditTime(record))}</span><span>${escapeHtml(record.category_label || '')}</span>
+            <span class="security-pill ${securityAuditOutcomeClass(record)}">${escapeHtml(record.outcome_label || '')}</span>
+            <span>${escapeHtml(record.severity_label || '')}</span></p></div></div>
+      ${securityAuditTechnical(record)}</article>`;
+}
+function securityAuditGroups(records) {
+    const groups = [];
+    for (const record of records) {
+        const key = String(record.group_key || `seq-${record.seq}`);
+        const current = groups[groups.length - 1];
+        if (current && current.key === key) current.records.push(record);
+        else groups.push({key, records: [record]});
+    }
+    return groups;
+}
+function securityAuditGroupCard(group) {
+    const records = group.records;
+    const primary = records.reduce((best, record) =>
+        (SECURITY_AUDIT_SEVERITY_RANK[record.severity] || 0) > (SECURITY_AUDIT_SEVERITY_RANK[best.severity] || 0)
+            ? record : best, records[0]);
+    const others = records.filter(record => record !== primary);
+    if (!others.length) return securityAuditCard(primary);
+    return `<article class="security-audit-item security-audit-item--${escapeHtml(primary.severity || 'info')}">
+      <div class="security-audit-item__head"><span class="security-audit-dot" aria-hidden="true"></span>
+        <div class="security-audit-item__copy"><p class="security-audit-item__title">${escapeHtml(primary.title)}</p>
+          <p class="security-audit-item__meta"><span>${escapeHtml(securityAuditTime(primary))}</span><span>${escapeHtml(primary.category_label || '')}</span>
+            <span class="security-pill ${securityAuditOutcomeClass(primary)}">${escapeHtml(primary.outcome_label || '')}</span>
+            <span>${escapeHtml(primary.severity_label || '')}</span>
+            <span class="security-audit-count">同时发生 ${records.length} 条</span></p></div></div>
+      <details class="security-audit-more"><summary>同一时间的另外 ${others.length} 条</summary>${others.map(securityAuditCard).join('')}</details>
+      ${securityAuditTechnical(primary)}</article>`;
+}
 async function loadSecurityAuditPage(aid, target, request, reset) {
     if (reset) _securityAuditPage = { cursor: 0, history: [] };
     const page = _securityAuditPage;
+    let mode = securityKnownMode(aid);
     target.textContent = '正在读取审计日志…';
     try {
-        const result = await securityInvoke('audit.query.v1', {
-            agent_id: aid, filter: _securityAuditFilter, limit: 100,
-            cursor: page.cursor,
+        try {
+            mode = String((await securityInvoke('agents.security-mode.get.v1', {agent_id: aid})).mode || SECURITY_DEFAULT_AGENT_MODE);
+            securityRememberMode(aid, mode);
+        } catch (_) {}
+        const range = securityAuditRange(_securityAuditRange);
+        const result = await securityInvoke('audit.view.v1', {
+            agent_id: aid, filter: 'all', limit: 100, cursor: page.cursor,
             ...(page.snapshot === undefined ? {} : { snapshot_seq: page.snapshot }),
+            ...(range.from ? {from: range.from, to: range.to} : {}),
+            ...(_securityAuditAttention ? {attention: true} : {}),
+            ...(_securityAuditCategory ? {category: _securityAuditCategory} : {}),
+            ...(_securityAuditOutcome ? {outcome_group: _securityAuditOutcome} : {}),
         });
         if (request !== _securityOtherRequest) return;
         if (!Array.isArray(result.records) || result.records.length > 100 ||
@@ -9251,39 +9681,89 @@ async function loadSecurityAuditPage(aid, target, request, reset) {
         }
         page.snapshot = result.snapshot_seq;
         page.next = result.has_more ? result.next_cursor : null;
-        target.innerHTML = `<div class="security-section-heading"><h3>审计日志</h3><span class="security-pill">第 ${page.history.length + 1} 页 · ${result.records.length} 条记录</span></div>
-          <div class="security-toolbar"><select id="security-audit-filter" class="security-config-control">
-          ${[['all','全部事件'],['hook','安全 Hook'],['deny','仅拒绝']].map(([value,label]) => `<option value="${value}" ${_securityAuditFilter === value ? 'selected' : ''}>${label}</option>`).join('')}</select>
-          <div><button id="security-audit-refresh" class="security-button secondary">刷新</button>
-          <button id="security-audit-verify" class="security-button secondary">校验哈希链</button><span id="security-audit-verify-status" class="security-pill">未校验</span></div></div>
-          <div class="security-table-wrap"><table class="security-table"><thead><tr><th>序号</th><th>时间</th><th>操作</th><th>目标</th><th>结果</th></tr></thead><tbody>
-          ${result.records.map(r => `<tr>${[r.seq,securityClockTime(r.ts) || r.ts, r.op_type, r.target, r.result].map(v => `<td>${escapeHtml(v ?? '-')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
-          <div class="security-toolbar"><button id="security-audit-prev" class="security-button secondary" ${page.history.length ? '' : 'disabled'}>上一页</button>
-          <button id="security-audit-next" class="security-button secondary" ${result.has_more ? '' : 'disabled'}>下一页</button></div>`;
+        const summary = result.summary || {};
+        const attention = Number(summary.attention || 0);
+        const summaryCount = _securityAuditAttention ? attention : Number(summary.total || result.records.length);
+        const header = securityPageHeader({
+          eyebrow: 'AUDIT TRAIL',
+          title: '审计日志',
+          description: '先用一句话说明发生了什么。拒绝、待确认、设置变更和异常会保留，常规放行默认收起；原始字段都在技术详情里。',
+          actions: `<span class="security-pill">第 ${page.history.length + 1} 页 · 本页 ${result.records.length} 条</span><button id="security-audit-refresh" class="security-button secondary">刷新</button>`,
+        });
+        const summaryBar = `<div class="security-audit-summary"><span class="security-audit-summary__attention">${_securityAuditAttention ? '需要你关注' : '本页记录'} <strong>${summaryCount}</strong> 条</span>
+          <div class="security-audit-chips">${SECURITY_AUDIT_CATEGORIES.map(([value, label]) => {
+              const count = Number(summary.by_category?.[value] || 0);
+              return `<span class="security-audit-chip${count ? '' : ' is-empty'}">${label}<b>${count}</b></span>`;
+          }).join('')}</div></div>`;
+        const toolbar = `<div class="security-toolbar"><label class="security-field"><input id="security-audit-attention" type="checkbox" ${_securityAuditAttention ? 'checked' : ''}>只看需要我关注的</label>
+          <label class="security-field">类别<select id="security-audit-category" class="security-config-control"><option value="">全部类别</option>${SECURITY_AUDIT_CATEGORIES.map(([value, label]) => `<option value="${value}" ${_securityAuditCategory === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+          <label class="security-field">结果<select id="security-audit-outcome" class="security-config-control"><option value="">全部结果</option>${SECURITY_AUDIT_OUTCOME_GROUPS.map(([value, label]) => `<option value="${value}" ${_securityAuditOutcome === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+          <label class="security-field">时间<select id="security-audit-range" class="security-config-control">${[['all','全部时间'],['today','今天'],['7d','近 7 天']].map(([value, label]) => `<option value="${value}" ${_securityAuditRange === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label></div>`;
+        const empty = result.has_more
+          ? '这一页没有匹配记录，可以点“下一页”继续查看。'
+          : (_securityAuditAttention
+              ? '这个时间段内没有需要你关注的事件。关掉“只看需要我关注的”可以查看全部记录。'
+              : '当前筛选条件下没有审计记录。');
+        const list = result.records.length
+          ? `<div class="security-audit-list">${securityAuditGroups(result.records).map(securityAuditGroupCard).join('')}</div>`
+          : `<p class="security-empty">${empty}</p>`;
+        const pager = `<div class="security-toolbar security-toolbar--end"><button id="security-audit-prev" class="security-button secondary" ${page.history.length ? '' : 'disabled'}>上一页</button><button id="security-audit-next" class="security-button secondary" ${result.has_more ? '' : 'disabled'}>下一页</button></div>`;
+        target.innerHTML = securityPage('audit', mode, header, summaryBar + toolbar + list + pager);
     } catch (error) {
         if (request !== _securityOtherRequest) return;
-        target.innerHTML = `<p>${escapeHtml(error.message)}</p><button id="security-audit-refresh" class="security-button secondary">重试</button>`;
+        // 接口失败也保留模式说明：两种模式对审计的影响与分页是否可用无关。
+        const header = securityPageHeader({
+          eyebrow: 'AUDIT TRAIL',
+          title: '审计日志',
+          description: '先用一句话说明发生了什么。拒绝、待确认、设置变更和异常会保留，常规放行默认收起；原始字段都在技术详情里。',
+          actions: '<button id="security-audit-refresh" class="security-button secondary">重试</button>',
+        });
+        target.innerHTML = securityPage('audit', mode, header, `<div class="security-error-state">${escapeHtml(error.message)}</div>`);
     }
 }
 // 能力管理只有工具一个维度：每个工具一条 allow / ask / deny 策略；工具目录来自
 // securityd 的权威目录（按 Agent 对接的 framework 取 runtime 或 hermes 的工具）。
 const SECURITY_TOOL_POLICIES = ['allow', 'ask', 'deny'];
-// DLP 动作在三态之外多一个 mask（脱敏后放行）。
-const SECURITY_DLP_ACTIONS = ['allow', 'ask', 'deny', 'mask'];
+// 界面只暴露两种选择：mask（脱敏）与 allow（不脱敏）。两者都是 securityd
+// 的原生动作值，写回时不再做额外映射；历史 ask / deny 值按 allow 展示。
+const SECURITY_DLP_ACTIONS = ['mask', 'allow'];
+const SECURITY_DLP_ACTION_LABELS = {
+    mask: 'mask · 脱敏后放行',
+    allow: 'allow · 不脱敏',
+};
 const SECURITY_PERMISSION_GROUP_LABELS = {
     read: '可读范围', write: '可写范围', network: '网络访问范围',
     syscall: '系统调用黑名单', custom: '自定义补充项',
 };
+// 网络策略有三种服务端模式；界面必须显式选择，不能再用「域名是否为空」
+// 反推 whitelist / allow_all，否则 deny_all 会被静默改掉。
+const SECURITY_NETWORK_MODES = ['deny_all', 'whitelist', 'allow_all'];
+const SECURITY_NETWORK_MODE_LABELS = {
+    deny_all: '全部拒绝', whitelist: '白名单', allow_all: '允许全部',
+};
+function securityNetworkModeLabel(mode) {
+    return SECURITY_NETWORK_MODE_LABELS[mode] || SECURITY_NETWORK_MODE_LABELS.allow_all;
+}
+function securityNetworkModeHelp(mode) {
+    // 网络地址过滤在 Worker 启动时安装（沙箱是网络命名空间，host 是 systemd
+    // 的 IPAddress* 属性），保存不会改到已运行的进程，所以必须说明生效时机。
+    const applies = '保存后下次请求会自动重启 Worker 并应用新策略。';
+    if (mode === 'whitelist') return `每行一个域名；支持通配符（如 *.example.com）。${applies}`;
+    if (mode === 'deny_all') return `拒绝所有出站网络访问。${applies}`;
+    return `允许所有出站网络访问。${applies}`;
+}
 function securityToolPolicy(value) {
     const policy = String(value || '').toLowerCase();
     return SECURITY_TOOL_POLICIES.includes(policy) ? policy : 'allow';
 }
 function securityDlpAction(value) {
-    const action = String(value || '').toLowerCase();
-    return SECURITY_DLP_ACTIONS.includes(action) ? action : 'mask';
+    return String(value || '').toLowerCase() === 'mask' ? 'mask' : 'allow';
 }
-function securityPolicyOptions(policies, selected) {
-    return policies.map(value => `<option value="${value}" ${value === selected ? 'selected' : ''}>${value}</option>`).join('');
+function securityPolicyOptions(policies, selected, labels = null) {
+    return policies.map(value => {
+        const label = labels && labels[value] ? labels[value] : value;
+        return `<option value="${value}" ${value === selected ? 'selected' : ''}>${label}</option>`;
+    }).join('');
 }
 function activeSecurityTab() {
     return document.querySelector('.security-tab.border-b-2')?.dataset.securityTab || 'agents';
@@ -9295,61 +9775,215 @@ function syncSecuritySyscallPanel(tab) {
     const other = document.getElementById('security-panel-other');
     for (const [name, id] of Object.entries(SECURITY_PANELS)) {
         const panel = document.getElementById(id);
-        if (panel) panel.classList.toggle('hidden', tab !== name);
+        if (!panel) continue;
+        const leaving = tab !== name;
+        panel.classList.toggle('hidden', leaving);
+        // 隐藏页保留卡片会与当前页的说明重复计数，也容易让人以为两页同时生效。
+        if (leaving) panel.querySelectorAll('.security-mode-behavior').forEach(node => node.remove());
     }
-    if (other) other.classList.toggle('hidden', tab === 'syscalls' || tab === 'permissions');
+    if (other) {
+        const leaving = tab === 'syscalls' || tab === 'permissions';
+        other.classList.toggle('hidden', leaving);
+        if (leaving) other.querySelectorAll('.security-mode-behavior').forEach(node => node.remove());
+    }
 }
 function securityRangePaths(value) {
     if (Array.isArray(value)) return value.join('\n');
+    // 老 securityd 返回的还是 {include, exclude}；只展示能落实的 include。
     return ((value || {}).include || []).join('\n');
-}
-function securityRangeExcludes(value) {
-    if (Array.isArray(value) || !value) return '';
-    return (value.exclude || []).join('\n');
 }
 function securityPermissionPanel(settings, locked, error) {
     if (!settings) {
         // 只有真正拿到接口却读失败时才值得说「未提供」；否则把那句误导性
         // 文案连同真实原因一起给出，排查时不必再去猜是哪一环断了。
         const detail = error ? `<p class="security-permission-hint">读取失败：${escapeHtml(error)}</p>` : '';
-        return `<section class="security-subpanel security-permissions"><h4>安全权限设置</h4><p>当前 securityd 未提供安全权限设置接口，请升级 securityd 后重试。</p>${detail}</section>`;
+        return `<section class="security-subpanel security-permissions"><h4>访问范围</h4><p>当前 securityd 未提供安全权限设置接口，请升级 securityd 后重试。</p>${detail}</section>`;
     }
     const network = settings.network || {};
-    const modeLabel = network.mode === 'whitelist' ? '白名单' : network.mode === 'deny_all' ? '全部拒绝' : network.mode === 'learning' ? '学习模式' : '允许全部';
+    const networkMode = SECURITY_NETWORK_MODES.includes(network.mode) ? network.mode : 'allow_all';
+    const networkDomains = Array.isArray(network.domains) ? network.domains : [];
+    const networkModes = SECURITY_NETWORK_MODES;
     const boundary = settings.execution_mode || {};
     const boundaryMode = boundary.mode || 'host';
     const reasons = (boundary.reasons || []).join('、');
+    // 三个框架的沙箱后端不同，设置页必须按 Agent 的实际框架展示：
+    // Runtime 的挂载表由 securityd 编译；dsh 用自带的 dsh-sandbox-local；
+    // hermes 由 hermes_sandbox_launch 起 bwrap。把 Runtime 的表套给 dsh
+    // 会让人以为那些路径真的挂上了。
+    const framework = String(settings.framework || 'runtime');
+    const frameworkLabel = ({runtime: 'Runtime Worker', harness: 'dsh（DeepSeek Harness）',
+                             hermes: 'hermes'})[framework] || framework;
+    const effective = settings.effective || {};
+    const effectiveRead = Array.isArray(effective.read) ? effective.read : [];
+    const effectiveWrite = Array.isArray(effective.write) ? effective.write : [];
+    const editable = settings.editable || {};
+    const readEditable = editable.read !== false;
+    const writeEditable = editable.write !== false;
+    const networkManaged = settings.network_managed !== false;
+    const syscallManaged = settings.syscall_managed !== false;
+    const canSave = readEditable || writeEditable || networkManaged;
+    const pathList = rows => rows.length
+        ? `<ul class="security-boundary-list">${rows.map(item => `<li><code>${escapeHtml(item)}</code></li>`).join('')}</ul>`
+        : '<p class="security-permission-hint">无</p>';
+    // host 不是「约束更少但仍然受控」：它根本没有沙箱命名空间和 seccomp，
+    // 声明的可读写/网络范围与系统调用黑名单都无处落实。这里必须说清楚，
+    // 否则界面会让人以为那些设置仍在生效。
+    const hostWarning = '<p class="security-permission-hint security-permission-warn">⚠ 主机模式（host）不启用沙箱：可读/可写范围、网络访问范围与系统调用黑名单都不会落实，只剩 systemd 单元约束与审计记录。正常模式（YOLO）还会跳过 DLP 扫描与工具审批。需要这些限制时请使用安全模式。</p>';
     const boundaryText = boundaryMode === 'sandbox'
-        ? `已声明 ${escapeHtml(reasons || '安全设置')}，需要沙箱命名空间/seccomp 落实；重启 Worker 后生效。`
-        : '未声明额外安全设置，在宿主上以受约束的 systemd 单元运行。';
+        ? `安全模式（sandbox）：由 ${escapeHtml(settings.backend || frameworkLabel)} 落实；重启 Agent 后生效。`
+        : '主机模式（host）：沙箱未启用。';
+    const fixedNote = (!readEditable || !writeEditable)
+        ? '<p class="security-permission-hint">该框架的文件范围由它自身的沙箱决定，这里只读展示；在 securityd 里修改不会生效。</p>'
+        : '';
     return `<section class="security-subpanel security-permissions">
-      <div class="security-form-heading"><div><h4>安全权限设置</h4><p>能力管理决定「这个 tool 能不能调」；这里决定「调用之后能碰什么」。可读/可写范围都是「包含 + 排除」：包含项列出允许触碰的目录，排除项从其中挖掉子目录——可读排除＝完全不可见，可写排除＝仍可读但不可写。声明了任何一项就走 sandbox，否则走 host。</p></div></div>
-      <div class="security-mode-control security-capability-mode ${boundaryMode === 'sandbox' ? 'is-yolo' : ''}"><div class="security-mode-card__content"><h4>🧱 执行模式 <span class="security-mode-card__status">${escapeHtml(boundaryMode)}</span></h4><p>${boundaryText}</p></div></div>
+      <div class="security-subpanel__heading"><div><h4>访问范围 · ${escapeHtml(frameworkLabel)}</h4><p class="security-permission-hint">${escapeHtml(settings.note || '')}</p></div></div>
+      <div class="security-mode-control security-capability-mode ${boundaryMode === 'host' ? 'is-yolo' : ''}"><div class="security-mode-card__content"><h4>执行模式 <span class="security-mode-card__status ${boundaryMode === 'host' ? 'security-mode-card__status--risk' : ''}">${escapeHtml(boundaryMode)}</span></h4><p>${boundaryText}</p></div></div>
+      ${boundaryMode === 'host' ? hostWarning : ''}
       <div class="security-permission-grid">
-        <label>可读范围 · 包含<textarea id="security-permission-read" rows="3" class="security-config-control" placeholder="/opt/data">${escapeHtml(securityRangePaths(settings.read))}</textarea></label>
-        <label>可读范围 · 排除<textarea id="security-permission-read-exclude" rows="3" class="security-config-control" placeholder="/opt/data/secret">${escapeHtml(securityRangeExcludes(settings.read))}</textarea></label>
-        <label>可写范围 · 包含<textarea id="security-permission-write" rows="3" class="security-config-control" placeholder="/var/lib/app">${escapeHtml(securityRangePaths(settings.write))}</textarea></label>
-        <label>可写范围 · 排除<textarea id="security-permission-write-exclude" rows="3" class="security-config-control" placeholder="/var/lib/app/cache">${escapeHtml(securityRangeExcludes(settings.write))}</textarea></label>
-        <label class="security-permission-wide">网络访问范围<span class="security-permission-hint">当前模式：${escapeHtml(modeLabel)}。填写域名后按白名单模式保存。</span><textarea id="security-permission-network" rows="3" class="security-config-control" placeholder="api.example.com">${escapeHtml((network.domains || []).join('\n'))}</textarea></label>
+        <div><h5>本框架实际只读</h5>${pathList(effectiveRead)}</div>
+        <div><h5>本框架实际可写</h5>${pathList(effectiveWrite)}</div>
       </div>
-      <div class="security-save-row"><span id="security-permission-status" class="security-form-status"></span><button id="security-permission-save" class="security-button" ${locked}>保存安全权限设置</button></div>
+      <div class="security-permission-grid">
+        <label>额外只读路径<textarea id="security-permission-read" rows="4" class="security-config-control" placeholder="/opt/data" ${readEditable ? '' : 'disabled'}>${escapeHtml(securityRangePaths(settings.read))}</textarea></label>
+        <label>额外读写路径<textarea id="security-permission-write" rows="4" class="security-config-control" placeholder="/var/lib/app" ${writeEditable ? '' : 'disabled'}>${escapeHtml(securityRangePaths(settings.write))}</textarea></label>
+      </div>
+      ${fixedNote}
+      <p class="security-permission-hint">网络：${networkManaged ? '由 securityd 的策略落实' : '该框架的网络边界由它自身接管，securityd 的域名策略不生效'}；系统调用过滤：${syscallManaged ? '由 securityd 落实' : '不由 securityd 接管'}。</p>
+      <fieldset class="security-network-modes" ${networkManaged ? locked : 'disabled'}>
+        <legend>网络访问模式</legend>
+        ${networkModes.map(mode => `<label><input type="radio" name="security-permission-network-mode" value="${mode}" ${mode === networkMode ? 'checked' : ''} ${networkManaged ? '' : 'disabled'}>${securityNetworkModeLabel(mode)}</label>`).join('')}
+      </fieldset>
+      <label id="security-permission-network-domains-field" class="security-permission-wide" ${networkMode === 'whitelist' && networkManaged ? '' : 'hidden'}>白名单域名<textarea id="security-permission-network" rows="3" class="security-config-control" placeholder="api.example.com" ${networkManaged ? '' : 'disabled'}>${escapeHtml(networkDomains.join('\n'))}</textarea></label>
+      <p id="security-permission-network-help" class="security-permission-hint">${networkManaged ? escapeHtml(securityNetworkModeHelp(networkMode)) : '该框架的网络边界由它自身的沙箱接管，securityd 的域名策略不会作用到它。'}</p>
+      <section class="security-permission-diff" id="security-permission-diff" data-original-mode="${escapeAttribute(networkMode)}" data-original-domains="${escapeAttribute(JSON.stringify(networkDomains))}">
+        <span>网络访问模式</span><span id="security-permission-network-preview"></span><strong id="security-permission-network-dirty"></strong>
+      </section>
+      ${canSave
+        ? `<div class="security-save-row"><span id="security-permission-status" class="security-form-status"></span><button id="security-permission-save" class="security-button" ${locked}>保存安全权限设置</button></div>`
+        : '<p class="security-permission-hint">该框架的访问范围不由 securityd 控制，无需在此保存。</p>'}
     </section>`;
 }
-function securityPermissionGroups(aid) {
-    const paths = id => (document.getElementById(id)?.value || '')
+function securityBoundaryPanel(view) {
+    if (!view) return '';
+    const source = item => item === 'declared' ? '我的声明'
+        : item === 'system' ? '系统接线' : '默认基线';
+    const sandboxRoot = '/home/agent';
+    const agentRoot = String(view.agent_root || '').trim();
+    const hostRoot = agentRoot && agentRoot !== '<agent-root>' ? agentRoot : '';
+    const sandboxPath = path => String(path).replace('<agent-root>', sandboxRoot);
+    const hostPath = path => hostRoot
+        ? String(path).replace('<agent-root>', hostRoot)
+        : sandboxPath(path);
+    const group = (title, entries) => {
+        const rows = entries || [];
+        const body = rows.length
+            ? `<ul class="security-boundary-list">${rows.map(entry => {
+                const host = hostPath(entry.path);
+                const sandbox = sandboxPath(entry.path);
+                const sandboxNote = sandbox === host
+                    ? ''
+                    : `<span class="security-boundary-path__sandbox">沙箱内 ${escapeHtml(sandbox)}</span>`;
+                return `<li><div class="security-boundary-path"><code>${escapeHtml(host)}</code>${sandboxNote}</div><span class="security-pill">${source(entry.source)}</span></li>`;
+            }).join('')}</ul>`
+            : '<p class="security-permission-hint">无</p>';
+        return `<div><h4>${title}</h4>${body}</div>`;
+    };
+    const network = view.network || {};
+    // 文件系统只有两种原生挂载，所以边界也只展示这两组。系统固定屏蔽的路径
+    // 单独一行说明，不并成第三组列表——它们不是用户能编辑的范围。
+    const hidden = (view.invisible || []).map(entry => entry.path);
+    const hiddenNote = hidden.length
+        ? `系统固定屏蔽：${hidden.map(hostPath).map(escapeHtml).join('、')}。`
+        : '';
+    // 只有后端真的做了沙箱→宿主映射时才写映射；dsh 自带沙箱，宿主路径原样
+    // 可见，套用 Worker 的 /home/agent 映射会谎报一层不存在的保护。
+    const mapping = view.path_mapping || null;
+    const rootNote = mapping && mapping.sandbox && mapping.host
+        ? `路径映射：沙箱 <code>${escapeHtml(mapping.sandbox)}</code> ↔ 宿主 <code>${escapeHtml(mapping.host)}</code>。`
+        : '';
+    // 网络与系统调用是否由这个框架的沙箱接管，取决于实际后端：dsh 的
+    // dsh-sandbox-local 只约束文件写入。
+    const networkNote = network.managed === false
+        ? `网络：${escapeHtml(network.mode || 'allow_all')}（不由本框架的沙箱接管）。`
+        : `网络：${escapeHtml(network.mode || 'allow_all')}。`;
+    const note = String(view.note || '').trim();
+    const noteText = note ? ` ${escapeHtml(note)}` : '';
+    return `<section class="security-subpanel security-boundary">
+      <div class="security-subpanel__heading"><div><h4>沙箱生效范围 · ${view.mode === 'sandbox' ? '安全模式（sandbox）' : '正常模式（YOLO · host）'}</h4><p class="security-permission-hint">这是这个 Agent 实际拿到的边界：每一条都由它真正的后端决定，不是界面上另写的一份说明。改动后需要重启 Agent 才会生效。</p></div></div>
+      <div class="security-boundary-grid security-boundary-grid--scopes">
+        ${group('只读', view.read_only)}
+        ${group('读写', view.writable)}
+      </div>
+      <p class="security-permission-hint">${rootNote}${networkNote}系统调用过滤：${view.syscall_filter ? '已启用' : '未开启'}。${hiddenNote}${noteText}</p>
+    </section>`;
+}
+function securityPermissionLines(id) {
+    return (document.getElementById(id)?.value || '')
         .split('\n').map(item => item.trim()).filter(Boolean);
-    const domains = paths('security-permission-network');
-    return [
-        {group: 'read', value: {include: paths('security-permission-read'),
-                                exclude: paths('security-permission-read-exclude')}},
-        {group: 'write', value: {include: paths('security-permission-write'),
-                                 exclude: paths('security-permission-write-exclude')}},
-        {group: 'network', mode: domains.length ? 'whitelist' : 'allow_all', domains},
-    ];
+}
+function securityPermissionNetworkDraft() {
+    const mode = document.querySelector('input[name="security-permission-network-mode"]:checked')?.value || 'allow_all';
+    const domains = SECURITY_NETWORK_MODES.includes(mode)
+        ? securityPermissionLines('security-permission-network')
+        : [];
+    return {mode: SECURITY_NETWORK_MODES.includes(mode) ? mode : 'allow_all', domains};
+}
+function securityPermissionNetworkSummary(mode, domains) {
+    return securityNetworkModeLabel(mode) + (mode === 'whitelist' ? ` (${domains.length})` : '');
+}
+function syncSecurityPermissionNetworkPanel() {
+    const draft = securityPermissionNetworkDraft();
+    const field = document.getElementById('security-permission-network-domains-field');
+    if (field) field.hidden = draft.mode !== 'whitelist';
+    const help = document.getElementById('security-permission-network-help');
+    if (help) help.textContent = securityNetworkModeHelp(draft.mode);
+    const diff = document.getElementById('security-permission-diff');
+    if (!diff) return;
+    const originalMode = diff.dataset.originalMode || 'allow_all';
+    let originalDomains = [];
+    try { originalDomains = JSON.parse(diff.dataset.originalDomains || '[]'); } catch (_) {}
+    const preview = document.getElementById('security-permission-network-preview');
+    if (preview) preview.textContent = `${securityPermissionNetworkSummary(originalMode, originalDomains)} → ${securityPermissionNetworkSummary(draft.mode, draft.domains)}`;
+    const dirty = document.getElementById('security-permission-network-dirty');
+    if (dirty) dirty.textContent = (originalMode !== draft.mode || JSON.stringify(originalDomains) !== JSON.stringify(draft.domains)) ? '有更改' : '未更改';
+}
+function validateSecurityPermissionGroups(groups) {
+    const network = groups.find(item => item.group === 'network');
+    if (!network || network.mode !== 'whitelist') return '';
+    if (!network.domains.length) return '白名单模式至少填写一个域名。';
+    for (const domain of network.domains) {
+        if (/[\/\s]/.test(domain) || domain.includes('://')) return `域名不能包含协议、路径或空格：${domain}`;
+    }
+    return '';
+}
+function securityPermissionGroups(aid) {
+    // 只提交这个框架真正可改的组：dsh 的输入框是只读的，把只读框里的
+    // 展示值当成“额外声明”提交会写出一条永远不生效的策略。
+    const paths = id => {
+        const field = document.getElementById(id);
+        return field && !field.disabled ? securityPermissionLines(id) : null;
+    };
+    const groups = [];
+    const read = paths('security-permission-read');
+    if (read !== null) groups.push({group: 'read', value: read});
+    const write = paths('security-permission-write');
+    if (write !== null) groups.push({group: 'write', value: write});
+    const networkField = document.querySelector('fieldset.security-network-modes');
+    if (!networkField || !networkField.disabled) {
+        const network = securityPermissionNetworkDraft();
+        groups.push({group: 'network', mode: network.mode, domains: network.domains});
+    }
+    return groups;
 }
 async function saveSecurityPermissionSettings(aid) {
     const status = document.getElementById('security-permission-status');
     const groups = securityPermissionGroups(aid);
+    const invalid = validateSecurityPermissionGroups(groups);
+    if (invalid) { if (status) status.textContent = invalid; return; }
+    if (!groups.length) {
+        if (status) status.textContent = '这个框架的访问范围不由 securityd 控制，无需保存。';
+        return;
+    }
     if (status) status.textContent = '正在保存…';
     try {
         for (const item of groups) {
@@ -9359,7 +9993,7 @@ async function saveSecurityPermissionSettings(aid) {
                 await securityInvoke('permissions.set-group.v1', {agent_id: aid, group: item.group, value: item.value});
             }
         }
-        if (status) status.textContent = '已保存';
+        if (status) status.textContent = '已保存，下次请求会自动重启 Worker 并生效';
         await loadSecurityPermissionView(aid);
     } catch (error) {
         if (status) status.textContent = error.message;
@@ -9369,34 +10003,85 @@ function securityToolPolicyPanel(rows, mode) {
     const yolo = mode === 'yolo';
     const counts = SECURITY_TOOL_POLICIES.map(policy => `${rows.filter(row => row.policy === policy).length} ${policy}`).join(' · ');
     const locked = yolo ? 'disabled' : '';
-    return `<div class="security-section-heading"><div><span class="security-eyebrow">POLICY CONTROL</span><h3>能力管理</h3><p>每个工具一条策略：allow 放行 / ask 确认 / deny 拒绝。</p></div><div class="security-heading-actions"><span class="security-pill">${counts}</span><button id="security-other-retry" class="security-button secondary">刷新</button></div></div>
-    <section id="security-capability-mode" class="security-mode-control security-capability-mode ${yolo ? 'is-yolo' : ''}"><div class="security-mode-card__content"><h4>🛡 Agent 安全模式 <span class="security-mode-card__status ${yolo ? 'security-mode-card__status--risk' : ''}">${yolo ? 'YOLO · 高风险' : '标准模式'}</span></h4><p>${yolo ? '工具默认放行；跳过 DLP 扫描、网络限制与审批，仅保留审计记录。' : '按每个工具的 allow / ask / deny 策略执行。'}</p>${yolo ? '<span class="security-mode-card__risk">高风险模式已启用</span>' : ''}</div><div class="security-mode-card__action"><button id="security-capability-mode-toggle" class="security-button ${yolo ? 'security-button--secondary' : 'security-button--danger'}">${yolo ? '关闭 YOLO 模式' : '⚠ 启用 YOLO 模式'}</button>${yolo ? '' : '<span class="security-mode-card__action-hint">点击后将跳过工具确认</span>'}</div></section>
-    <div class="security-table-wrap"><table class="security-table"><thead><tr><th>工具</th><th>策略</th><th>框架</th><th>说明</th></tr></thead><tbody>${rows.map(row => `<tr><td><strong>${escapeHtml(row.tool)}</strong></td><td><select class="security-tool-policy security-config-control" data-tool="${escapeAttribute(row.tool)}" ${locked}>${securityPolicyOptions(SECURITY_TOOL_POLICIES, row.policy)}</select></td><td>${escapeHtml(row.framework || '-')}</td><td><small>${escapeHtml(row.summary || '')}</small></td></tr>`).join('')}</tbody></table></div>
-    `;
+    const header = securityPageHeader({
+        eyebrow: 'POLICY CONTROL',
+        title: '能力管理',
+        description: `每个工具一条策略：allow 放行 / ask 确认 / deny 拒绝。当前模式：${securityAgentModeBadge(mode)}`,
+        actions: `<span class="security-pill">${counts}</span><button id="security-other-retry" class="security-button secondary">刷新</button>`,
+    });
+    const table = rows.length
+        ? `<div class="security-table-wrap"><table class="security-table"><thead><tr><th>工具</th><th>策略</th><th>框架</th><th>说明</th></tr></thead><tbody>${rows.map(row => `<tr><td><strong>${escapeHtml(row.tool)}</strong></td><td><select class="security-tool-policy security-config-control" data-tool="${escapeAttribute(row.tool)}" ${locked}>${securityPolicyOptions(SECURITY_TOOL_POLICIES, row.policy)}</select></td><td>${escapeHtml(row.framework || '-')}</td><td><small>${escapeHtml(row.summary || '')}</small></td></tr>`).join('')}</tbody></table></div>`
+        : '<p class="security-empty">该 Agent 暂无可配置工具。</p>';
+    return securityPage('capabilities', mode, header, table);
 }
 async function loadSecurityPermissionView(aid) {
     const target = document.getElementById('security-permission-content');
     if (!target) return;
     if (!aid) { target.textContent = '请选择 Agent'; return; }
-    let settings = null, settingsError = '';
+    let settings = null, settingsError = '', boundary = null, mode = '';
     try { settings = await securityInvoke('permissions.get.v1', {agent_id: aid}); }
     catch (error) { settingsError = error && error.message ? error.message : String(error); }
-    target.innerHTML = securityPermissionPanel(settings, '', settingsError);
+    // 生效范围是独立的只读预览：老 securityd 没有这个接口时，权限设置页照常可用。
+    try { boundary = await securityInvoke('permissions.boundary.v1', {agent_id: aid}); }
+    catch (error) { boundary = null; }
+    try {
+        mode = String((await securityInvoke('agents.security-mode.get.v1', {agent_id: aid})).mode || SECURITY_DEFAULT_AGENT_MODE);
+        securityRememberMode(aid, mode);
+    } catch (_) { mode = securityKnownMode(aid); }
+    const header = securityPageHeader({
+        eyebrow: 'ACCESS BOUNDARY',
+        title: '安全权限设置',
+        description: '决定 Worker 能读、能写、能访问哪些路径与网络；工具能否被调用由能力管理决定。',
+        actions: '<button id="security-other-retry" class="security-button secondary">刷新</button>',
+    });
+    target.innerHTML = securityPage('permissions', mode, header,
+        securityPermissionPanel(settings, '', settingsError) + securityBoundaryPanel(boundary));
+    syncSecurityPermissionNetworkPanel();
 }
-async function loadSecurityOtherView(tab, resetAudit = true) {
+// 进入安全页的唯一入口：先填「当前 Agent」，再渲染当前 tab。
+// 之前只有系统调用页会填充选择器，导致默认的 Agent 页一直显示「加载中...」。
+async function loadSecurityCenter(forceAgents = false) {
+    const tab = activeSecurityTab();
+    const target = document.getElementById('security-other-content');
+    if (target && tab !== 'syscalls' && tab !== 'permissions' && !target.textContent.trim()) {
+        target.textContent = '正在加载...';
+    }
+    // 只取一次 Agent 清单：选择器和页面内容共用同一份结果，避免重复打接口。
+    const loaded = await loadSecurityAgents(forceAgents);
+    if (tab === 'syscalls') return loadSecuritySyscallView(false, loaded);
+    if (tab === 'permissions') {
+        if (!securitySelectedAgent) { target.textContent = '暂无可用 Agent'; return; }
+        return loadSecurityPermissionView(securitySelectedAgent);
+    }
+    return loadSecurityOtherView(tab, true, loaded);
+}
+async function loadSecurityOtherView(tab, resetAudit = true, preloaded = null) {
     if (tab === 'syscalls' || tab === 'permissions') return;
     const request = ++_securityOtherRequest;
     const aid = securitySelectedAgent || document.getElementById('security-agent-select')?.value || document.getElementById('security-syscall-agent')?.value;
     const target = document.getElementById('security-other-content'); if (!target) return;
     if (tab === 'audit' && aid) return loadSecurityAuditPage(aid, target, request, resetAudit);
     if (tab === 'agents') {
-      try { const result = await securityInvoke('agents.list.v1', {}); target.innerHTML=`<div class="security-section-heading"><div><span class="security-eyebrow">RUNTIME INVENTORY</span><h3>已注册 Agent</h3><p>查看身份、版本、状态和能力数量。暂停请求仅记录审计并发送告警，不会停止 Agent 执行。</p></div><button id="security-other-retry" class="security-button secondary">刷新</button></div><div class="security-table-wrap"><table class="security-table"><thead><tr><th>Agent</th><th>版本</th><th>状态</th><th>能力数</th><th>最近活动</th><th>操作</th></tr></thead><tbody>${(result.agents||[]).map(a=>`<tr><td><strong>${escapeHtml(a.name||a.agent_id)}</strong><small>${escapeHtml(a.agent_id||'')}</small></td><td>${escapeHtml(a.version||'-')}</td><td><span class="security-pill">${escapeHtml(a.status||'active')}</span></td><td>${escapeHtml(a.capability_count||0)}</td><td>${securityActivityCell(a)}</td><td><button class="security-agent-inspect security-link-button" data-agent="${escapeHtml(a.agent_id)}">查看</button> <button class="security-agent-suspend security-link-button security-link-button--danger" data-agent="${escapeHtml(a.agent_id)}">发送暂停请求</button></td></tr>`).join('')}</tbody></table></div>`; } catch(e) { target.innerHTML=`<div class="security-error-state">安全服务暂不可用：${escapeHtml(e.message)}<br><button id="security-other-retry" class="security-button secondary">重试</button></div>`; } return;
+      const loaded = preloaded || await loadSecurityAgents();
+      if (request !== _securityOtherRequest) return;
+      if (loaded.error) { target.innerHTML = `<div class="security-error-state">安全服务暂不可用：${escapeHtml(loaded.error)}<br><button id="security-other-retry" class="security-button secondary">重试</button></div>`; return; }
+      const result = { agents: loaded.list };
+      const modes = await securityAgentModes(result.agents);
+      if (request !== _securityOtherRequest) return;
+      const header = securityPageHeader({
+        eyebrow: 'RUNTIME INVENTORY',
+        title: '已注册 Agent',
+        description: '查看身份、版本、模式、状态和能力数量。模式由 securityd 按 Agent 保存，可在此页切换；能力管理页只读展示当前模式。注销会删除该 Agent 的身份、能力、绑定和会话信任，操作不可撤销。',
+        actions: '<button id="security-other-retry" class="security-button secondary">刷新</button>',
+      });
+      const table = `<div class="security-table-wrap"><table class="security-table"><thead><tr><th>Agent</th><th>版本</th><th>模式</th><th>状态</th><th>能力数</th><th>最近活动</th><th>操作</th></tr></thead><tbody>${(result.agents||[]).map(a=>`<tr><td><strong>${escapeHtml(a.name||a.agent_id)}</strong><small>${escapeHtml(a.agent_id||'')}</small></td><td>${escapeHtml(a.version||'-')}</td><td>${securityAgentModeControl(a, modes[securityAgentId(a)])}</td><td><span class="security-pill">${escapeHtml(a.status||'active')}</span></td><td>${escapeHtml(a.capability_count||0)}</td><td>${securityActivityCell(a)}</td><td><div class="security-row-actions"><button class="security-agent-inspect security-link-button" data-agent="${escapeHtml(a.agent_id)}">查看</button><button class="security-agent-unregister security-link-button security-link-button--danger" data-agent="${escapeHtml(a.agent_id)}">注销</button></div></td></tr>`).join('')}</tbody></table></div>`;
+      target.innerHTML = securityPage('agents', '', header, table); return;
     }
     if (!aid) { target.textContent = '请选择 Agent'; return; }
     try {
       if (tab === 'capabilities') {
-        let mode = 'normal';
-        try { mode = String((await securityInvoke('agents.security-mode.get.v1', {agent_id: aid})).mode || 'normal'); } catch (_) { mode = 'normal'; }
+        let mode = 'safe';
+        try { mode = String((await securityInvoke('agents.security-mode.get.v1', {agent_id: aid})).mode || SECURITY_DEFAULT_AGENT_MODE); } catch (_) { mode = SECURITY_DEFAULT_AGENT_MODE; }
         const catalog = await securityInvoke('capabilities.catalog.v1', {agent_id: aid});
         const detail = await securityInvoke('agents.get.v1', {agent_id: aid});
         if (request !== _securityOtherRequest) return;
@@ -9410,27 +10095,47 @@ async function loadSecurityOtherView(tab, resetAudit = true) {
         const rows = [...tools.values()].sort((left, right) => left.tool.localeCompare(right.tool));
         target.innerHTML = securityToolPolicyPanel(rows, mode);
       } else if (tab === 'dlp') {
-        let mode = 'normal';
-        try { mode = String((await securityInvoke('agents.security-mode.get.v1', {agent_id: aid})).mode || 'normal'); } catch (_) { mode = 'normal'; }
+        let mode = 'safe';
+        try { mode = String((await securityInvoke('agents.security-mode.get.v1', {agent_id: aid})).mode || SECURITY_DEFAULT_AGENT_MODE); } catch (_) { mode = SECURITY_DEFAULT_AGENT_MODE; }
         const result = await securityInvoke('dlp.matrix.v1', {agent_id: aid});
         let stats = {total: 0};
         try { stats = await securityInvoke('dlp.stats.v1', {agent_id: aid}); } catch (_) {}
         if (request !== _securityOtherRequest) return;
         const yolo = mode === 'yolo';
         const rows = result.rows || result.policies || [];
-        target.innerHTML = `<div class="security-section-heading"><div><span class="security-eyebrow">DATA PROTECTION</span><h3>DLP / 个人信息策略</h3><p>${yolo ? 'YOLO 不执行 DLP 扫描；保留 normal 模式规则和审计记录。' : '控制敏感数据的放行、确认、脱敏或拦截行为。'}</p></div><span class="security-pill">${stats.total || 0} 次干预</span></div><div class="security-table-wrap"><table class="security-table"><thead><tr><th>PII 类型</th><th>${yolo ? '已保存动作（当前不执行）' : '生效动作'}</th><th>操作</th></tr></thead><tbody>${rows.map(r => `<tr><td><strong>${escapeHtml(r.pii_type)}</strong></td><td><select ${yolo ? 'disabled' : ''} class="security-dlp-action security-config-control" data-pii="${escapeAttribute(r.pii_type)}">${securityPolicyOptions(SECURITY_DLP_ACTIONS, securityDlpAction(r.action))}</select></td><td><button ${yolo ? 'disabled' : ''} class="security-dlp-reset security-link-button" data-pii="${escapeAttribute(r.pii_type)}">恢复默认</button></td></tr>`).join('')}</tbody></table></div><div class="security-subpanel"><h4>DLP 文本试扫</h4><textarea id="security-dlp-text" ${yolo ? 'disabled' : ''} class="security-dlp-textarea" rows="3" placeholder="输入包含手机号、身份证号的文本"></textarea><button id="security-dlp-scan" ${yolo ? 'disabled' : ''} class="mt-2 security-button">扫描文本</button><pre id="security-dlp-result" class="text-xs mt-2"></pre></div>`;
+        const header = securityPageHeader({
+          eyebrow: 'DATA PROTECTION',
+          title: 'DLP / 个人信息策略',
+          description: yolo ? '正常模式（YOLO）不执行 DLP 扫描；保留安全模式的规则和审计记录。' : '安全模式下只有两种选择：mask（命中后脱敏再放行）与 allow（命中后不脱敏）。',
+          actions: `<span class="security-pill">${stats.total || 0} 次干预</span><button id="security-other-retry" class="security-button secondary">刷新</button>`,
+        });
+        const table = rows.length
+          ? `<div class="security-table-wrap"><table class="security-table"><thead><tr><th>PII 类型</th><th>${yolo ? '已保存动作（正常模式下不执行）' : '生效动作'}</th><th>操作</th></tr></thead><tbody>${rows.map(r => `<tr><td><strong>${escapeHtml(r.pii_type)}</strong></td><td><select ${yolo ? 'disabled' : ''} class="security-dlp-action security-config-control" data-pii="${escapeAttribute(r.pii_type)}">${securityPolicyOptions(SECURITY_DLP_ACTIONS, securityDlpAction(r.action), SECURITY_DLP_ACTION_LABELS)}</select></td><td><button ${yolo ? 'disabled' : ''} class="security-dlp-reset security-link-button" data-pii="${escapeAttribute(r.pii_type)}">恢复默认</button></td></tr>`).join('')}</tbody></table></div>`
+          : '<p class="security-empty">securityd 尚未返回 PII 类型。</p>';
+        const scan = `<section class="security-subpanel"><div class="security-subpanel__heading"><div><h4>DLP 文本试扫</h4><p class="security-permission-hint">只在当前 Agent 的策略下试扫，不写入审计。</p></div></div><textarea id="security-dlp-text" ${yolo ? 'disabled' : ''} class="security-dlp-textarea" rows="3" placeholder="输入包含手机号、身份证号的文本"></textarea><button id="security-dlp-scan" ${yolo ? 'disabled' : ''} class="security-button">扫描文本</button><pre id="security-dlp-result" class="security-dlp-result"></pre></section>`;
+        target.innerHTML = securityPage('dlp', mode, header, table + scan);
       } else {
         target.textContent = '';
       }
     }
     catch (e) { if (request === _securityOtherRequest) target.textContent = e.message; }
 }
-document.addEventListener('change', e => { if(e.target.id==='security-agent-select') setSecurityAgentContext(e.target.value); if(e.target.id==='security-syscall-agent') setSecurityAgentContext(e.target.value); if(e.target.id==='security-syscall-arch') loadSecuritySyscallPolicy(); });
+document.addEventListener('change', e => { if(e.target.id==='security-agent-select') setSecurityAgentContext(e.target.value); if(e.target.id==='security-syscall-agent') setSecurityAgentContext(e.target.value); if(e.target.id==='security-syscall-arch') { e.target.dataset.userSelected='1'; loadSecuritySyscallPolicy(); } });
 document.addEventListener('change', e => {
  if(e.target.disabled) return;
+ if(e.target.name==='security-permission-network-mode') { syncSecurityPermissionNetworkPanel(); return; }
+ if(e.target.classList.contains('security-agent-mode')) { changeSecurityAgentMode(e.target); return; }
  if(e.target.classList.contains('security-tool-policy')) { const tool=e.target.dataset.tool; securityInvoke('capabilities.update.v1',{agent_id:securitySelectedAgent,tool,policy:e.target.value}).then(()=>loadSecurityOtherView('capabilities')).catch(x=>{ alert(x.message); loadSecurityOtherView('capabilities'); }); }
  if(e.target.classList.contains('security-dlp-action')) { const aid=securitySelectedAgent; securityInvoke('dlp.policy.update.v1',{agent_id:aid,pii_type:e.target.dataset.pii,action:e.target.value}).catch(x=>alert(x.message)); }
- if(e.target.id==='security-audit-filter') { _securityAuditFilter=e.target.value; loadSecurityOtherView('audit'); }
+});
+document.addEventListener('input', e => {
+ if(e.target.id==='security-permission-network') syncSecurityPermissionNetworkPanel();
+});
+document.addEventListener('change', e => {
+ if(e.target.id==='security-audit-attention') { _securityAuditAttention=e.target.checked; loadSecurityOtherView('audit'); }
+ if(e.target.id==='security-audit-category') { _securityAuditCategory=e.target.value; loadSecurityOtherView('audit'); }
+ if(e.target.id==='security-audit-outcome') { _securityAuditOutcome=e.target.value; loadSecurityOtherView('audit'); }
+ if(e.target.id==='security-audit-range') { _securityAuditRange=e.target.value; loadSecurityOtherView('audit'); }
 });
 document.addEventListener('click', e => {
  const tab = e.target.closest('.security-tab');
@@ -9447,22 +10152,28 @@ document.addEventListener('click', e => {
  if(e.target.disabled) return;
  const aid=securitySelectedAgent;
  if(e.target.id==='security-other-retry' || e.target.id==='security-global-refresh') { const tab=activeSecurityTab(); if(tab==='syscalls') loadSecuritySyscallView(); else if(tab==='permissions') loadSecurityPermissionView(aid); else loadSecurityOtherView(tab); }
- if(e.target.id==='security-syscall-reset') { const aid=securitySelectedAgent; const arch=document.getElementById('security-syscall-arch')?.value||'x86_64'; securityInvoke('syscall-policy.agent.reset.v1',{agent_id:aid,arch}).then(()=>loadSecuritySyscallPolicy()).catch(x=>alert(x.message)); }
- if(e.target.id==='security-capability-mode-toggle') { const enabling=!document.getElementById('security-capability-mode')?.classList.contains('is-yolo'); if(enabling && !window.confirm('启用 YOLO 模式后，所有工具默认放行，跳过 DLP 扫描与审批，仅保留审计。确认启用？')) return; securityInvoke('agents.security-mode.update.v1',{agent_id:aid,mode:enabling?'yolo':'normal'}).then(()=>loadSecurityOtherView('capabilities')).catch(x=>alert(x.message)); }
+ if(e.target.id==='security-syscall-reset') { const aid=securitySelectedAgent; const arch=document.getElementById('security-syscall-arch')?.value||''; securityInvoke('syscall-policy.agent.reset.v1',{agent_id:aid,arch}).then(()=>loadSecuritySyscallPolicy()).catch(x=>alert(x.message)); }
  if(e.target.id==='security-syscall-refresh') loadSecuritySyscallView();
  if(e.target.id==='security-syscall-audit-refresh') loadSecuritySyscallAudit();
  if(e.target.id==='security-syscall-save') saveSecuritySyscallPolicy();
  if(e.target.id==='security-permission-save') saveSecurityPermissionSettings(aid);
- if(e.target.classList.contains('security-agent-suspend')) {
-   const button = e.target; button.disabled = true;
-   securityInvoke('agents.suspend.v1',{agent_id:button.dataset.agent})
-     .then(() => { alert('暂停请求已发送。Agent 未停止，仍可能继续执行。'); return loadSecurityOtherView('agents'); })
+ if(e.target.classList.contains('security-agent-unregister')) {
+   const button = e.target;
+   const agentId = button.dataset.agent;
+   if(!window.confirm(`注销 Agent ${agentId}？将删除其身份、能力、绑定和会话信任，且不可撤销。`)) return;
+   button.disabled = true;
+   securityInvoke('agents.unregister.v1',{agent_id:agentId})
+     .then(result => {
+       if(result.ok === false) throw new Error('当前 securityd 未删除该 Agent，请刷新后确认。');
+       alert('Agent 已注销。');
+       if(securitySelectedAgent === agentId) securitySelectedAgent = '';
+       return loadSecurityCenter(true);
+     })
      .catch(error => alert(error.message)).finally(() => { button.disabled = false; });
  }
  if(e.target.classList.contains('security-agent-inspect')) { setSecurityAgentContext(e.target.dataset.agent, false); document.querySelector('[data-security-tab="capabilities"]')?.click(); }
  if(e.target.classList.contains('security-dlp-reset')) securityInvoke('dlp.policy.delete.v1',{agent_id:aid,pii_type:e.target.dataset.pii}).then(()=>loadSecurityOtherView('dlp'));
  if(e.target.id==='security-dlp-scan') securityInvoke('dlp.scan.v1',{agent_id:aid,text:document.getElementById('security-dlp-text').value}).then(r=>{ const el=document.getElementById('security-dlp-result'); if(el) el.innerHTML=`发现 ${r.findings?.length||0} 项敏感信息${r.masked_text?`；脱敏结果：${escapeHtml(r.masked_text)}`:''}`; }).catch(x=>{ const el=document.getElementById('security-dlp-result'); if(el) el.textContent=x.message; });
- if(e.target.id==='security-audit-verify') securityInvoke('audit.verify.v1',{agent_id:aid}).then(r=>{ const el=document.getElementById('security-audit-verify-status'); if(el){ el.textContent=r.intact?'哈希链完整':'校验失败'; el.className=`security-pill ${r.intact?'security-pill--ok':'security-pill--error'}`; } }).catch(x=>{ const el=document.getElementById('security-audit-verify-status'); if(el){ el.textContent=x.message; el.className='security-pill security-pill--error'; } });
  if(e.target.id==='security-audit-refresh') loadSecurityOtherView('audit');
  if(e.target.id==='security-audit-next' && _securityAuditPage.next) {
    _securityAuditPage.history.push(_securityAuditPage.cursor);

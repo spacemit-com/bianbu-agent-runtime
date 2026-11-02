@@ -32,6 +32,11 @@ class CapabilityCatalog:
     inventory_revision: int
     plugin_sources: Mapping[str, CapabilitySource] = field(default_factory=dict)
     mcp_sources: Mapping[str, CapabilitySource] = field(default_factory=dict)
+    #: Capabilities that belong to one Agent package rather than the device.
+    #: Keyed by ``(kind, capability_id)``; the value is the owning Agent ID.
+    private_owners: Mapping[tuple[CapabilityKind, str], str] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "tools", MappingProxyType(dict(self.tools)))
@@ -47,8 +52,27 @@ class CapabilityCatalog:
             "mcp_sources",
             MappingProxyType(dict(self.mcp_sources)),
         )
+        object.__setattr__(
+            self,
+            "private_owners",
+            MappingProxyType(dict(self.private_owners)),
+        )
         if self.inventory_revision < 0:
             raise ValueError("inventory_revision must not be negative")
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedCapabilityCatalog:
+    """Catalog state that is ready before the builtin Tool list exists."""
+
+    skills: Mapping[str, SkillContribution]
+    sources: Mapping[tuple[CapabilityKind, str], CapabilitySource]
+    bundled_tools: Mapping[str, ToolContribution]
+    bundled_sources: Mapping[tuple[CapabilityKind, str], CapabilitySource]
+    inventory_revision: int
+    plugin_sources: Mapping[str, CapabilitySource]
+    mcp_sources: Mapping[str, CapabilitySource]
+    private_owners: Mapping[tuple[CapabilityKind, str], str]
 
 
 class CapabilityCatalogBuilder:
@@ -72,17 +96,25 @@ class CapabilityCatalogBuilder:
         self._tool_services = dict(tool_services or {})
 
     def build(self, snapshot: InventorySnapshot) -> CapabilityCatalog:
+        """Build the whole catalog synchronously (tests and Control callers)."""
+
+        prepared = self.prepare(snapshot)
+        return self.finish(prepared, self.build_tools())
+
+    def prepare(self, snapshot: InventorySnapshot) -> PreparedCapabilityCatalog:
+        """Resolve everything the catalog needs except the builtin Tool list.
+
+        The builtin Tool catalog constructs one LangChain Tool per module and
+        dominates this call.  Callers that can overlap CPU work with an I/O
+        wait (a Worker starting its MCP servers) split it out through
+        :meth:`build_tools` and :meth:`finish`.
+        """
+
         self.verify_snapshot(snapshot)
-        tool_candidate = self._tool_catalog.build(
-            workspace_root=self._workspace_root,
-            home_root=self._home_root,
-            services=self._tool_services,
-        )
-        tools: dict[str, ToolContribution] = dict(tool_candidate.tools)
+        bundled_tools: dict[str, ToolContribution] = {}
+        bundled_sources: dict[tuple[CapabilityKind, str], CapabilitySource] = {}
         skills: dict[str, SkillContribution] = {}
-        sources: dict[tuple[CapabilityKind, str], CapabilitySource] = dict(
-            tool_candidate.sources
-        )
+        sources: dict[tuple[CapabilityKind, str], CapabilitySource] = {}
         # Tools live inside the atomic Agent package, so removal leaves no
         # separate registration or copied payload to reconcile.
         from bianbu_agent.agents import AgentPackageManager
@@ -94,16 +126,22 @@ class CapabilityCatalogBuilder:
                 package.root, package.manifest,
                 workspace_root=self._workspace_root, services=self._tool_services,
             ).items():
-                self._add(tools, name, contribution, "tool")
-                sources[(CapabilityKind.TOOL, name)] = self._source_from_tool(contribution, name)
+                self._add(bundled_tools, name, contribution, "tool")
+                bundled_sources[(CapabilityKind.TOOL, name)] = self._source_from_tool(
+                    contribution, name
+                )
         plugin_sources: dict[str, CapabilitySource] = {}
         mcp_sources: dict[str, CapabilitySource] = {}
+        private_owners: dict[tuple[CapabilityKind, str], str] = {}
         enabled = sorted(
             (item for item in snapshot.items if item.enabled),
             key=lambda item: (item.source.kind.value, item.source.capability_id),
         )
         for item in enabled:
             kind = item.source.kind
+            owner = str(item.source.metadata.get("owner_agent_id") or "")
+            if item.source.metadata.get("agent_private") and owner:
+                private_owners[(kind, item.source.capability_id)] = owner
             if kind is CapabilityKind.TOOL:
                 continue
             elif kind is CapabilityKind.SKILL:
@@ -124,13 +162,47 @@ class CapabilityCatalogBuilder:
 
                 mcp_sources[runtime_mcp_id(item.source.capability_id)] = item.source
                 sources[(kind, item.source.capability_id)] = item.source
-        return CapabilityCatalog(
-            tools={name: tools[name] for name in sorted(tools)},
-            skills={name: skills[name] for name in sorted(skills)},
-            sources={key: sources[key] for key in sorted(sources, key=self._source_key)},
+        return PreparedCapabilityCatalog(
+            skills=skills,
+            sources=sources,
+            bundled_tools=bundled_tools,
+            bundled_sources=bundled_sources,
             inventory_revision=snapshot.revision,
             plugin_sources=plugin_sources,
             mcp_sources=mcp_sources,
+            private_owners=private_owners,
+        )
+
+    def build_tools(self) -> object:
+        """Construct the builtin Tool contributions (the CPU-heavy half)."""
+
+        return self._tool_catalog.build(
+            workspace_root=self._workspace_root,
+            home_root=self._home_root,
+            services=self._tool_services,
+        )
+
+    def finish(self, prepared: PreparedCapabilityCatalog, tool_candidate) -> CapabilityCatalog:
+        """Combine the resolved sources with the builtin Tool candidate."""
+
+        tools: dict[str, ToolContribution] = dict(tool_candidate.tools)
+        sources: dict[tuple[CapabilityKind, str], CapabilitySource] = dict(
+            tool_candidate.sources
+        )
+        for name, contribution in prepared.bundled_tools.items():
+            self._add(tools, name, contribution, "tool")
+        sources.update(prepared.bundled_sources)
+        sources.update(prepared.sources)
+        return CapabilityCatalog(
+            tools={name: tools[name] for name in sorted(tools)},
+            skills={
+                name: prepared.skills[name] for name in sorted(prepared.skills)
+            },
+            sources={key: sources[key] for key in sorted(sources, key=self._source_key)},
+            inventory_revision=prepared.inventory_revision,
+            plugin_sources=prepared.plugin_sources,
+            mcp_sources=prepared.mcp_sources,
+            private_owners=prepared.private_owners,
         )
 
     @staticmethod
@@ -202,4 +274,5 @@ __all__ = [
     "CapabilityCatalog",
     "CapabilityCatalogBuilder",
     "CapabilityConflictError",
+    "PreparedCapabilityCatalog",
 ]

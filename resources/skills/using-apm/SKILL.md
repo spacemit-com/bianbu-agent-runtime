@@ -30,7 +30,7 @@ Each Agent keeps its own root directory — `~/.codex`, `~/.claude`, `~/.hermes`
 
 This section applies only to a Bibit expert running with its own identity directory (`agents/<name>/agent.yaml`). Bibit is the only Agent with that identity file, so it is the only Agent that can state its own Power dependencies and the only target this flow installs for. For `codex`, `claude-code` and `hermes-agent`, install only what the user asks for, following "Install and maintain".
 
-Every expert the Runtime serves receives this handbook and a `## Power Dependencies` section in its context, listing the Powers its own `agent.yaml` declares, which of them this device has and which are missing, plus the execution mode it was started under. A declared Power that is missing never stops the expert from running: closing that gap is what this flow is for.
+Every expert the Runtime serves receives this handbook and a `## Power Dependencies` section naming the Skills, MCP servers and Plugins resolved for it. That section lists names only; use `apm list --installed --agent bibit --json` to confirm what is available. A declared Power that is missing never stops the expert from running: closing that gap is what this flow is for.
 
 Enter this flow when the task needs a capability this session does not have:
 

@@ -170,9 +170,9 @@ class MCPPackageManager:
         )
 
     def _read_roots(self) -> tuple[Path, ...]:
-        from bianbu_agent.mcp.system import system_mcp_root
+        from bianbu_agent.mcp.system import system_mcp_roots
 
-        return (system_mcp_root(), self._home.mcps_dir)
+        return (*system_mcp_roots(), self._home.mcps_dir)
 
     def list(self) -> tuple[InstalledMCP, ...]:
         self._home.prepare()
@@ -181,6 +181,12 @@ class MCPPackageManager:
             for root in self._read_roots():
                 if not root.exists():
                     continue
+                # A system declaration may ship the server it names next to
+                # its mcp.json; /usr is package-owned and read-only, so those
+                # extra files are as trustworthy as the declaration.  A
+                # user-installed package stays declaration-only: nothing but
+                # mcp.json may be smuggled into the catalog tree.
+                system = root != self._home.mcps_dir
                 mcps_fd = self._open_directory(root, "MCP catalog")
                 try:
                     for name in sorted(os.listdir(mcps_fd)):
@@ -190,7 +196,9 @@ class MCPPackageManager:
                         if stat.S_ISLNK(entry.st_mode):
                             raise ValueError("installed MCP package is a symbolic link or unsafe")
                         if stat.S_ISDIR(entry.st_mode):
-                            record = self._record_at(mcps_fd, name)
+                            record = self._record_at(
+                                mcps_fd, name, allow_extra_files=system
+                            )
                             records[name] = InstalledMCP(record.id, root / name, record.content_digest)
                 finally:
                     os.close(mcps_fd)
@@ -203,10 +211,15 @@ class MCPPackageManager:
             for root in reversed(self._read_roots()):
                 if not root.exists():
                     continue
+                system = root != self._home.mcps_dir
                 mcps_fd = self._open_directory(root, "MCP catalog")
                 try:
                     try:
-                        record = self._record_at(mcps_fd, normalized_id)
+                        record = self._record_at(
+                            mcps_fd,
+                            normalized_id,
+                            allow_extra_files=system,
+                        )
                         return InstalledMCP(record.id, root / normalized_id, record.content_digest)
                     except FileNotFoundError:
                         continue
@@ -284,7 +297,13 @@ class MCPPackageManager:
                 os.close(mcps_fd)
         return True
 
-    def _record_at(self, parent_fd: int, name: str) -> InstalledMCP:
+    def _record_at(
+        self,
+        parent_fd: int,
+        name: str,
+        *,
+        allow_extra_files: bool = False,
+    ) -> InstalledMCP:
         normalized_id = self._validate_id(name)
         root_fd, root_stat = self._open_package_at(parent_fd, normalized_id)
         try:
@@ -293,6 +312,7 @@ class MCPPackageManager:
                 parent_fd=parent_fd,
                 entry_name=normalized_id,
                 expected_root=root_stat,
+                allow_extra_files=allow_extra_files,
             )
             validate_mcp_config_bytes(payload, workspace=self._home.workspace_dir)
         finally:
@@ -329,8 +349,12 @@ class MCPPackageManager:
         parent_fd: int | None = None,
         entry_name: str | None = None,
         root_path: Path | None = None,
+        allow_extra_files: bool = False,
     ) -> bytes:
-        if set(os.listdir(root_fd)) != {"mcp.json"}:
+        entries = set(os.listdir(root_fd))
+        if "mcp.json" not in entries or (
+            not allow_extra_files and entries != {"mcp.json"}
+        ):
             raise ValueError("MCP packages may only contain mcp.json")
         try:
             initial = os.stat("mcp.json", dir_fd=root_fd, follow_symlinks=False)

@@ -128,7 +128,9 @@ def test_api_documentation_explains_namespaces_boundary_and_entry_points() -> No
     assert "破坏性变更" in guide
     assert "不提供兼容" in guide
     assert "单进程、单 worker" in guide
-    assert "[HTTP API 指南](docs/api-guide.md)" in readme
+    readme_cn = (PROJECT_ROOT / "README_cn.md").read_text(encoding="utf-8")
+    assert "[HTTP API guide](docs/api-guide.md)" in readme
+    assert "[HTTP API 指南](docs/api-guide.md)" in readme_cn
     assert all(not path.exists() for path in RETIRED_API_GUIDES)
 
 

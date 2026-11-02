@@ -182,17 +182,42 @@ def scan_skill_text(agent_id: str, skill_name: str, text: str) -> str:
 
 
 def _mask_findings(text: str, findings: list[dict]) -> str:
-    """按 securityd 返回的 action/offset 仅遮盖需 mask 的命中。"""
-    counters: dict[str, int] = {}
-    out = text
-    for finding in sorted(findings, key=lambda item: int(item["start"]), reverse=True):
+    """按 securityd 返回的 action/offset 仅遮盖需 mask 的命中。
+
+    替身必须是同类型的自然值：Skill 文本会进入 system prompt，显式的
+    ``[PII-…]`` 标记会让模型知道自己看到的是脱敏副本，从而改变行为。
+    """
+    from bianbu_agent.security.security_dlp import natural_stand_in
+
+    ordered = sorted(findings, key=lambda item: int(item["start"]))
+    real_values = {
+        text[int(finding["start"]):int(finding["end"])] for finding in ordered
+    }
+    by_value: dict[tuple[str, str], str] = {}
+    used: set[str] = set()
+    parts, cursor = [], 0
+    for finding in ordered:
         pii_type = str(finding.get("pii_type") or "unknown")
-        counters[pii_type] = counters.get(pii_type, 0) + 1
         start, end = int(finding["start"]), int(finding["end"])
-        if start < 0 or end < start or end > len(out):
+        if start < 0 or end < start or end > len(text) or start < cursor:
             raise ValueError("securityd DLP finding offset 越界")
-        out = out[:start] + f"[PII-{pii_type}-{counters[pii_type]:03d}]" + out[end:]
-    return out
+        value = text[start:end]
+        key = (pii_type, value)
+        stand_in = by_value.get(key)
+        if stand_in is None:
+            for counter in range(64):
+                candidate = natural_stand_in(pii_type, value, counter)
+                if candidate not in used and candidate not in real_values:
+                    stand_in = candidate
+                    break
+            else:  # pragma: no cover - pool is far larger than 64 collisions
+                raise ValueError("PII stand-in pool exhausted")
+            by_value[key] = stand_in
+            used.add(stand_in)
+        parts.extend((text[cursor:start], stand_in))
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts)
 
 
 def scan_skill_sections(agent_id: str, sections: dict[str, str]) -> dict[str, str]:

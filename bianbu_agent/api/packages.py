@@ -20,6 +20,7 @@ from bianbu_agent.api.catalog_dependencies import (
     agent_references,
     capability_in_use,
 )
+from bianbu_agent.inventory import CapabilityKind
 from bianbu_agent.plugins.models import InstalledPlugin, PluginMember
 from bianbu_agent.server.runtime import BianbuAgentRuntime
 from bianbu_agent.security.runtime_process.worker_rpc import WorkerRPCError
@@ -266,7 +267,15 @@ async def install_package(
         security_status = "not_configured"
         if kind is PackageKind.AGENT:
             try:
-                await runtime.register_logical_agent(installed.manifest.spec)
+                previous_spec = (
+                    getattr(getattr(previous, "manifest", None), "spec", None)
+                    if previous is not None
+                    else None
+                )
+                await runtime.register_logical_agent(
+                    installed.manifest.spec,
+                    previous_plugins=getattr(previous_spec, "plugins", None),
+                )
                 security_status = "registered"
             except Exception as exc:  # noqa: BLE001 - security lifecycle boundary
                 if runtime.config.security.required and str(os.environ.get("BIANBU_RUNTIME_MODE", "development")).lower() == "production":
@@ -374,10 +383,16 @@ async def delete_package(
         if kind in {PackageKind.AGENT, PackageKind.SKILL}:
             manager.assert_deletable(package_id)
         if kind is PackageKind.AGENT:
-            try:
-                await runtime.unregister_logical_agent(package_id)
-            except Exception as exc:
-                if runtime.config.security.required and str(os.environ.get("BIANBU_RUNTIME_MODE", "development")).lower() == "production":
+            # The Security registry is the other half of an Agent's identity
+            # only when the Agent selected bianbu.security.  Without the
+            # Plugin there is nothing to revoke, so securityd must not block
+            # deletion.
+            security_enabled = await runtime.security_enabled_for_agent(package_id)
+            unregistered = None
+            if security_enabled:
+                try:
+                    unregistered = await runtime.unregister_logical_agent(package_id)
+                except Exception as exc:
                     logger.warning(
                         "Agent security unregister failed: agent=%s error=%s",
                         package_id, exc, exc_info=exc,
@@ -388,6 +403,14 @@ async def delete_package(
                             "Agent security unregister failed: " f"{exc}"
                         ),
                     }) from exc
+            if security_enabled and unregistered is None:
+                raise HTTPException(503, {
+                    "code": "agent_security_unregister_failed",
+                    "message": (
+                        "Agent security unregister is pending; securityd is "
+                        f"unavailable for {package_id}"
+                    ),
+                })
             manager.uninstall(package_id)
             return Response(status_code=204)
         root = _package_root(runtime, kind, package_id)
@@ -501,9 +524,75 @@ def _plugin_view(plugin: InstalledPlugin) -> dict[str, object]:
     }
 
 
+def _private_plugin_items(runtime) -> tuple[object, ...]:
+    """Private Plugin records across installed Expert packages."""
+
+    from bianbu_agent.agents.private_resources import discover_private_resources
+    from bianbu_agent.inventory import CapabilityKind
+
+    items: list[object] = []
+    for package in runtime.agent_packages.list():
+        try:
+            private = discover_private_resources(package.root, package.id)
+        except ValueError:
+            continue
+        items.extend(
+            item for item in private.items
+            if item.source.kind is CapabilityKind.PLUGIN
+        )
+    return tuple(items)
+
+
 @router.get("/plugins")
-async def list_plugins(request: Request):
-    return success([_plugin_view(item) for item in _runtime(request).plugins.list()])
+async def list_plugins(request: Request, agent_id: str | None = None):
+    runtime = _runtime(request)
+    items = [_plugin_view(item) for item in runtime.plugins.list()]
+    if agent_id:
+        # Private Plugins live inside one Agent package and are not managed by
+        # the device-wide Plugin installer, so add them to that Agent's view.
+        from bianbu_agent.agents.private_resources import (
+            discover_private_resources,
+        )
+        from bianbu_agent.plugins.manifest import load_installed_plugin_manifest
+
+        package = runtime.agent_packages.inspect(str(agent_id))
+        if package is not None:
+            private = discover_private_resources(package.root, package.id)
+            known = {str(item["id"]) for item in items}
+            for item in private.items:
+                if item.source.kind is not CapabilityKind.PLUGIN:
+                    continue
+                if item.source.capability_id in known:
+                    items = [
+                        entry for entry in items
+                        if entry["id"] != item.source.capability_id
+                    ]
+                manifest = load_installed_plugin_manifest(item.source.root)
+                members = []
+                for kind, directory, names in (
+                    ("tool", "tools", manifest.contributions.tools),
+                    ("skill", "skills", manifest.contributions.skills),
+                    ("hook", "hooks", manifest.contributions.hooks),
+                    ("mcp", "mcps", manifest.contributions.mcps),
+                ):
+                    for name in names:
+                        members.append({
+                            "id": f"{manifest.id}/{name}",
+                            "plugin_id": manifest.id,
+                            "kind": kind,
+                            "name": name,
+                            "version": manifest.version,
+                        })
+                items.append({
+                    "id": item.source.capability_id,
+                    "version": manifest.version,
+                    "description": manifest.description,
+                    "content_digest": item.source.content_digest,
+                    "members": members,
+                    "private": True,
+                    "owner_agent_id": package.id,
+                })
+    return success(items)
 
 
 @router.post("/plugins", status_code=201)
@@ -678,6 +767,21 @@ async def delete_plugin(plugin_id: str, request: Request) -> Response:
     async with runtime.catalog_mutation_lock:
         installed = manager.inspect(plugin_id)
         if installed is None:
+            # A private Plugin is not a device-wide install.  Report the same
+            # refusal the console shows instead of a confusing 404, even when a
+            # caller learned the ID from the Agent-scoped catalog.
+            if any(
+                item.source.capability_id == plugin_id
+                for item in _private_plugin_items(runtime)
+            ):
+                raise _plugin_conflict(
+                    "plugin_private",
+                    (
+                        f"插件 {plugin_id} 属于某个专家包，随该专家一起安装和删除，"
+                        "不能单独卸载。"
+                    ),
+                    {"plugin_id": plugin_id},
+                )
             raise KeyError(plugin_id)
         selections: dict[str, list[str]] = {"plugin": [plugin_id]}
         for member in installed.members:

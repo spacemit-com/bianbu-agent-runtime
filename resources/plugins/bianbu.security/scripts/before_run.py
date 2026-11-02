@@ -37,7 +37,14 @@ async def before_run(run: dict) -> dict | None:
         "decision": result.decision.value}})
 
 
+def _warmup():
+    _bootstrap()
+    from lib import warm_bridge
+
+    warm_bridge()
+
+
 if __name__ == "__main__":
     from protocol import main
 
-    main(before_run)
+    main(before_run, warmup=_warmup)

@@ -5,18 +5,10 @@ import platform
 from collections.abc import Mapping, Sequence
 
 import httpx
-from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk
-from langchain_openai import ChatOpenAI
 
-from bianbu_agent.agents import AgentDeclaration, AgentSpec
+from bianbu_agent.agents import AgentSpec
 from bianbu_agent.context import CompressionSettingsProvider
-from bianbu_agent.mcp import resolve_mcp_selectors
-from bianbu_agent.engines.langgraph import (
-    LangGraphEngine,
-    build_langgraph_agent,
-    build_plugin_tools,
-)
 from bianbu_agent.engines.tool_pairing import reconcile_tool_pairs
 from bianbu_agent.models import ChatModel, OpenAICompatibleModel
 
@@ -37,8 +29,48 @@ def _invalid_tool_call_ids(messages: Sequence[object]) -> set[str]:
     return ids
 
 
-class _ReasoningChatOpenAI(ChatOpenAI):
+# Exact aliases, never a prefix: the requirement is per model, and the models
+# that share the `deepseek-v4` prefix do not share it — verified against
+# api.deepseek.com on 2026-10-16, where a tool-enabled request without prior
+# reasoning was rejected only for `deepseek-flash`, `deepseek-v4-flash` and
+# `deepseek-v4-pro`, while `deepseek-v4-flash-vision-exp`, `deepseek-chat` and
+# `deepseek-reasoner` accepted it.
+_REASONING_ECHO_MODELS = frozenset({
+    "deepseek-flash",
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+})
+
+
+def _reasoning_wire_options(
+    effort: str, thinking_format: str,
+) -> dict[str, object]:
+    """Translate one canonical effort into the endpoint's own dialect.
+
+    ``off`` is the only level that must disable thinking itself: a model that
+    thinks unless told not to would otherwise keep reasoning with no effort
+    parameter sent.  Every other level sends ``reasoning_effort`` unchanged,
+    which is what the OpenAI-compatible surface and DeepSeek both accept.
+    """
+
+    if thinking_format == "deepseek":
+        if effort == "off":
+            return {"extra_body": {"thinking": {"type": "disabled"}}}
+        return {
+            "reasoning_effort": effort,
+            "extra_body": {"thinking": {"type": "enabled"}},
+        }
+    if effort == "off":
+        return {}
+    return {"reasoning_effort": effort}
+
+
+class _ReasoningChatOpenAIMixin:
     """Preserve provider reasoning and enforce the shared output budget."""
+
+    # The mixin is combined with ``langchain_openai.ChatOpenAI`` on first use:
+    # importing that package pulls the whole ``openai.types`` tree (~1s of
+    # Worker cold start) and a Worker only needs it once it builds a model.
 
     def _get_request_payload(self, input_, *, stop=None, **kwargs):
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
@@ -48,9 +80,17 @@ class _ReasoningChatOpenAI(ChatOpenAI):
             default_key="max_output_tokens" if "input" in payload else "max_completion_tokens",
         )
         messages = self._convert_input(input_).to_messages()
-        # DeepSeek V4 requires prior reasoning on every tool-enabled request.
-        # Keep this provider extension out of other OpenAI-compatible APIs.
-        if self.model_name.lower().startswith("deepseek-v4") and payload.get("tools"):
+        # Some DeepSeek models answer HTTP 400 "The `reasoning_content` in the
+        # thinking mode must be passed back to the API" when a tool-enabled
+        # request omits the reasoning of an earlier assistant turn.  The
+        # requirement is per model, not per family, so it is listed by exact
+        # alias: `deepseek-flash` needs it just as much as `deepseek-v4-*`, and
+        # a `deepseek-v4` prefix check silently skipped it.  Keep this provider
+        # extension out of other OpenAI-compatible APIs.
+        if (
+            self.model_name.strip().casefold() in _REASONING_ECHO_MODELS
+            and payload.get("tools")
+        ):
             for message, wire in zip(messages, payload["messages"], strict=True):
                 if isinstance(message, AIMessage):
                     reasoning = message.additional_kwargs.get("reasoning_content")
@@ -103,12 +143,44 @@ def build_default_engine(
     transcript_provider: object | None = None,
     capture_callback: object | None = None,
     context_settings: CompressionSettingsProvider | None = None,
-) -> LangGraphEngine:
+) -> "LangGraphEngine":
+    # Building the graph is prompt-time work: deferring the import keeps the
+    # LangGraph agent stack out of the Runtime and Worker startup path.
+    from bianbu_agent.engines.langgraph import (
+        LangGraphEngine,
+        build_langgraph_agent,
+        build_plugin_tools,
+    )
+
     _publish_sandbox_config(agent)
+    from bianbu_agent.security.enablement import (
+        security_agent_enabled,
+        security_plugin_selected,
+    )
+
+    security_enabled = (
+        security_agent_enabled() and security_plugin_selected(agent.plugins)
+    )
+    # The security Hook chain is judged in ``after_model`` (so the HITL prompt
+    # and the audit record share one CheckPermission).  Execution must not run
+    # that same chain again; other plugins' before_tool hooks keep running.
+    security_hook_ids: tuple[str, ...] = ()
+    if security_enabled:
+        from bianbu_agent.plugins.contributions import HookPoint
+
+        security_hook_ids = tuple(
+            hook_id
+            for hook_id, contribution in (
+                getattr(generation, "hooks", None) or {}
+            ).items()
+            if getattr(contribution, "plugin_id", "") == "bianbu.security"
+            and getattr(contribution, "point", None) == HookPoint.BEFORE_TOOL
+        )
     tools = build_plugin_tools(
         (generation.tools[name] for name in agent.tools if name in generation.tools),
         hook_runner=generation,
         hook_ids=agent.hooks,
+        excluded_before_tool_hooks=security_hook_ids,
     )
     # Use the resolved execution model, not the saved selector or credentials.
     model_name = getattr(model, "model_name", None) or getattr(model, "model", None)
@@ -122,23 +194,14 @@ def build_default_engine(
     if agent.soul:
         sections.append(f"## Agent Soul\n\n{agent.soul}")
     sections.append(_power_dependencies_section(agent, generation))
-    exposed_tool_names = tuple(
-        str(name).strip()
-        for tool in tools
-        if (name := getattr(tool, "name", None)) and str(name).strip()
-    )
-    available_tool_names = ", ".join(exposed_tool_names) or "none"
-    sections.append(
-        "## Tool Policy\n\n"
-        f"Available tool names: {available_tool_names}. "
-        "Never call or invent a tool that is not in this list."
-    )
     # Inject architecture-specific syscall guidance only inside a real Worker
     # process (or when explicitly requested).  Keeping it out of lightweight
     # SDK/test prompts avoids imposing a large policy catalogue on every model
     # invocation while preserving accurate explanations in production.
-    if (os.environ.get("BIANBU_RUNTIME_ROLE") == "agent-worker"
-            or os.environ.get("BIANBU_SYSCALL_CONTEXT") == "1"):
+    if security_enabled and (
+        os.environ.get("BIANBU_RUNTIME_ROLE") == "agent-worker"
+        or os.environ.get("BIANBU_SYSCALL_CONTEXT") == "1"
+    ):
         from bianbu_agent.security.syscall_catalog import syscall_context
         sections.append("## Runtime Security Context\n\n" + syscall_context())
     # D-10：Skill 描述过 DLP。
@@ -148,8 +211,6 @@ def build_default_engine(
     #
     # 处置仍沿用脱敏逻辑，避免描述中的敏感信息进入模型上下文。
     # 不弹确认：prompt 组装不是用户发起的动作，此刻没有可问的人。
-    from bianbu_agent.security.security_skill_dlp import scan_skill_sections
-
     # 按 skill 名（而非 display_name）作键：display_name 可能重复，
     # 撞了会静默丢掉一个 Skill
     skill_texts = {
@@ -168,7 +229,12 @@ def build_default_engine(
         or os.environ.get("BIANBU_AGENT_ID")
         or agent.id
     ).strip()
-    scanned = scan_skill_sections(security_agent_id, skill_texts)
+    if security_enabled:
+        from bianbu_agent.security.security_skill_dlp import scan_skill_sections
+
+        scanned = scan_skill_sections(security_agent_id, skill_texts)
+    else:
+        scanned = dict(skill_texts)
     # A Skill the user attached to this message is not an ambient Agent Skill:
     # it is the procedure the user asked for.  Rendering it as just another
     # ``## Skill:`` entry made the model treat the attachment as background
@@ -211,6 +277,7 @@ def build_default_engine(
         "Bibit / Bianbu Agent Runtime",
         f"Agent ID: {agent.id}",
         f"Architecture: {platform.machine().strip() or 'Unknown'}",
+        f"Execution mode: {_execution_mode_label(agent)}",
     ]
     # The existing optional Hook supplies OS-specific command guidance. Do not
     # repeat that information when it is selected and available in this run.
@@ -254,6 +321,9 @@ def build_default_engine(
         tools=tools,
         system_prompt=system_prompt,
         context_settings=context_settings,
+        security_enabled=security_enabled,
+        hook_runner=generation,
+        security_hook_ids=security_hook_ids,
     )
     return LangGraphEngine(
         graph,
@@ -261,6 +331,7 @@ def build_default_engine(
         agent_id=agent.id,
         hook_ids=agent.hooks,
         provider_id=str(getattr(model, "provider_id", "") or ""),
+        model_name=str(getattr(model, "model", "") or ""),
         capture_callback=capture_callback,
         system_prompt=system_prompt,
         transcript_provider=transcript_provider,
@@ -268,126 +339,21 @@ def build_default_engine(
 
 
 def _power_dependencies_section(agent: AgentSpec, generation: object | None = None) -> str:
-    """State the Powers this Agent declared, and which of them are missing.
+    """List the Skills, MCP servers and Plugins resolved for this Agent."""
 
-    ``materialize`` resolves a manifest's selectors against the installed
-    Generation and throws the gap away.  An expert installed from AgentHub
-    usually declares more Powers than a fresh device carries, so the difference
-    between the declaration and the resolved sets is the worklist the model has
-    to be able to see before it can answer or provision anything.
-    """
-
-    declaration = agent.declared
-    installed_plugins = _installed_plugin_ids(generation)
-    entries = []
-    missing_powers: list[str] = []
-    # Tools report only their gap: the exposed names are already the authoritative
-    # list in Tool Policy, and repeating them doubles that section's cost.
-    for label, declared, present, show_present in (
-        (
-            "Tools",
-            declaration.tools if declaration is not None else agent.tools,
-            agent.tools,
-            False,
-        ),
-        (
-            "Skills",
-            declaration.skills if declaration is not None else agent.skills,
-            agent.skills,
-            True,
-        ),
-        (
-            "MCP servers",
-            # The declaration may use the APM name (``nws``) of a server this
-            # device installed as ``mcp.nws``; report the resolved ID so the
-            # expert is not told to install what it already has.
-            resolve_mcp_selectors(
-                declaration.mcps if declaration is not None else agent.mcps,
-                agent.mcps,
-            ),
-            agent.mcps,
-            True,
-        ),
-        (
-            "Plugins",
-            declaration.plugins if declaration is not None else agent.plugins,
-            tuple(name for name in agent.plugins if name in installed_plugins),
-            True,
-        ),
+    lines = ["## Power Dependencies", ""]
+    for label, names in (
+        ("Skills", agent.skills),
+        ("MCP servers", agent.mcps),
+        ("Plugins", agent.plugins),
     ):
-        selected = tuple(dict.fromkeys(str(name) for name in declared))
-        available = tuple(str(name) for name in present)
-        missing = tuple(name for name in selected if name != "*" and name not in available)
-        if not selected and not available:
-            continue
-        entry = f"- {label}: declared [{_name_list(selected)}]"
-        if show_present and (selected != ("*",) or available):
-            entry += f"; available [{_name_list(available)}]"
-        if missing:
-            entry += f"; missing [{_name_list(missing)}]"
-            missing_powers.extend(f"{label.lower()}: {name}" for name in missing)
-        entries.append(entry)
-    lines = [
-        "## Power Dependencies",
-        "",
-        f"- Execution mode: {_execution_mode_label(agent)}",
-    ]
-    if entries:
-        lines.append(
-            "- Declaration: the Powers this Agent's agent.yaml names. The "
-            "Runtime runs only those installed on this device."
-        )
-        lines.extend(entries)
-    if missing_powers:
-        lines.extend(("", _power_install_guidance()))
+        selected = tuple(dict.fromkeys(str(name) for name in names))
+        lines.append(f"- {label}: {_name_list(selected)}")
     return "\n".join(lines)
-
-
-def _power_install_guidance() -> str:
-    """Say how a missing Power can actually be filled in this mode.
-
-    Installing a Power writes under the Agent data root, which the sandbox
-    mounts read-only, and APM needs a writable ``~/.apm`` for its catalog lock,
-    which the sandbox does not have either -- ``apm list`` itself fails there.
-    Promising the host recipe in that mode costs a tool call and leaves the
-    model one step from reporting an installation that never happened, so the
-    sandbox wording asks for the gap instead. ``unknown`` keeps the sandbox
-    wording: no Worker published a mode, so nothing may be assumed about it.
-    """
-
-    if _effective_execution_mode() == "host":
-        return (
-            "Install a missing Power only when this task or the user needs it, "
-            "through the using-apm Skill's self-provisioning flow: `apm list "
-            "--installed --agent bibit`, `apm search`, `apm show`, `apm install "
-            "<name> --type <type> --agent bibit`, then verify. Never claim a "
-            "Power you do not have, ask before installing a Plugin or anything "
-            "inferred, and without a command tool such as terminal report the "
-            "gap instead of pretending to install it. A Skill applies as soon "
-            "as it is installed; an MCP server or Plugin applies next turn."
-        )
-    return (
-        "This Worker runs in a sandbox, where the Agent data root is read-only "
-        "and `apm` has no writable HOME: nothing can be installed from here, so "
-        "do not try. Report the exact missing Power by name and that the user "
-        "has to add it on the device -- AgentHub or the Console -- before this "
-        "task can use it. Never claim a Power you do not have; without a "
-        "command tool such as terminal report the gap the same way."
-    )
 
 
 def _name_list(names: Sequence[str]) -> str:
     return ", ".join(names) if names else "none"
-
-
-def _installed_plugin_ids(generation: object | None) -> frozenset[str]:
-    """Return the Plugin IDs this Generation can actually provide."""
-
-    catalog = getattr(generation, "capability_catalog", None)
-    sources = getattr(catalog, "plugin_sources", None)
-    if sources is None:
-        sources = getattr(generation, "plugins", {}) or {}
-    return frozenset(str(name) for name in sources)
 
 
 # The two boundary sets are model-facing policy, so the wording is part of the
@@ -415,7 +381,7 @@ _HOST_SOFTWARE_BOUNDARIES = (
     "a container or a bwrap sandbox. Do not infer isolation, and do not refuse a "
     "task, from a private mount namespace, a seccomp filter, `CapEff: 0`, or a "
     "read-only `/usr`: those are properties of the systemd unit that hosts the "
-    "Runtime, while the `Execution mode` line in Power Dependencies above is the "
+    "Runtime, while the `Execution mode` line in Platform Context is the "
     "authoritative answer. Privileged steps such as apt, systemctl, reboot or "
     "editing /etc go through sudo: this session has no TTY, so feed the password "
     "on stdin with `sudo -S`. When sudo reports that authentication is required, "
@@ -494,8 +460,12 @@ def _publish_sandbox_config(agent: AgentSpec) -> None:
 
 def to_langchain_model(
     model: ChatModel, *, capture_callback: object | None = None
-) -> BaseChatModel:
+) -> "BaseChatModel":
     """Adapt a public SDK model declaration at the LangChain boundary."""
+
+    # The chat-model base class drags in the LangChain tracer stack (and
+    # ``langsmith``); only a caller that actually builds a model needs it.
+    from langchain_core.language_models.chat_models import BaseChatModel
 
     if isinstance(model, BaseChatModel):
         return model
@@ -519,6 +489,9 @@ def to_langchain_model(
             options["temperature"] = model.temperature
         if model.max_tokens is not None:
             options["max_tokens"] = model.max_tokens
+        options.update(_reasoning_wire_options(
+            model.reasoning_effort, model.thinking_format,
+        ))
         if model.provider_id == "minimax":
             options["stream_usage"] = True
         hooks_factory = getattr(capture_callback, "http_hooks", None)
@@ -538,11 +511,37 @@ def to_langchain_model(
                     "response": [hooks.on_response_async],
                 }
             )
-        return _ReasoningChatOpenAI(**options)
+        return _reasoning_chat_openai_class()(**options)
     raise TypeError(
         "default SDK engine requires OpenAICompatibleModel or a LangChain "
         "BaseChatModel; inject engine_builder for another model framework"
     )
+
+
+_REASONING_CHAT_MODEL_CLASS: type | None = None
+
+
+def _reasoning_chat_openai_class() -> type:
+    """Resolve the provider subclass without importing the SDK eagerly."""
+
+    global _REASONING_CHAT_MODEL_CLASS
+    if _REASONING_CHAT_MODEL_CLASS is None:
+        from langchain_openai import ChatOpenAI
+
+        _REASONING_CHAT_MODEL_CLASS = type(
+            "_ReasoningChatOpenAI",
+            (_ReasoningChatOpenAIMixin, ChatOpenAI),
+            {"__module__": __name__},
+        )
+    return _REASONING_CHAT_MODEL_CLASS
+
+
+def __getattr__(name: str):
+    # The SDK contract exposes this subclass by name; resolve it on demand so
+    # importing the engine module does not import the provider SDK.
+    if name == "_ReasoningChatOpenAI":
+        return _reasoning_chat_openai_class()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = ["build_default_engine", "to_langchain_model"]

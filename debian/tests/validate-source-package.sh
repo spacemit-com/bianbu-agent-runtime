@@ -34,25 +34,20 @@ for path in \
     debian/bianbu-agent-runtime.tmpfiles \
     debian/runtime-user-entrypoint \
     debian/provision-user.py \
-    debian/generate-security-manifest.py \
-    debian/register-security-manifest.py \
-    debian/reset-security-binding.py \
     debian/runtime-admin-token.py \
     debian/bianbu-agent-runtime-token \
-    debian/register-runtime-manifest \
+    debian/prepare-runtime-device \
     debian/bianbu-agent-runtime-register.service \
-    scripts/network-learning-collector.py \
     debian/preinst \
     debian/render-starter-agent.py \
     debian/postinst \
     debian/prerm \
     debian/postrm \
-    resources/default-profile/config.yaml \
-    resources/default-profile/starter-agent.yaml \
+    resources/config.yaml \
+    resources/agents/com.bianbu.627d97ad908c/agent.yaml \
     resources/models/custom-bibit/provider.yaml \
     debian/requirements-extra.txt \
     debian/tests/test-build-dependencies.sh \
-    debian/tests/test-development-manifest.sh \
     debian/tests/test-offline-install.sh \
     debian/tests/test-desktop-icon-cleanup.sh \
     debian/tests/test-postrm-cleanup.sh \
@@ -75,18 +70,13 @@ done
 [ -x debian/bianbu-agent-runtime-wrapper ] || fail "Runtime wrapper is not executable"
 [ -x debian/runtime-user-entrypoint ] || fail "Runtime user entrypoint is not executable"
 [ -x debian/provision-user.py ] || fail "user profile provisioner is not executable"
-[ -x debian/generate-security-manifest.py ] || fail "Security manifest generator is not executable"
-[ -x debian/register-security-manifest.py ] || fail "Security manifest registrar is not executable"
-[ -x debian/reset-security-binding.py ] || fail "Security binding reset helper is not executable"
 [ -x debian/runtime-admin-token.py ] || fail "Runtime admin token helper is not executable"
 [ -x debian/bianbu-agent-runtime-token ] || fail "Runtime admin token command is not executable"
-[ -x debian/register-runtime-manifest ] || fail "device registration script is not executable"
-[ -x scripts/network-learning-collector.py ] || fail "network learning collector is not executable"
+[ -x debian/prepare-runtime-device ] || fail "device preparation script is not executable"
 [ -x debian/preinst ] || fail "package preinst is not executable"
 [ -x debian/postrm ] || fail "package postrm is not executable"
 [ -s resources/models/custom-bibit/provider.yaml ] || fail "Bibit built-in provider default is missing"
 [ -x debian/tests/test-build-dependencies.sh ] || fail "build dependency test is not executable"
-[ -x debian/tests/test-development-manifest.sh ] || fail "development manifest test is not executable"
 [ -x debian/tests/test-offline-install.sh ] || fail "offline install test is not executable"
 [ -x debian/tests/test-desktop-icon-cleanup.sh ] || fail "desktop icon cleanup test is not executable"
 [ -x debian/tests/test-postrm-cleanup.sh ] || fail "postrm cleanup test is not executable"
@@ -108,13 +98,12 @@ sh -n debian/bianbu-agent-wrapper
 sh -n debian/bianbu-agent-runtime-wrapper
 sh -n debian/runtime-user-entrypoint
 sh -n debian/bianbu-agent-runtime-token
-sh -n debian/register-runtime-manifest
+sh -n debian/prepare-runtime-device
 sh -n debian/postinst
 sh -n debian/preinst
 sh -n debian/prerm
 sh -n debian/postrm
 sh -n debian/tests/test-build-dependencies.sh
-sh -n debian/tests/test-development-manifest.sh
 sh -n debian/tests/test-offline-install.sh
 sh -n debian/tests/test-desktop-icon-cleanup.sh
 sh -n debian/tests/test-postrm-cleanup.sh
@@ -122,14 +111,11 @@ sh -n debian/tests/test-starter-profile.sh
 sh -n debian/tests/test-system-profile-dir.sh
 sh -n debian/tests/package-smoke
 python3 -c 'compile(open("debian/provision-user.py", encoding="utf-8").read(), "debian/provision-user.py", "exec")'
-python3 -c 'compile(open("debian/generate-security-manifest.py", encoding="utf-8").read(), "debian/generate-security-manifest.py", "exec")'
-python3 -c 'compile(open("debian/register-security-manifest.py", encoding="utf-8").read(), "debian/register-security-manifest.py", "exec")'
-python3 -c 'compile(open("debian/reset-security-binding.py", encoding="utf-8").read(), "debian/reset-security-binding.py", "exec")'
 python3 -c 'compile(open("debian/runtime-admin-token.py", encoding="utf-8").read(), "debian/runtime-admin-token.py", "exec")'
 python3 -c 'compile(open("debian/render-starter-agent.py", encoding="utf-8").read(), "debian/render-starter-agent.py", "exec")'
-python3 -c 'compile(open("scripts/network-learning-collector.py", encoding="utf-8").read(), "scripts/network-learning-collector.py", "exec")'
 [ ! -e debian/default-agent.yaml ] || fail "duplicated Debian Agent source must be removed"
 grep -q '^ python3\.14,$' debian/control || fail "Python 3.14 dependency is not declared"
+grep -q '^ python3-hatchling,$' debian/control || fail "hatchling build dependency is not declared"
 grep -q '^ python3-pip,$' debian/control || fail "pip build dependency is not declared"
 grep -q '^ curl,$' debian/control || fail "curl build dependency is not declared"
 grep -q "'uv>=0.11,<0.12'" debian/rules || fail "uv build bootstrap is not version bounded"
@@ -164,12 +150,9 @@ grep -Eq '^ agent-browser( \(>= [^)]+\))?,$' debian/control \
     || fail "the in-tree agent-browser copy must not come back"
 ! grep -q 'agent-browser-wrapper' debian/rules \
     || fail "debian/rules still installs an agent-browser wrapper"
-grep -q 'RUNTIME_ALLOWED_DOMAINS ?= api.deepseek.com api.rvcompute.com localhost' debian/rules \
-    || fail "packaged Runtime manifest does not allow cloud providers and local Bibit"
-runtime_manifest_version=$(sed -n 's/^RUNTIME_MANIFEST_VERSION ?= //p' debian/rules)
-test -n "$runtime_manifest_version" && dpkg --compare-versions "$runtime_manifest_version" ge 1.2.23 \
-    || fail "signed Runtime manifest generation was not advanced"
-grep -q '^    handshake_timeout_seconds: 60$' resources/default-profile/config.yaml \
+! grep -qE 'SECURITY_MANIFEST|generate-security-manifest|register-security-manifest|RUNTIME_MANIFEST_VERSION' debian/rules \
+    || fail "the Runtime package must not build or install a signed manifest"
+grep -q '^    handshake_timeout_seconds: 60$' resources/config.yaml \
     || fail "packaged K3 Worker activation timeout is too short"
 ! grep -q '^ bianbu-agent-memoryd,$' debian/control \
     || fail "Runtime must consume memoryd through the public Memory package dependency"
@@ -182,6 +165,27 @@ printf '%s\n' "$systemd_install" | grep -q 'dh_installsystemd --name=bianbu-agen
     || fail "systemd service must be installed during package installation"
 test -r 'debian/bianbu-agent-runtime.service' \
     || fail "system-level Runtime service unit is missing"
+grep -q '^BindsTo=bianbu-securityd.service$' 'debian/bianbu-agent-runtime.service' \
+    || fail "Runtime must follow the security service lifecycle"
+test -r debian/bianbu-agent-runtime-keepalive.timer \
+    || fail "the Runtime keepalive timer is missing"
+test -r debian/bianbu-agent-runtime-keepalive.service \
+    || fail "the Runtime keepalive service is missing"
+grep -q '^OnUnitInactiveSec=5s$' debian/bianbu-agent-runtime-keepalive.timer \
+    || fail "the Runtime keepalive timer must react within seconds"
+grep -q '^Restart=always$' 'debian/bianbu-agent-runtime.service' \
+    || fail "the packaged Runtime must restart after any exit"
+grep -q '^StartLimitIntervalSec=0$' 'debian/bianbu-agent-runtime.service' \
+    || fail "the packaged Runtime must not give up after a restart burst"
+python3 - <<'PY' || fail "StartLimitIntervalSec must live in [Unit], not [Service]"
+from pathlib import Path
+section = ""
+for line in Path("debian/bianbu-agent-runtime.service").read_text().splitlines():
+    if line.startswith("["):
+        section = line
+    elif line == "StartLimitIntervalSec=0" and section != "[Unit]":
+        raise SystemExit(1)
+PY
 ! grep -q '%i' 'debian/bianbu-agent-runtime.service' \
     || fail "the system service must not be a per-user template instance"
 grep -q '^User=bianbu-runtime$' 'debian/bianbu-agent-runtime.service' \
@@ -198,8 +202,12 @@ grep -q '^Environment=BIANBU_WORKER_MEMORY_MAX=off$' 'debian/bianbu-agent-runtim
     || fail "packaged unit must not cap per-Worker memory by default"
 grep -q '^Environment=BIANBU_WORKER_CPU_QUOTA=off$' 'debian/bianbu-agent-runtime.service' \
     || fail "packaged unit must not cap per-Worker CPU by default"
+grep -q '^Environment=BIANBU_WORKER_TASKS_MAX=off$' 'debian/bianbu-agent-runtime.service' \
+    || fail "packaged unit must not cap per-Worker tasks by default"
 ! grep -q '^MemoryMax=' 'debian/bianbu-agent-runtime.service' \
     || fail "packaged unit must not cap its own control-plane cgroup"
+! grep -q '^TasksMax=' 'debian/bianbu-agent-runtime.service' \
+    || fail "packaged unit must not cap its own control-plane tasks"
 grep -q '^NoNewPrivileges=false$' 'debian/bianbu-agent-runtime.service' \
     || fail "host Workers must be able to enter sudo authentication"
 grep -q '^RestrictSUIDSGID=false$' 'debian/bianbu-agent-runtime.service' \
@@ -227,10 +235,10 @@ grep -q '^a+ /run/bianbu - - - - u:bianbu:rwx,u:bianbu-memory:rwx,g:bianbu-secur
     || fail "shared Runtime root ACL must let securityd and memoryd create their sockets"
 ! grep -q '^d /run/bianbu/agent-runtime' debian/bianbu-agent-runtime.tmpfiles \
     || fail "tmpfiles must not recreate nested Runtime paths across an ownership boundary"
-grep -q 'systemd-tmpfiles --create /usr/lib/tmpfiles.d/bianbu-agent-runtime.conf' debian/register-runtime-manifest \
-    || fail "device registration must materialize the shared Runtime registry"
-grep -q 'install -d -m 2770 -o root -g bianbu-agent /run/bianbu/agent-runtime/memory-registry' debian/register-runtime-manifest \
-    || fail "device registration must enforce memoryd-trusted registry ownership"
+grep -q 'systemd-tmpfiles --create /usr/lib/tmpfiles.d/bianbu-agent-runtime.conf' debian/prepare-runtime-device \
+    || fail "device preparation must materialize the shared Runtime registry"
+grep -q 'install -d -m 2770 -o root -g bianbu-agent /run/bianbu/agent-runtime/memory-registry' debian/prepare-runtime-device \
+    || fail "device preparation must enforce memoryd-trusted registry ownership"
 ! grep -q 'Runtime unit is enabled for the device user' debian/postinst \
     || fail "postinst comment drift"
 grep -q 'bianbu-agent-runtime.service.d/10-service-user.conf' debian/postinst \
@@ -261,7 +269,7 @@ grep -q 'bianbu-agent-runtime.service.d/10-service-user.conf' debian/postinst \
 # ensure_bibit_runtime_permissions 就是这样，包停在 half configured）。这里静态检查：
 # 维护脚本里出现的命令词必须是自己定义的函数、shell 关键字或已知外部命令。
 python3 - debian/postinst debian/prerm debian/postrm debian/preinst \
-    debian/register-runtime-manifest debian/cleanup-retired-desktop-icon \
+    debian/prepare-runtime-device debian/cleanup-retired-desktop-icon \
     debian/configure-runtime-service-user \
     <<'GUARD' \
     || fail "maintainer script calls an undefined helper or command"
@@ -276,7 +284,7 @@ KEYWORDS = {
     "then", "time", "trap", "type", "umask", "unset", "until", "while",
 }
 EXTERNALS = {
-    "addgroup", "adduser", "awk", "chmod", "cmp", "cut", "echo", "getent",
+    "addgroup", "adduser", "awk", "chgrp", "chmod", "cmp", "cut", "echo", "getent",
     "grep", "id", "install", "mv", "printf", "rm", "rmdir", "runuser", "sed",
     "sha256sum", "sleep", "sort", "systemctl", "tr", "usermod",
 }
@@ -336,7 +344,7 @@ grep -q 'if \[ -z "\${BIANBU_AGENT_CONFIG:-}" \]; then' debian/bianbu-agent-wrap
     || fail "an explicit BIANBU_AGENT_CONFIG must win over the service-user default"
 grep -q 'systemctl enable bianbu-agent-runtime.service' debian/postinst \
     || fail "package install must enable the shared system-level Runtime service"
-grep -q 'systemctl start bianbu-agent-runtime.service' debian/postinst \
+grep -qE 'systemctl (start|restart) bianbu-agent-runtime.service' debian/postinst \
     || fail "package install must start the shared system-level Runtime service"
 ! grep -q 'runtime_instance\|multi-user.target.wants\|list-unit-files' debian/postinst \
     || fail "package install must not manage per-user Runtime template instances"
@@ -417,20 +425,14 @@ grep -q '\\.scope' debian/bianbu-agent-runtime.polkit \
     || fail "polkit rule must not authorize transient services"
 ! grep -q 'User=root\|Group=root\|--uid\|--gid' debian/bianbu-agent-runtime.polkit \
     || fail "polkit rule contains a privilege-changing Worker path"
-grep -q 'register-security-manifest.py' debian/register-runtime-manifest \
-    || fail "device registration does not publish the signed Runtime manifest"
-grep -q '^security_agent_id=com.bianbu.runtime$' debian/register-runtime-manifest \
-    || fail "device registration must reset/register the fixed Runtime security identity"
-grep -q 'security-manifest/\$security_agent_id' debian/register-runtime-manifest \
-    || fail "device registration must load the fixed Runtime security manifest"
-! grep -q '"$registrar" --optional "$manifest"' debian/register-runtime-manifest \
-    || fail "production package must not defer Runtime manifest registration"
-grep -q '^ExecStart=/usr/lib/bianbu-agent-runtime/register-runtime-manifest$' debian/bianbu-agent-runtime-register.service \
-    || fail "the registration unit must run the device registration script"
+! grep -qE 'register-security-manifest|security-manifest|registered-manifest' debian/prepare-runtime-device \
+    || fail "device preparation must not publish a signed Runtime manifest"
+grep -q '^ExecStart=/usr/lib/bianbu-agent-runtime/prepare-runtime-device$' debian/bianbu-agent-runtime-register.service \
+    || fail "the registration unit must run the device preparation script"
 grep -q '^Requires=.*bianbu-agent-runtime-register.service' debian/bianbu-agent-runtime.service \
     || fail "the Runtime unit must require device registration before starting"
-grep -q 'register-runtime-manifest' debian/rules \
-    || fail "package must install the device registration script"
+grep -q 'prepare-runtime-device' debian/rules \
+    || fail "package must install the device preparation script"
 grep -q 'bianbu-agent-runtime-register.service' debian/rules \
     || fail "package must install the device registration unit"
 grep -q 'runtime_token=/usr/lib/bianbu-agent-runtime/runtime-admin-token.py' debian/postinst \
@@ -439,10 +441,6 @@ grep -q '\$runtime_token" --ensure' debian/postinst \
     || fail "package install must run the Runtime admin credential helper"
 grep -q 'runtime-admin-token.py' debian/rules \
     || fail "package must install the Runtime admin credential helper"
-grep -q 'network-learning-collector.py.*usr/lib/bianbu-agent-runtime/network-learning-collector.py' debian/rules \
-    || fail "package must install the network learning collector"
-grep -q 'No signed Security Runtime manifest supplied; refusing production package build' debian/rules \
-    || fail "package build does not fail closed without a signed Runtime manifest"
 grep -q '^Environment=BIANBU_RUNTIME_ROLE=control$' 'debian/bianbu-agent-runtime.service' \
     || fail "systemd service does not select the Runtime control role"
 grep -q '^Environment=BIBIT_LLAMA_SERVER_BIN=/usr/bin/llama-server$' 'debian/bianbu-agent-runtime.service' \

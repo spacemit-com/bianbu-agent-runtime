@@ -210,26 +210,6 @@ def test_bwrap_argv_has_no_user_injection_and_hides_denied_paths(tmp_path: Path,
     assert "--extra-bwrap-option" not in argv
 
 
-def test_learning_network_mode_does_not_add_blocking_systemd_properties():
-    policy = _decision(domains=["example.com"]).policy
-    policy["network"] = {"mode": "learning", "domains": ["example.com"]}
-    assert execution._network_properties(policy) == []
-
-
-def test_bwrap_learning_preload_is_explicitly_injected_into_worker(tmp_path):
-    decision = _decision(mode="sandbox", backend="bwrap", cwd=str(tmp_path))
-    decision.policy["network"] = {"mode": "learning", "domains": []}
-    request = ExecutionRequest(
-        "com.example.agent", ("/bin/true",), "sandbox",
-        {"LD_PRELOAD": "/usr/lib/bianbu-agent-runtime/libbianbu-network-learning.so"},
-        tmp_path, "instance-learning",
-    )
-    argv = BwrapBackend(bwrap_path="/usr/bin/bwrap")._argv(request, decision)
-    command = " ".join(argv)
-    assert "--setenv LD_PRELOAD /usr/lib/bianbu-agent-runtime/libbianbu-network-learning.so" in command
-    assert "--setenv BIANBU_NETWORK_LEARNING_SOCKET /run/bianbu/network-learning/collector.sock" in command
-
-
 def test_allow_all_network_mode_does_not_add_blocking_systemd_properties():
     policy = _decision(domains=["example.com"]).policy
     policy["network"] = {"mode": "allow_all", "domains": ["example.com"]}
@@ -238,8 +218,6 @@ def test_allow_all_network_mode_does_not_add_blocking_systemd_properties():
 
 
 @pytest.mark.parametrize("mode,domains,isolated", [
-    ("learning", [], False),
-    ("learning", ["example.com"], False),
     ("allow_all", [], False),
     ("allow_all", ["example.com"], False),
     ("deny_all", ["example.com"], True),
@@ -978,6 +956,22 @@ def test_worker_cpu_quota_can_be_disabled_or_overridden(monkeypatch):
     assert "CPUQuota=200%" in execution._resource_properties(policy)
 
 
+def test_worker_tasks_limit_can_be_disabled_or_overridden(monkeypatch):
+    policy = {"resources": {"memory_max": "2G", "tasks_max": 256}}
+    # Unset keeps enforcing what the Security policy published.
+    monkeypatch.delenv("BIANBU_WORKER_TASKS_MAX", raising=False)
+    assert "TasksMax=256" in execution._resource_properties(policy)
+    # 省略 TasksMax 会回落到 systemd 的 DefaultTasksMax（kernel.pid_max 的一个
+    # 比例），所以 ``off`` 必须显式写成 infinity，才是真的没有上限。
+    for off in ("off", "OFF", "no", "none", "0", "unlimited"):
+        monkeypatch.setenv("BIANBU_WORKER_TASKS_MAX", off)
+        props = execution._resource_properties(policy)
+        assert "TasksMax=infinity" in props
+        assert "MemoryMax=2G" in props
+    monkeypatch.setenv("BIANBU_WORKER_TASKS_MAX", "512")
+    assert "TasksMax=512" in execution._resource_properties(policy)
+
+
 def test_worker_memory_and_cpu_caps_can_both_be_disabled(monkeypatch):
     policy = {"resources": {"memory_max": "2G", "cpu_quota": "100%"}}
     monkeypatch.setenv("BIANBU_WORKER_MEMORY_MAX", "off")
@@ -1336,6 +1330,48 @@ def test_host_filesystem_boundary_keeps_agent_package_readonly(
     assert f"ReadOnlyPaths={tmp_path.resolve()}" in command
 
 
+
+@pytest.mark.asyncio
+async def test_worker_start_survives_cancelled_waiter(tmp_path: Path) -> None:
+    """A superseded title request must not cancel the shared Worker boot.
+
+    Otherwise the next caller sees no in-flight startup, spawns a second
+    Worker, and overwrites the socket and identity of the first one.
+    """
+
+    from bianbu_agent.config import RuntimeConfig
+    from bianbu_agent.security.runtime_process.supervisor import WorkerSupervisor
+
+    supervisor = WorkerSupervisor(RuntimeConfig(data_dir=tmp_path), agent_id="default")
+    booted = 0
+    release = asyncio.Event()
+
+    async def start_impl() -> None:
+        nonlocal booted
+        booted += 1
+        await release.wait()
+        supervisor.identity = SimpleNamespace(agent_id="default")
+        supervisor.client = SimpleNamespace()
+        supervisor._ready.set()
+
+    supervisor._start_impl = start_impl
+    first = asyncio.create_task(supervisor.start())
+    await asyncio.sleep(0)
+    second = asyncio.create_task(supervisor.start())
+    await asyncio.sleep(0)
+
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert not supervisor._starting.done()
+
+    release.set()
+    await asyncio.wait_for(second, timeout=1)
+    assert booted == 1
+    assert supervisor.ready
+    assert supervisor._starting is None
+
+
 def test_worker_supervisor_uses_configured_security_boundary(tmp_path: Path, monkeypatch):
     from bianbu_agent.config import (
         RuntimeConfig,
@@ -1590,6 +1626,115 @@ async def test_development_worker_fallback_passes_synthetic_lease_to_hello(
 
 
 @pytest.mark.asyncio
+async def test_agent_without_security_plugin_starts_unmanaged_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No Plugin means no security lease: the Worker is a plain host process."""
+    from bianbu_agent.config import RuntimeConfig
+    from bianbu_agent.security.runtime_process.supervisor import WorkerSupervisor
+
+    supervisor = WorkerSupervisor(
+        RuntimeConfig(data_dir=tmp_path),
+        agent_id="plain-expert",
+        security_enabled=False,
+    )
+    captured: dict[str, object] = {}
+
+    async def forbidden_registered(**_kwargs):
+        raise AssertionError("non-security Agent must not ask securityd for a lease")
+
+    async def fake_start_development_process(env, *, reason=""):
+        captured["env"] = dict(env)
+        captured["reason"] = reason
+        return ExecutionRecord(
+            instance_id=supervisor.instance_id,
+            agent_id=supervisor.agent_id,
+            backend="host-process",
+            pid=1234,
+            cgroup_path="",
+            unit="",
+            state="RUNNING",
+            lease_id="dev",
+            started_at=0.0,
+            sandboxed=False,
+            container_id="",
+        )
+
+    class ForbiddenAudit:
+        async def audit_event(self, *_args, **_kwargs):
+            raise AssertionError("non-security Agent must not write securityd audit")
+
+    class FakeClient:
+        last_peer_pid = 1234
+
+        async def hello(self):
+            return {
+                "agent_id": supervisor.agent_id,
+                "instance_id": supervisor.instance_id,
+                "lease_id": "dev",
+                "effective_mode": "host",
+                "backend": "host-process",
+                "sandboxed": False,
+                "container_id": "",
+                "pid": 1234,
+            }
+
+        async def activate(self):
+            return {"status": "active", "generation_id": 1}
+
+    monkeypatch.setenv("BIANBU_RUNTIME_MODE", "production")
+    monkeypatch.setattr(supervisor.coordinator, "start_registered", forbidden_registered)
+    monkeypatch.setattr(
+        supervisor, "_start_development_process", fake_start_development_process
+    )
+    supervisor.coordinator.security_client = ForbiddenAudit()
+    monkeypatch.setattr(supervisor, "_health_loop", lambda: asyncio.sleep(0))
+    supervisor.client = FakeClient()
+
+    await supervisor._start_impl()
+
+    assert captured["reason"] == "Agent did not select the bianbu.security Plugin"
+    assert supervisor.record is not None
+    assert supervisor.record.sandboxed is False
+    assert supervisor.record.backend == "host-process"
+
+
+@pytest.mark.asyncio
+async def test_unmanaged_host_env_disables_security_plugin_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bianbu_agent.config import RuntimeConfig
+    from bianbu_agent.security.runtime_process.supervisor import WorkerSupervisor
+
+    supervisor = WorkerSupervisor(
+        RuntimeConfig(data_dir=tmp_path),
+        agent_id="plain-expert",
+        security_enabled=False,
+    )
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        pid = 9876
+        returncode = None
+
+    async def fake_exec(*_command, **kwargs):
+        captured["env"] = kwargs["env"]
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        "bianbu_agent.security.runtime_process.supervisor.asyncio.create_subprocess_exec",
+        fake_exec,
+    )
+    supervisor.instance_id = "com.bianbu.agent-plain"
+    await supervisor._start_development_process({
+        "BIANBU_WORKER_INSTANCE_ID": supervisor.instance_id,
+    })
+
+    assert captured["env"]["BIANBU_SECURITY_AGENT_ENABLED"] == "0"
+    assert captured["env"]["BIANBU_SECURITY"] == "0"
+
+
+@pytest.mark.asyncio
 async def test_development_worker_stop_confirms_process_termination(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1834,212 +1979,7 @@ async def test_coordinator_stop_survives_old_daemon_without_stop_instance(tmp_pa
     assert client.revokes == []
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("network", [
-    {"mode": "learning", "domains": [], "version": 7},
-    {"mode": "allow_all", "domains": [], "version": 7, "observe": True},
-])
-async def test_learning_coordinator_starts_after_commit_and_overrides_event_identity(
-    tmp_path: Path, monkeypatch, network,
-):
-    order = []
-    collectors = []
-    decision = _decision(cwd=str(tmp_path))
-    policy = decision.policy
-    policy["network"] = network
-    decision = RuntimeStartDecision(
-        decision.lease_id, json.dumps(policy), decision.effective_mode,
-        decision.backend, decision.sandbox_required, decision.expires_at,
-        decision.reason,
-    )
-
-    class Client(_Client):
-        def __init__(self):
-            super().__init__(decision)
-            self.learning_events = []
-            self.learning_states = []
-
-        async def commit_start(self, *args):
-            order.append("commit")
-            return await super().commit_start(*args)
-
-        async def record_network_learning_event(self, *args):
-            self.learning_events.append(args)
-            order.append("event")
-            return True
-
-        async def report_network_learning_collector(self, *args):
-            self.learning_states.append(args)
-            order.append(f"status:{args[4]}")
-            return True
-
-    class Collector:
-        enabled = True
-
-        def __init__(self, *, event_callback, status_callback):
-            self.event_callback = event_callback
-            self.status_callback = status_callback
-            self.stopped = False
-            collectors.append(self)
-
-        def start(self, *, trace_dir, attach_pid=None):
-            order.append("collector-start")
-            assert Path(trace_dir).name == "instance-1"
-            assert attach_pid == 1111
-            self.status_callback("active", "")
-            self.event_callback({
-                "agent_id": "forged", "instance_id": "forged",
-                "lease_id": "forged", "pid": 999999,
-                "event_id": "evt-1", "observed_at": 1788800000.0,
-                "event_type": "connect", "protocol": "tcp",
-                "remote_ip": "203.0.113.8", "remote_port": 443,
-                "outcome": "success", "errno": "",
-                "backend": "forged", "policy_version": 999,
-            })
-            return True
-
-        def stop(self, timeout=1.0):
-            self.stopped = True
-            self.status_callback("inactive", "stopped")
-            order.append("collector-stop")
-
-    class Backend(HostProcessBackend):
-        def stop(self, handle, *, timeout):
-            order.append("backend-stop")
-
-    monkeypatch.setattr(execution, "NetworkLearningCollector", Collector)
-    monkeypatch.setattr(execution, "current_cgroup_path", lambda pid: "/worker.scope")
-    backend = Backend(popen_factory=lambda *a, **k: SimpleNamespace(
-        pid=1111, poll=lambda: None, terminate=lambda: None, kill=lambda: None,
-        wait=lambda timeout=None: 0))
-    client = Client()
-    coordinator = ExecutionCoordinator(
-        client, state_dir=tmp_path, backends={"host-process": backend})
-    socket_path = tmp_path / "instances" / "worker.sock"
-    record = await coordinator.start(ExecutionRequest(
-        "com.example.agent", ("/bin/true",), "host",
-        {"BIANBU_WORKER_SOCKET": str(socket_path)}, tmp_path, "instance-1"))
-    for _ in range(4):
-        await asyncio.sleep(0)
-
-    assert order.index("commit") < order.index("collector-start")
-    assert client.learning_events == [(
-        "com.example.agent", "instance-1", "lease-1", 1111,
-        {
-            "event_id": "evt-1", "observed_at": 1788800000.0,
-            "event_type": "connect", "protocol": "tcp",
-            "domain": "", "remote_ip": "203.0.113.8", "remote_port": 443,
-            "dns_qtype": "", "outcome": "success", "errno": "",
-            "backend": "strace", "policy_version": 7,
-        },
-    )]
-    assert record.state == "RUNNING"
-    await coordinator.stop(record.instance_id)
-    for _ in range(2):
-        await asyncio.sleep(0)
-    assert collectors[0].stopped is True
-    assert order.index("status:inactive") < order.index("backend-stop")
-
-
-@pytest.mark.asyncio
-async def test_learning_collector_unavailable_reports_degraded_without_blocking_worker(
-    tmp_path: Path, monkeypatch,
-):
-    decision = _decision(cwd=str(tmp_path))
-    policy = decision.policy
-    policy["network"] = {"mode": "learning", "domains": [], "version": 8}
-    decision = RuntimeStartDecision(
-        decision.lease_id, json.dumps(policy), decision.effective_mode,
-        decision.backend, decision.sandbox_required, decision.expires_at,
-        decision.reason,
-    )
-
-    class Client(_Client):
-        def __init__(self):
-            super().__init__(decision)
-            self.learning_states = []
-
-        async def report_network_learning_collector(self, *args):
-            self.learning_states.append(args)
-            return True
-
-    class DisabledCollector:
-        enabled = False
-
-        def __init__(self, **kwargs):
-            pass
-
-    monkeypatch.setattr(execution, "NetworkLearningCollector", DisabledCollector)
-    monkeypatch.setattr(execution, "current_cgroup_path", lambda pid: "/worker.scope")
-    backend = HostProcessBackend(popen_factory=lambda *a, **k: SimpleNamespace(
-        pid=1111, poll=lambda: None, terminate=lambda: None, kill=lambda: None,
-        wait=lambda timeout=None: 0))
-    client = Client()
-    coordinator = ExecutionCoordinator(
-        client, state_dir=tmp_path, backends={"host-process": backend})
-
-    record = await coordinator.start(_request(tmp_path))
-    assert record.state == "RUNNING"
-    assert client.learning_states[-1][4] == "degraded"
-    assert "unavailable" in client.learning_states[-1][5]
-
-
-@pytest.mark.asyncio
-async def test_learning_status_transport_failure_does_not_stop_worker(
-    tmp_path: Path, monkeypatch,
-):
-    decision = _decision(cwd=str(tmp_path))
-    policy = decision.policy
-    policy["network"] = {"mode": "learning", "domains": [], "version": 8}
-    decision = RuntimeStartDecision(
-        decision.lease_id, json.dumps(policy), decision.effective_mode,
-        decision.backend, decision.sandbox_required, decision.expires_at,
-        decision.reason,
-    )
-
-    class Client(_Client):
-        async def report_network_learning_collector(self, *args):
-            raise RuntimeError("security transport unavailable")
-
-    class DisabledCollector:
-        enabled = False
-
-        def __init__(self, **kwargs):
-            pass
-
-    monkeypatch.setattr(execution, "NetworkLearningCollector", DisabledCollector)
-    monkeypatch.setattr(execution, "current_cgroup_path", lambda pid: "/worker.scope")
-    backend = HostProcessBackend(popen_factory=lambda *a, **k: SimpleNamespace(
-        pid=1111, poll=lambda: None, terminate=lambda: None, kill=lambda: None,
-        wait=lambda timeout=None: 0))
-    coordinator = ExecutionCoordinator(
-        Client(decision), state_dir=tmp_path,
-        backends={"host-process": backend})
-
-    record = await coordinator.start(_request(tmp_path))
-    assert record.state == "RUNNING"
-
-
-@pytest.mark.asyncio
-async def test_non_learning_coordinator_does_not_start_network_collector(
-    tmp_path: Path, monkeypatch,
-):
-    class MustNotConstruct:
-        def __init__(self, **kwargs):
-            raise AssertionError("non-learning mode must not construct collector")
-
-    monkeypatch.setattr(execution, "NetworkLearningCollector", MustNotConstruct)
-    monkeypatch.setattr(execution, "current_cgroup_path", lambda pid: "/worker.scope")
-    client = _Client(_decision(cwd=str(tmp_path)))
-    backend = HostProcessBackend(popen_factory=lambda *a, **k: SimpleNamespace(
-        pid=1111, poll=lambda: None, terminate=lambda: None, kill=lambda: None,
-        wait=lambda timeout=None: 0))
-    coordinator = ExecutionCoordinator(
-        client, state_dir=tmp_path, backends={"host-process": backend})
-    assert (await coordinator.start(_request(tmp_path))).state == "RUNNING"
-
-
-def test_non_learning_host_handle_retains_trace_directory_for_hot_attach(
+def test_host_handle_retains_trace_directory_for_hot_attach(
     tmp_path: Path, monkeypatch,
 ):
     monkeypatch.setattr(execution, "current_cgroup_path", lambda pid: "/worker.scope")
@@ -2132,135 +2072,6 @@ def test_explicit_syscall_strace_overrides_external_collector(
 
 
 @pytest.mark.asyncio
-async def test_host_worker_network_policy_hot_update_starts_and_stops_learning_collector(
-    tmp_path: Path, monkeypatch,
-):
-    starts = []
-    stops = []
-    states = []
-
-    class Collector:
-        enabled = True
-
-        def __init__(self, *, event_callback, status_callback):
-            self.status_callback = status_callback
-
-        def start(self, *, trace_dir, attach_pid=None):
-            starts.append((trace_dir, attach_pid))
-            self.status_callback("active", "")
-            return True
-
-        def stop(self, timeout=1.0):
-            stops.append(timeout)
-
-    class Client:
-        async def report_network_learning_collector(self, *args):
-            states.append(args)
-            return True
-
-        async def record_network_learning_event(self, *args):
-            return True
-
-    monkeypatch.setattr(execution, "NetworkLearningCollector", Collector)
-    coordinator = ExecutionCoordinator(Client(), state_dir=tmp_path)
-    record = ExecutionRecord(
-        "instance-1", "com.bianbu.runtime", "host-process", 4321,
-        "/cg/worker", "worker.scope", execution.ExecutionState.RUNNING,
-        "lease-1", 1.0, False,
-    )
-    handle = execution.BackendHandle(
-        "instance-1", "com.bianbu.runtime", "host-process", object(),
-        4321, "/cg/worker", unit="worker.scope",
-        trace_dir="/run/traces/instance-1",
-    )
-    coordinator._records[record.instance_id] = record
-    coordinator._handles[record.instance_id] = handle
-
-    entered = await coordinator.apply_network_learning_policy(
-        "com.bianbu.runtime", "learning", 9,
-    )
-    await asyncio.sleep(0)
-    left = await coordinator.apply_network_learning_policy(
-        "com.bianbu.runtime", "deny_all", 10,
-    )
-
-    assert entered == {"active_instances": 1, "collectors_started": 1,
-                       "collectors_stopped": 0, "degraded_instances": 0}
-    assert starts == [("/run/traces/instance-1", 4321)]
-    assert left == {"active_instances": 1, "collectors_started": 0,
-                    "collectors_stopped": 1, "degraded_instances": 0}
-    assert stops == [coordinator.stop_timeout]
-    assert states[-1][4:] == ("inactive", "network policy changed to deny_all")
-
-
-def test_learning_host_launch_traces_network_syscalls(tmp_path: Path, monkeypatch):
-    captured = []
-    decision = _decision(cwd=str(tmp_path))
-    policy = decision.policy
-    policy["network"] = {"mode": "learning", "domains": []}
-    decision = RuntimeStartDecision(
-        decision.lease_id, json.dumps(policy), decision.effective_mode,
-        decision.backend, decision.sandbox_required, decision.expires_at,
-        decision.reason,
-    )
-    monkeypatch.setattr(execution, "current_cgroup_path", lambda pid: "/worker.scope")
-    monkeypatch.setenv("BIANBU_NETWORK_LEARNING_STRACE", "1")
-    monkeypatch.setattr(execution.shutil, "which", lambda name: f"/usr/bin/{name}")
-    backend = HostProcessBackend(popen_factory=lambda argv, **kwargs: (
-        captured.append(argv) or SimpleNamespace(pid=1111)))
-    socket_path = tmp_path / "instances" / "worker.sock"
-    backend.start(ExecutionRequest(
-        "com.example.agent", ("/bin/true",), "host",
-        {"BIANBU_WORKER_SOCKET": str(socket_path)}, tmp_path, "instance-1"),
-        decision)
-    command = " ".join(str(value) for value in captured[0])
-    assert "strace" in command
-    assert "connect" in command
-    assert "sendto" in command
-    assert "sendmsg" in command
-    assert ".syscall-traces/instance-1/.syscall-trace" in command
-
-
-def test_learning_bwrap_launch_traces_network_syscalls(tmp_path: Path, monkeypatch):
-    captured = []
-    decision = _decision(
-        mode="sandbox", backend="bwrap", cwd=str(tmp_path),
-        entrypoint=["/bin/true"],
-    )
-    policy = decision.policy
-    policy["network"] = {"mode": "learning", "domains": []}
-    socket_root = tmp_path / "instances"
-    socket_root.mkdir()
-    policy["writable_mounts"] = [{
-        "host": str(socket_root), "target": str(socket_root),
-    }]
-    decision = RuntimeStartDecision(
-        decision.lease_id, json.dumps(policy), decision.effective_mode,
-        decision.backend, decision.sandbox_required, decision.expires_at,
-        decision.reason,
-    )
-    monkeypatch.setattr(execution, "current_cgroup_path", lambda pid: "/worker.scope")
-    monkeypatch.setenv("BIANBU_NETWORK_LEARNING_STRACE", "1")
-    monkeypatch.setattr(execution.shutil, "which", lambda name: f"/usr/bin/{name}")
-    backend = BwrapBackend(
-        bwrap_path="/usr/bin/bwrap",
-        popen_factory=lambda argv, **kwargs: (
-            captured.append(argv) or SimpleNamespace(pid=1111)),
-    )
-    socket_path = socket_root / "worker.sock"
-    backend.start(ExecutionRequest(
-        "com.example.agent", ("/bin/true",), "sandbox",
-        {"BIANBU_WORKER_SOCKET": str(socket_path)}, tmp_path, "instance-1"),
-        decision)
-    command = " ".join(str(value) for value in captured[0])
-    assert "strace" in command
-    assert "connect" in command
-    assert "sendto" in command
-    assert "sendmsg" in command
-    assert ".syscall-traces/instance-1/.syscall-trace" in command
-
-
-@pytest.mark.asyncio
 async def test_coordinator_aborts_and_records_failure(tmp_path: Path):
     class BrokenBackend:
         name = "host-process"
@@ -2339,36 +2150,6 @@ async def test_reap_orphans_does_not_signal_zero_pid(tmp_path: Path):
     assert coordinator.list()[0]["state"] == "FAILED"
 
 
-@pytest.mark.asyncio
-async def test_privileged_network_forwarding_preserves_source_and_dns(tmp_path):
-    received = asyncio.Event()
-    values = []
-    class Client:
-        async def record_network_learning_event(self, *args):
-            values.append(args[-1]); received.set()
-    coordinator = ExecutionCoordinator(Client(), state_dir=tmp_path)
-    record = ExecutionRecord('i', 'a', 'bwrap', 42, '/cg', 'test.scope',
-                             execution.ExecutionState.RUNNING, 'lease', 1.0, True)
-    client = coordinator._network_learning_client(record, 3)
-    client.event_callback({'backend': 'preload', 'event_type': 'dns_query', 'domain': 'localhost',
-                           'dns_qtype': 'A', 'protocol': 'udp', 'observed_at': 1.0})
-    await asyncio.wait_for(received.wait(), 1)
-    assert values[0]['backend'] == 'preload'
-    assert values[0]['domain'] == 'localhost'
-
-
-def test_learning_mount_tracks_socket_recreation_without_exposing_other_runtime_sockets(monkeypatch):
-    directory = '/run/bianbu/network-learning'
-    original = Path.is_dir
-    monkeypatch.setattr(Path, 'is_dir', lambda p: str(p) == directory or original(p))
-    decision = execution._with_runtime_worker_policy(
-        _decision(), memory_uds=None, memory_registry_dir=None, bibit_intent_root=None)
-    mounts = decision.policy['readonly_bind_mounts']
-    assert {'host': directory, 'target': directory} in mounts
-    assert not any(m['target'] == '/run/bianbu' for m in mounts)
-    assert not any(m['target'].endswith('agent-network-learning.sock') for m in mounts)
-
-
 def test_worker_network_diagnostics_come_from_startup_policy_not_request_env():
     policy = _decision(domains=["example.com"]).policy
     request = ExecutionRequest(agent_id=policy["agent_id"], command=("/usr/bin/python3",),
@@ -2377,40 +2158,6 @@ def test_worker_network_diagnostics_come_from_startup_policy_not_request_env():
     result = execution._safe_env(policy, request)
     snapshot = json.loads(result["BIANBU_WORKER_NETWORK_POLICY"])
     assert snapshot == {"agent_id": policy["agent_id"], "mode": "whitelist", "domains": ["example.com"]}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('failure_stage', ['construct', 'register'])
-async def test_yolo_observation_exception_keeps_worker_running(tmp_path, monkeypatch, failure_stage):
-    decision = _decision(cwd=str(tmp_path))
-    policy = decision.policy
-    policy['network'] = {'mode': 'allow_all', 'domains': [], 'observe': True}
-    decision = RuntimeStartDecision(
-        decision.lease_id, json.dumps(policy), decision.effective_mode,
-        decision.backend, decision.sandbox_required, decision.expires_at, decision.reason)
-    states = []
-    class Client(_Client):
-        async def report_network_learning_collector(self, *args):
-            states.append(args)
-            return True
-    class BrokenCollector(execution.PrivilegedNetworkLearningClient):
-        def __init__(self, *args, **kwargs):
-            if failure_stage == 'construct':
-                raise RuntimeError('collector construction failed')
-            super().__init__(*args, **kwargs)
-        def register(self, **kwargs):
-            raise RuntimeError('collector registration failed')
-    monkeypatch.setattr(execution, 'PrivilegedNetworkLearningClient', BrokenCollector)
-    monkeypatch.setattr(execution, 'current_cgroup_path', lambda pid: '/worker.scope')
-    backend = HostProcessBackend(popen_factory=lambda *a, **k: SimpleNamespace(
-        pid=1111, poll=lambda: None, terminate=lambda: None, kill=lambda: None,
-        wait=lambda timeout=None: 0))
-    coordinator = ExecutionCoordinator(Client(decision), state_dir=tmp_path,
-                                       backends={'host-process': backend})
-    record = await coordinator.start(_request(tmp_path))
-    assert record.state == 'RUNNING'
-    assert record.instance_id in coordinator._handles
-    assert states[-1][4] == 'degraded'
 
 
 @pytest.mark.asyncio
@@ -2474,3 +2221,89 @@ async def test_worker_policy_drops_the_retired_control_owned_session_mounts(
     )
     assert {"host": str((worker_home / "workspace").resolve()),
             "target": "/home/agent/workspace"} in augmented.policy["writable_mounts"]
+
+
+def test_bwrap_applies_range_exclusions_after_includes(tmp_path: Path):
+    """「包含父目录、排除子目录」必须在命名空间里真正生效。
+
+    securityd 把排除项单独列在 inaccessible_overrides / read_only_overrides，
+    后端如果不消费它们，可读排除会变成可见、可写排除会变成可写。
+    """
+    excluded_dir = tmp_path / "tree" / "secret"
+    excluded_dir.mkdir(parents=True)
+    (excluded_dir / "b.txt").write_text("secret")
+
+    policy = dict(_decision(mode="sandbox", backend="bwrap",
+                            cwd=str(tmp_path)).policy)
+    policy["readonly_bind_mounts"] = [
+        {"host": str(tmp_path / "tree"), "target": "/srv/tree"},
+    ]
+    policy["read_only_overrides"] = []
+    policy["inaccessible_overrides"] = [str(excluded_dir)]
+
+    argv = BwrapBackend(bwrap_path="/usr/bin/bwrap")._argv(
+        _request(tmp_path, mode="sandbox"),
+        RuntimeStartDecision("lease-1", json.dumps(policy), "sandbox", "bwrap",
+                             True, 2**31, "test"))
+
+    # 覆盖绑定必须排在 include 绑定之后，否则会被父目录绑定盖掉。
+    include_at = argv.index("/srv/tree")
+    override_at = argv.index(str(excluded_dir))
+    assert override_at > include_at
+    assert argv[override_at - 1] == "--tmpfs"
+
+
+def test_bwrap_write_exclusion_keeps_the_path_read_only(tmp_path: Path):
+    scoped = tmp_path / "app"
+    scoped.mkdir()
+    policy = dict(_decision(mode="sandbox", backend="bwrap",
+                            cwd=str(tmp_path)).policy)
+    policy["writable_mounts"] = [
+        {"host": str(scoped), "target": "/var/lib/app"},
+    ]
+    policy["read_only_overrides"] = [str(scoped)]
+    policy["inaccessible_overrides"] = []
+
+    argv = BwrapBackend(bwrap_path="/usr/bin/bwrap")._argv(
+        _request(tmp_path, mode="sandbox"),
+        RuntimeStartDecision("lease-1", json.dumps(policy), "sandbox", "bwrap",
+                             True, 2**31, "test"))
+
+    # include 是可写的 --bind，排除用 --ro-bind 覆盖同一路径。
+    include_at = argv.index("--bind")
+    assert argv[include_at + 1:include_at + 3] == [str(scoped), "/var/lib/app"]
+    override_at = argv.index("--ro-bind", include_at)
+    assert argv[override_at + 1:override_at + 3] == [str(scoped), str(scoped)]
+
+
+def test_bwrap_read_exclusion_wins_over_a_write_exclusion(tmp_path: Path):
+    """同一路径既可读排除又可写排除时，不可见优先，不得被只读绑定重新打开。"""
+    scoped = tmp_path / "secret"
+    scoped.mkdir()
+    policy = dict(_decision(mode="sandbox", backend="bwrap",
+                            cwd=str(tmp_path)).policy)
+    policy["read_only_overrides"] = [str(scoped)]
+    policy["inaccessible_overrides"] = [str(scoped)]
+
+    argv = BwrapBackend(bwrap_path="/usr/bin/bwrap")._argv(
+        _request(tmp_path, mode="sandbox"),
+        RuntimeStartDecision("lease-1", json.dumps(policy), "sandbox", "bwrap",
+                             True, 2**31, "test"))
+
+    override_at = argv.index(str(scoped))
+    assert argv[override_at - 1] == "--tmpfs"
+    assert ["--ro-bind", str(scoped)] != argv[override_at - 2:override_at]
+
+
+def test_host_mode_applies_range_exclusions(tmp_path: Path, monkeypatch):
+    """host 模式同样要落实范围排除，不能静默丢弃。"""
+    monkeypatch.setattr(execution.shutil, "which",
+                        lambda name: "/usr/bin/systemd-run" if name == "systemd-run" else None)
+    policy = dict(_decision(mode="host", cwd=str(tmp_path)).policy)
+    policy["read_only_overrides"] = ["/srv/tree/secret"]
+    policy["inaccessible_overrides"] = ["/srv/tree/private"]
+
+    command, _unit = execution._resource_command(policy, ["/bin/true"], "unit-test")
+
+    assert "ReadOnlyPaths=/srv/tree/secret" in command
+    assert "InaccessiblePaths=/srv/tree/private" in command

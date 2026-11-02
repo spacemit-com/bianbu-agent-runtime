@@ -40,11 +40,8 @@ def _project(tmp_path: Path) -> Path:
         "  port: 9899\n",
         encoding="utf-8",
     )
-    # run.sh 用仓库自带的这两个 helper 注册开发自签安全身份。
     debian = project / "debian"
     debian.mkdir()
-    for name in ("reset-security-binding.py", "register-security-manifest.py"):
-        _logging_stub(debian / name)
     return project
 
 
@@ -70,14 +67,10 @@ def _uv_stub(path: Path) -> None:
         "    print(os.environ['RUN_SITE_PACKAGES'])\n"
         "if any(arg.endswith('provision-starter-agent.py') for arg in sys.argv):\n"
         "    print('com.bianbu.0123456789ab')\n"
-        "if any(arg.endswith('prepare-development-security-manifest.py') for arg in sys.argv):\n"
+        "if any(arg.endswith('prepare-development-config.py') for arg in sys.argv):\n"
         "    runtime_config = pathlib.Path(sys.argv[sys.argv.index('--runtime-config-output') + 1])\n"
         "    runtime_config.parent.mkdir(parents=True, exist_ok=True)\n"
         "    runtime_config.write_text('security:\\n  required: true\\n')\n"
-        "    output = pathlib.Path(sys.argv[sys.argv.index('--output') + 1])\n"
-        "    package = output / 'com.bianbu.runtime.development'\n"
-        "    package.mkdir(parents=True, exist_ok=True)\n"
-        "    (package / 'manifest.toml').write_text('[agent]\\nid=\"com.bianbu.runtime.development\"\\n[runtime]\\nentrypoint=[\"worker\"]\\n')\n"
         "if os.environ.get('RUN_ENV_LOG') and 'bianbu-agent' in sys.argv:\n"
         "    keys = ('BIANBU_SEC_SESSION', 'BIANBU_AGENT_ID', 'COM_BIANBU_AGENT_ID', 'BIANBU_WORKER_AGENT_ID', 'BIANBU_RUNTIME_SECURITY', 'BIANBU_RUNTIME_ALLOW_UNMANAGED_WORKER', 'BIANBU_AGENT_MEMORY_SOCKET', 'BIBIT_INTENT_BASE_URL', 'PYTHONPATH', 'BIANBU_SYSTEM_RESOURCE_ROOT')\n"
         "    pathlib.Path(os.environ['RUN_ENV_LOG']).write_text(json.dumps({key: os.environ.get(key) for key in keys}))\n",
@@ -108,7 +101,6 @@ def _runtime_environment(tmp_path: Path, binary_dir: Path) -> tuple[dict[str, st
         "BIANBU_AGENT_MEMORY_REGISTRY_DIR": str(registry),
         "BIANBU_SECURITY_CLIENT_DIR": str(security_client),
         "BIANBU_AGENT_MEMORY_SDK_DIR": str(memory_sdk),
-        "BIANBU_SECURITY_MANIFEST_STAGE": str(tmp_path / "manifest-stage"),
         "BIANBU_SECURITYD_HOME": "",
         "PYTHONPATH": "",
     }
@@ -158,23 +150,12 @@ def test_run_only_starts_the_source_runtime(tmp_path: Path) -> None:
     assert not [call for call in host_calls if call[0] == "systemctl" and call[1] in {"enable", "start"}]
     # 让出端口：停掉占用同一端口的已安装实例。
     assert ["sudo", "systemctl", "stop", "bianbu-agent-runtime.service"] in host_calls
-    # 注册安全身份：先重置旧绑定，再用刚生成的清单登记开发身份。
-    manifest_stage = environment["BIANBU_SECURITY_MANIFEST_STAGE"]
-    assert [
-        "reset-security-binding.py",
-        "com.bianbu.runtime.development",
-        "source-run",
-    ] in host_calls
-    assert [
-        "register-security-manifest.py",
-        manifest_stage,
-        "--expected-agent-id",
-        "com.bianbu.runtime.development",
-    ] in host_calls
+    # 源码启动不再注册签名单据；设备准备仍由 Runtime 自身完成。
+    assert not [call for call in host_calls if "security-manifest" in call[0]]
 
     uv_calls = [json.loads(line) for line in (tmp_path / "uv.jsonl").read_text().splitlines()]
     assert any(
-        any(arg.endswith("prepare-development-security-manifest.py") for arg in call)
+        any(arg.endswith("prepare-development-config.py") for arg in call)
         for call in uv_calls
     )
     assert any(

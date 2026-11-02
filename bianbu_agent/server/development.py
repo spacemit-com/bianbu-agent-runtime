@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 import os
 from pathlib import Path
@@ -139,6 +140,17 @@ def uninstall_development_agent(
     state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     with FilesystemLock(state_dir / "lifecycle.lock", exclusive=True):
         stopped = stop_runtime(config)
+        # The development Runtime registers the same identity with securityd;
+        # remove it before the declaration so no stale expert remains listed.
+        from bianbu_agent.security.agent_deletion import (
+            unregister_agent_before_delete,
+        )
+
+        asyncio.run(
+            unregister_agent_before_delete(
+                agent_id, plugins=manifest.spec.plugins
+            )
+        )
         manager = development_package_manager(root, config)
         deleted = manager.uninstall(agent_id)
         return {"stopped": stopped, "deleted": deleted, "agent_id": agent_id}

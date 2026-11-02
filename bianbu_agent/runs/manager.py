@@ -4,16 +4,15 @@ import asyncio
 import inspect
 import logging
 import os
-import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
-from copy import deepcopy
 
 from bianbu_agent.agents import AgentModel
 from bianbu_agent._internal.change_signal import AsyncRevisionSignal
 from bianbu_agent.runs.control import RunControlRegistry
 from bianbu_agent.runs.events import RunEvent
+from bianbu_agent.runs.stream_restore import StandInStreamRestorer
 from bianbu_agent.models import ModelRegistry
 from bianbu_agent.sessions.attachments import attachment_note
 from bianbu_agent.plugins import (
@@ -27,13 +26,6 @@ from bianbu_agent.plugins.hook_observation import observe_hooks
 from bianbu_agent.runs import RunError, RunHandle, RunResult, Usage, encode_error
 from bianbu_agent.sessions.inbox import SessionInboxMessage
 from bianbu_agent.sessions.inbox import inbox_message_to_dict
-from bianbu_agent.sessions.titles import (
-    SessionTitleError,
-    TITLE_TIMEOUT_SECONDS,
-    fallback_session_title,
-    generate_session_title,
-    is_title_generation,
-)
 from bianbu_agent.observability import bind_log_context, log_run_terminal
 
 
@@ -103,7 +95,11 @@ def _agent_network_policy(agent_id: str) -> Mapping[str, object] | None:
 
 def _agent_model_request(model: object) -> object:
     if isinstance(model, AgentModel):
-        return {"provider": model.provider, "name": model.name}
+        return {
+            "provider": model.provider,
+            "name": model.name,
+            "effort": model.effort,
+        }
     return model
 
 
@@ -160,6 +156,12 @@ class RunManager:
         self._active: dict[str, RunHandle] = {}
         self._run_controls: dict[str, object] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        # Engine builds started to overlap a Run's BEFORE_RUN Hooks that the Run
+        # then never needed.  A build handed to a worker thread cannot be
+        # interrupted, so these are left to finish; they are referenced here
+        # because asyncio only holds a weak reference and a collected task would
+        # be destroyed mid-flight.
+        self._detached_engine_builds: set[asyncio.Task[object]] = set()
         self._waiting: set[str] = set()
         self._delete_lock = asyncio.Lock()
         self._thread_execution_locks: dict[str, asyncio.Lock] = {}
@@ -394,6 +396,36 @@ class RunManager:
             await self._controls.cancel_request(request_id)
         if self._tasks:
             await asyncio.gather(*tuple(self._tasks.values()), return_exceptions=True)
+        if self._detached_engine_builds:
+            # A detach exists because the build could not be interrupted; here
+            # shutdown is the one place that may wait for it, so no worker
+            # thread outlives the manager.
+            await asyncio.gather(
+                *tuple(self._detached_engine_builds), return_exceptions=True
+            )
+
+    def _detach_engine_build(self, task: asyncio.Task[object]) -> None:
+        """Let an unneeded engine build finish without holding the Run on it.
+
+        The Run it belongs to already has its answer, so a build failure has no
+        caller to reach; it is logged here rather than surfacing as an
+        unretrieved task exception at collection.
+        """
+
+        self._detached_engine_builds.add(task)
+
+        def _retire(finished: asyncio.Task[object]) -> None:
+            self._detached_engine_builds.discard(finished)
+            if finished.cancelled():
+                return
+            error = finished.exception()
+            if error is not None:
+                logger.warning(
+                    "an unused engine build failed after its Run answered: %s",
+                    error,
+                )
+
+        task.add_done_callback(_retire)
 
     async def _execute(self, handle: RunHandle, prompt: str | Sequence[SessionInboxMessage], *,
                        agent, selected_model, generation, lease, control,
@@ -467,8 +499,14 @@ class RunManager:
                        thread_id: str) -> None:
         run_id, session_id = handle.request_id, handle.session_id
         result: RunResult | None = None
-        after_run_invoked = False
+        # A terminal Hook's veto is collected here: AFTER_RUN runs inside
+        # teardown, after the body already produced a result, so the denial
+        # cannot propagate as an exception without losing that result path.
+        terminal_denial: list[PermissionError] = []
         hook_metadata = dict(metadata or {})
+        # Only engine events may supply host compression summaries; never trust
+        # request metadata to manufacture a compression persistence operation.
+        hook_metadata.pop("context_compressions", None)
         # Pass the immutable role-level Hook snapshot to every Hook.  Memory
         # Hooks use this to distinguish an explicitly disabled role from a
         # direct/unit-test invocation where the legacy environment switch is
@@ -481,12 +519,25 @@ class RunManager:
         )
         thread_lock_acquired = False
 
+        def record_stand_ins(patch: ContextPatch) -> None:
+            """Keep a Hook's private stand-in map inside this Run."""
+
+            mapping = getattr(patch, "stream_stand_ins", None)
+            if not isinstance(mapping, Mapping):
+                return
+            target = getattr(control, "dlp_stand_ins", None)
+            if isinstance(target, dict):
+                target.update(
+                    (str(key), str(value))
+                    for key, value in mapping.items()
+                )
+
         def public_metadata() -> dict[str, object]:
             """Keep the internal Hook-selection snapshot out of Run results."""
 
             return {
                 key: value for key, value in hook_metadata.items()
-                if key != "hook_ids"
+                if key not in {"hook_ids", "context_compressions"}
             }
 
         def hook_context(
@@ -494,6 +545,7 @@ class RunManager:
             *,
             response: str = "",
             status: str = "",
+            exit_reason: str = "",
         ) -> RunContext:
             return RunContext(
                 run_id=run_id,
@@ -504,13 +556,100 @@ class RunManager:
                 response=response,
                 status=status,
                 account_id=account_id,
+                exit_reason=exit_reason,
             )
+
+        async def run_terminal_hooks(context: RunContext) -> None:
+            """Run AFTER_RUN; a denial still terminates the Run.
+
+            A terminal Hook that merely fails is contained, but a veto is not:
+            every event point may deny, and a denial always wins over the
+            already-computed result.
+            """
+
+            try:
+                patch = await _run_hooks(
+                    generation, HookPoint.AFTER_RUN, context, agent.hooks,
+                )
+                # The security Hook owns the stand-in map and restores it for
+                # the user.  Let that governed text replace the model-facing
+                # stand-ins in the terminal result the client renders.
+                if patch.user_visible_text is not None:
+                    nonlocal result
+                    if result is not None and result.status == "completed":
+                        result = replace(result, content=patch.user_visible_text)
+            except PermissionError as exc:
+                terminal_denial.append(exc)
+
+        async def teardown() -> None:
+            """Publish the terminal result and release everything leased.
+
+            The Run body may end with an exception or with a cancellation, and
+            both must still produce one terminal result and one AFTER_RUN pass:
+            Hooks that already announced `invoked` have to report an outcome,
+            otherwise the Trajectory shows them as forever running.
+            """
+
+            try:
+                final = result or RunResult(
+                    request_id=run_id, status="failed",
+                    error=RunError(
+                        code="run_incomplete",
+                        message="Run ended without result",
+                    ),
+                )
+                await run_terminal_hooks(hook_context(
+                    request=prompt_text,
+                    response=final.content,
+                    status=final.status,
+                ))
+                if terminal_denial:
+                    # A veto at the terminal point outranks whatever the body
+                    # produced: the Run is reported as a security failure and
+                    # the content is withheld.
+                    exc = terminal_denial[0]
+                    from bianbu_agent.security.security_errors import (
+                        classify_run_exception,
+                    )
+
+                    err = classify_run_exception(exc, agent_id=agent.id)
+                    final = RunResult(
+                        request_id=run_id,
+                        status="failed",
+                        error=RunError(
+                            code=err["code"], message=err["message"],
+                            details=err["details"],
+                            retryable=bool(err.get("retryable", False)),
+                        ),
+                    )
+                await control.close_step_input_admission()
+                await handle.finish(final)
+                if os.environ.get("BIANBU_WORKER_MANAGED") != "1":
+                    log_run_terminal(
+                        logger,
+                        status=final.status,
+                        error_code=(
+                            final.error.code if final.error is not None else ""
+                        ),
+                    )
+                await self._controls.complete(run_id)
+                await lease.__aexit__(None, None, None)
+            except BaseException:
+                logger.exception(
+                    "Run teardown failed", extra={"event": "run_teardown_failure"},
+                )
+                raise
+            finally:
+                self._active.pop(run_id, None)
+                self._run_controls.pop(run_id, None)
+                self._tasks.pop(run_id, None)
 
         from bianbu_agent.skills.versions import task_skills
         from bianbu_agent.agents.selection import task_agent
         agent_token = task_agent.set(agent)
         skill_token = task_skills.set(generation.skills)
         engine = None
+        restorer: StandInStreamRestorer | None = None
         try:
             agent = _with_selected_skills(
                 agent,
@@ -521,53 +660,6 @@ class RunManager:
                              if name in generation.skills})
             if control.cancelled.is_set():
                 result = RunResult(request_id=run_id, status="cancelled")
-                return
-            if is_title_generation(dict(metadata or {})):
-                try:
-                    async with asyncio.timeout(TITLE_TIMEOUT_SECONDS):
-                        for other_id, other_handle in tuple(self._active.items()):
-                            if other_id == run_id:
-                                continue
-                            other_record = await self._store.get(other_id)
-                            other_request = dict(
-                                getattr(other_record, "request", {}) or {}
-                            )
-                            if is_title_generation(
-                                other_request.get("metadata")
-                            ):
-                                continue
-                            await other_handle.wait()
-                            if control.cancelled.is_set():
-                                result = RunResult(
-                                    request_id=run_id,
-                                    status="cancelled",
-                                )
-                                return
-                        title = await generate_session_title(
-                            selected_model,
-                            prompt_text,
-                            timeout_seconds=TITLE_TIMEOUT_SECONDS,
-                        )
-                except (SessionTitleError, TimeoutError) as exc:
-                    # The title is an auxiliary convenience, never a reason to
-                    # fail a Run: reasoning-only or truncated title answers and
-                    # unresponsive title models keep the deterministic title the
-                    # Console already shows.
-                    logger.warning(
-                        "session title fell back to the message text: %s",
-                        exc or "session title generation timed out",
-                    )
-                    title = fallback_session_title(prompt_text)
-                if control.cancelled.is_set():
-                    result = RunResult(request_id=run_id, status="cancelled")
-                    return
-                await handle.publish(RunEvent("token", {"text": title}))
-                result = RunResult(
-                    request_id=run_id,
-                    status="completed",
-                    content=title,
-                    metadata=public_metadata(),
-                )
                 return
             await thread_lock.acquire()
             thread_lock_acquired = True
@@ -595,14 +687,25 @@ class RunManager:
                 await asyncio.gather(engine_task, return_exceptions=True)
                 raise
             hook_metadata.update(before_run.metadata)
-            engine = await engine_task
-            await self._publish_request_context(
-                handle,
-                engine=engine,
-                agent_id=agent.id,
-                model=selected_model,
-            )
             if before_run.direct_reply is not None:
+                # A Hook answered the turn itself, so this Run never reaches the
+                # graph.  The build only overlaps BEFORE_RUN because it is not a
+                # dependency, so the reply must not be held behind it: on K3
+                # that wait was about a second of the "打开终端" latency spent
+                # on a graph nothing would use.  It cannot be cancelled either,
+                # because a synchronous builder runs in a worker thread that a
+                # task cancellation does not interrupt, so it finishes on its
+                # own while the reply goes out.
+                self._detach_engine_build(engine_task)
+                if before_run.approval is not None:
+                    from .time_confirmation import resolve_time_confirmation
+
+                    reply = await resolve_time_confirmation(
+                        before_run.approval, handle=handle, control=control, decisions=decisions,
+                        pending=pending, waiting=self._waiting, session_id=session_id, run_id=run_id,
+                        wait_for_resume=_wait_for_resume,
+                    )
+                    before_run = replace(before_run, direct_reply=reply, approval=None)
                 if control.cancelled.is_set():
                     result = RunResult(
                         request_id=run_id,
@@ -618,22 +721,14 @@ class RunManager:
                     content=before_run.direct_reply,
                     metadata=public_metadata(),
                 )
-                await _run_hooks(
-                    generation,
-                    HookPoint.AFTER_RUN,
-                    hook_context(
-                        response=before_run.direct_reply,
-                        status="completed",
-                    ),
-                    agent.hooks,
-                )
-                after_run_invoked = True
                 return
+            engine = await engine_task
             after_context = await _run_hooks(
                 generation,
                 HookPoint.AFTER_CONTEXT, hook_context(), agent.hooks
             )
             hook_metadata.update(after_context.metadata)
+            record_stand_ins(after_context)
             sections = tuple(
                 section
                 for patch in (before_run, after_context)
@@ -647,6 +742,7 @@ class RunManager:
                     hook_context(text), agent.hooks,
                 )
                 hook_metadata.update(patch.metadata)
+                record_stand_ins(patch)
                 from bianbu_agent.security.security_middleware import extract_security_metadata
                 security = extract_security_metadata({"metadata": patch.metadata})
                 masked = security.get("dlp_masked_prompt")
@@ -665,6 +761,12 @@ class RunManager:
                             for item in prepared]
             prepared_text = _prompt_projection(prepared)
             content: list[str] = []
+            # Stand-ins are restored before a token event is published, so the
+            # live stream and the transcript never show them to the user.  The
+            # restorer holds back a suffix that could still grow into a stand-in
+            # split across two chunks.
+            restorer = StandInStreamRestorer()
+            restorer.update(getattr(control, "dlp_stand_ins", None))
             model_content_start = 0
             input_tokens = 0
             output_tokens = 0
@@ -730,6 +832,25 @@ class RunManager:
                                 raise
                             model_timed_out = True
                             break
+                        if event.kind == "context_compression" and event.payload.get("compressed"):
+                            # Carry bounded host compression metadata to the memory
+                            # plugin's terminal durability hook, including on cancel.
+                            hook_metadata.setdefault("context_compressions", []).append(dict(event.payload))
+                            hook_metadata["context_compressions"] = hook_metadata["context_compressions"][-8:]
+                        if event.kind == "token":
+                            restorer.update(
+                                getattr(control, "dlp_stand_ins", None)
+                            )
+                            restored = restorer.feed(
+                                str(event.payload.get("text") or "")
+                            )
+                            if restored:
+                                event = replace(
+                                    event,
+                                    payload={**event.payload, "text": restored},
+                                )
+                            else:
+                                continue
                         await handle.publish(event)
                         if callable(flush_session) and event.kind in {
                             "tool_start", "tool_end",
@@ -824,6 +945,11 @@ class RunManager:
                             f"模型服务在 {model_event_timeout:g} 秒内没有响应")
                     raise RuntimeError(f"model response timed out after {model_event_timeout:g}s")
                 break
+            if restorer is not None:
+                tail = restorer.flush()
+                if tail:
+                    await handle.publish(RunEvent("token", {"text": tail}))
+                    content.append(tail)
             if result is None:
                 text = "".join(content)
                 after_model = await _run_hooks(
@@ -831,6 +957,7 @@ class RunManager:
                     HookPoint.AFTER_MODEL, hook_context(prepared_text), agent.hooks
                 )
                 hook_metadata.update(after_model.metadata)
+                record_stand_ins(after_model)
                 result = RunResult(
                     request_id=run_id,
                     status="completed",
@@ -847,27 +974,39 @@ class RunManager:
                     ),
                     metadata=public_metadata(),
                 )
-                await _run_hooks(
-                    generation,
-                    HookPoint.AFTER_RUN,
-                    hook_context(
-                        request=prompt_text,
-                        response=text,
-                        status="completed",
-                    ),
-                    agent.hooks,
-                )
-                after_run_invoked = True
         except asyncio.CancelledError:
+            if restorer is not None:
+                tail = restorer.flush()
+                if tail:
+                    await handle.publish(RunEvent("token", {"text": tail}))
             await control.close_step_input_admission()
             result = RunResult(request_id=run_id, status="cancelled")
         except Exception as exc:
+            if restorer is not None:
+                # Text the model already produced stays visible even when the
+                # stream ends with an error; a stand-in split at the failure
+                # boundary must not be swallowed with the tail.
+                tail = restorer.flush()
+                if tail:
+                    await handle.publish(RunEvent("token", {"text": tail}))
+            # 失败 run 过去只在末尾落一条 `run_terminal: failed`，既没有异常类型
+            # 也没有堆栈，现场无法定位（缺陷 7130683657）。补一条带 traceback 的
+            # ERROR 记录：JSONL 里会带 exception 字段，stderr/journald 里是完整栈。
+            logger.exception(
+                "Run failed with an unhandled exception",
+                extra={"event": "run_failure"},
+            )
             await control.close_step_input_admission()
             hook_metadata["error"] = str(exc)
             try:
                 await _run_hooks(
                     generation, HookPoint.ON_ERROR, hook_context(), agent.hooks
                 )
+            except PermissionError as denial:
+                # ON_ERROR is an event point like any other: a veto here
+                # replaces the failure that triggered it, so the Run still
+                # reports one security denial rather than a generic error.
+                exc = denial
             except Exception:
                 pass
             # 区分「被 securityd 拦下」与「跑挂了」：前者一律 run_failed 时，
@@ -903,89 +1042,31 @@ class RunManager:
             except Exception:
                 pass
         finally:
+            # Shutdown cancels this task, and a cancellation landing inside the
+            # teardown would skip the terminal Hooks, the terminal result and
+            # the lease/slot release: the Run would look alive forever and its
+            # Trajectory Hooks would stay `running`.  Shutdown is the one place
+            # that may wait, so mask cancellation until teardown is complete.
+            unwind = asyncio.ensure_future(teardown())
             try:
-                result = result or RunResult(
-                    request_id=run_id, status="failed",
-                    error=RunError(
-                        code="run_incomplete",
-                        message="Run ended without result",
-                    ),
-                )
-                if not after_run_invoked and result.status == "completed":
+                while True:
                     try:
-                        await _run_hooks(
-                            generation,
-                            HookPoint.AFTER_RUN,
-                            hook_context(
-                                request=prompt_text,
-                                response=result.content,
-                                status=result.status,
-                            ),
-                            agent.hooks,
-                        )
-                    except Exception:
-                        # Memory persistence is best-effort and cannot alter
-                        # the terminal Runtime result.
-                        pass
-                await control.close_step_input_admission()
-                await handle.finish(result)
-                if os.environ.get("BIANBU_WORKER_MANAGED") != "1":
-                    log_run_terminal(
-                        logger,
-                        status=result.status,
-                        error_code=(result.error.code if result.error is not None else ""),
-                    )
-                await self._controls.complete(run_id)
-                await lease.__aexit__(None, None, None)
-                self._active.pop(run_id, None)
-                self._run_controls.pop(run_id, None)
-                self._tasks.pop(run_id, None)
+                        await asyncio.shield(unwind)
+                        break
+                    except asyncio.CancelledError:
+                        if unwind.done():
+                            # Re-raise a cancellation raised by teardown itself
+                            # instead of the one that reached this Task.
+                            unwind.result()
+                            break
+                        continue
             finally:
+                # teardown runs in its own Task: a ContextVar token may only
+                # be reset in the Context that created it, so release these here.
                 task_agent.reset(agent_token)
                 task_skills.reset(skill_token)
                 if thread_lock_acquired:
                     thread_lock.release()
-
-    async def _publish_request_context(
-        self,
-        handle: RunHandle,
-        *,
-        engine: object,
-        agent_id: str,
-        model: object,
-    ) -> None:
-        """Log only changed model-visible request context for reconstruction."""
-
-        system_prompt = getattr(engine, "system_prompt", None)
-        if system_prompt is None:
-            return
-        current: dict[str, object] = {
-            "agent_id": str(agent_id),
-            "provider": str(getattr(model, "provider_id", "") or ""),
-            "model": str(getattr(model, "model", "") or ""),
-            "system_prompt": str(system_prompt),
-        }
-        previous: dict[str, object] | None = None
-        reader = getattr(self._store, "read_session_events", None)
-        if callable(reader):
-            for event in reversed(await reader(handle.session_id)):
-                if getattr(event, "type", "") == "request/context":
-                    previous = {
-                        key: value
-                        for key, value in dict(event.data).items()
-                        if key != "reason"
-                    }
-                    break
-        if previous == current:
-            return
-        await handle.publish(RunEvent(
-            "request_context",
-            {
-                "reason": "initial" if previous is None else "change",
-                **current,
-            },
-        ))
-
 
 async def _run_hooks(
     generation,
@@ -1041,6 +1122,7 @@ async def _wait_for_resume(
         raise ValueError(f"{event.kind} event is missing {key}")
     pending["id"] = pending_id
     waiting.add(run_id)
+    wait_set = set()
     try:
         decision_task = asyncio.create_task(decisions.get())
         cancelled_task = asyncio.create_task(control.cancelled.wait())
@@ -1066,6 +1148,12 @@ async def _wait_for_resume(
             return "cancel", {}
         return decision_task.result()
     finally:
+        for task in wait_set:
+            if not task.done():
+                task.cancel()
+        if wait_set:
+            await asyncio.gather(*wait_set, return_exceptions=True)
+        pending.pop("id", None)
         waiting.discard(run_id)
 
 
@@ -1094,6 +1182,7 @@ async def _resolve_tool_approval(
         control=control,
         waiting=waiting,
         run_id=run_id,
+        timeout_seconds=150.0 if event.payload.get("kind") == "disable_ntp_and_set_time" else None,
     )
     if action == "cancel":
         return "cancel"
@@ -1141,6 +1230,10 @@ def _record_securityd_approvals(
 ) -> None:
     """Remember the human's approval so an identical call is not re-asked."""
 
+    from bianbu_agent.security.enablement import security_agent_enabled
+
+    if not security_agent_enabled():
+        return
     if not isinstance(actions, list):
         return
     try:
@@ -1172,14 +1265,22 @@ def _prompt_projection(prompt: str | Sequence[SessionInboxMessage]) -> str:
     return "\n\n".join(item.content for item in prompt)
 
 
+# 注入段（记忆、技能、安全上下文）会拼在用户原话前面，两个分支都必须标出注入段
+# 的结束位置：少了这个标记，模型会把用户这句请求当成上一条注入内容的续写
+# （缺陷 7130683657：首轮「我不喜欢吃辣」被判成「记忆条目里的一行」而不落库）。
+_CURRENT_REQUEST_HEADING = "## 当前请求"
+
+
+def _prepend_context(context_sections: Sequence[str], body: str) -> str:
+    return "\n\n".join([*context_sections, f"{_CURRENT_REQUEST_HEADING}\n{body}"])
+
+
 def _prepare_prompt(
     prompt: str | Sequence[SessionInboxMessage],
     context_sections: Sequence[str],
 ) -> str | list[SessionInboxMessage]:
     if isinstance(prompt, str):
-        return "\n\n".join(
-            [*context_sections, f"## 当前请求\n{prompt}"]
-        )
+        return _prepend_context(context_sections, prompt)
     prepared = list(prompt)
     for index, item in enumerate(prepared):
         note = attachment_note(item.attachments)
@@ -1191,7 +1292,7 @@ def _prepare_prompt(
     if context_sections and prepared:
         prepared[0] = replace(
             prepared[0],
-            content="\n\n".join([*context_sections, prepared[0].content]),
+            content=_prepend_context(context_sections, prepared[0].content),
         )
     return prepared
 

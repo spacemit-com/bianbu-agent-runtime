@@ -177,10 +177,53 @@ def test_manifest_round_trips_structured_agent_model() -> None:
     )
 
 
+def test_manifest_defaults_and_round_trips_reasoning_effort() -> None:
+    """Old records get low; an explicit level survives a rewrite unchanged."""
+
+    defaulted = AgentManifest.from_yaml(
+        DEFAULT_MANIFEST.replace(
+            "  model: null\n",
+            "  model:\n    provider: openrouter\n    name: qwen/qwen3-235b\n",
+        )
+    )
+    assert defaulted.spec.model == AgentModel(
+        provider="openrouter",
+        name="qwen/qwen3-235b",
+        effort="low",
+    )
+    assert "effort: low" in defaulted.to_yaml()
+
+    selected = AgentManifest.from_yaml(
+        DEFAULT_MANIFEST.replace(
+            "  model: null\n",
+            "  model:\n    provider: openrouter\n    name: qwen/qwen3-235b\n"
+            "    effort: max\n",
+        )
+    )
+    assert selected.spec.model == AgentModel(
+        provider="openrouter",
+        name="qwen/qwen3-235b",
+        effort="max",
+    )
+    assert AgentManifest.from_yaml(selected.to_yaml()).spec.model == selected.spec.model
+
+
 def test_manifest_rejects_a_legacy_model_string() -> None:
     with pytest.raises(ValueError, match="agent.model must be a mapping or null"):
         AgentManifest.from_yaml(
             DEFAULT_MANIFEST.replace("  model: null", "  model: model-old")
+        )
+
+
+@pytest.mark.parametrize("effort", ["medium", ""])
+def test_manifest_rejects_an_unknown_reasoning_effort(effort: str) -> None:
+    with pytest.raises(ValueError, match="model.effort"):
+        AgentManifest.from_yaml(
+            DEFAULT_MANIFEST.replace(
+                "  model: null\n",
+                "  model:\n    provider: openrouter\n    name: qwen/qwen3\n"
+                f"    effort: {effort}\n",
+            )
         )
 
 

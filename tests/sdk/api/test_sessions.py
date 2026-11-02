@@ -65,6 +65,77 @@ async def test_generate_title_immediately_persists_fallback(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_log_only_title_is_consistent_across_list_session_and_trajectory(
+    tmp_path: Path,
+) -> None:
+    """One log event is the source of the title in every reader."""
+
+    async with _graph_api(tmp_path) as (client, _runtime, _model):
+        await client.post(
+            "/api/v1/sessions",
+            json={"id": "consistent-title", "agent_id": "default"},
+        )
+        await client.post(
+            "/api/v1/sessions/consistent-title/generate-title",
+            json={"message_id": "message-consistent", "content": "inspect K3"},
+        )
+        for _ in range(100):
+            current = await client.get("/api/v1/sessions/consistent-title")
+            if current.json()["data"]["title"] == "followup saw direct history":
+                break
+            await asyncio.sleep(0.01)
+
+        listed = await client.get("/api/v1/sessions?page=1&page_size=20")
+        row = next(
+            item for item in listed.json()["data"]
+            if item["id"] == "consistent-title"
+        )
+        events = await client.get(
+            "/api/v1/sessions/consistent-title/events",
+            params={"max_messages": 50},
+        )
+        titles = [
+            item["data"]["title"] for item in events.json()["data"]
+            if item["type"] == "session/title"
+        ]
+
+        assert row["title"] == "followup saw direct history"
+        assert current.json()["data"]["title"] == "followup saw direct history"
+        assert titles[-1] == "followup saw direct history"
+
+
+@pytest.mark.asyncio
+async def test_two_title_requests_produce_two_trajectory_units(
+    tmp_path: Path,
+) -> None:
+    """Every title request owns its Trajectory unit, even within one Session."""
+
+    async with _graph_api(tmp_path) as (client, _runtime, _model):
+        await client.post(
+            "/api/v1/sessions",
+            json={"id": "two-titles", "agent_id": "default"},
+        )
+        for message_id, content in (
+            ("first-title", "first request"),
+            ("second-title", "second request"),
+        ):
+            response = await client.post(
+                "/api/v1/sessions/two-titles/generate-title",
+                json={"message_id": message_id, "content": content},
+            )
+            assert response.status_code == 202
+            await asyncio.sleep(0.05)
+
+        events = await client.get(
+            "/api/v1/sessions/two-titles/events",
+            params={"max_messages": 50},
+        )
+        types = [item["type"] for item in events.json()["data"]]
+        assert types.count("session/title/request") == 2
+        assert types.count("session/title") == 4
+
+
+@pytest.mark.asyncio
 async def test_prompt_model_less_agent_guides_user_to_configure_model(tmp_path: Path) -> None:
     """Prompt admission fails before queuing work when the expert has no model."""
 
@@ -106,6 +177,183 @@ async def test_prompt_model_less_agent_guides_user_to_configure_model(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_generate_title_is_log_only_and_creates_no_run(tmp_path: Path) -> None:
+    """A title is one Session log event: no Run, no Hooks, no concurrency slot."""
+
+    async with _api(tmp_path) as (client, runtime):
+        await client.post(
+            "/api/v1/sessions",
+            json={"id": "log-only-title", "agent_id": "default"},
+        )
+
+        response = await client.post(
+            "/api/v1/sessions/log-only-title/generate-title",
+            json={"message_id": "message-log-only", "content": "inspect K3"},
+        )
+
+        assert response.status_code == 202
+        assert response.json()["data"]["title"] == "inspect K3"
+        assert "run_id" not in response.json()["data"]
+        assert await runtime.runs.list("log-only-title") == []
+        events = await runtime.runs._store.read_session_events("log-only-title")
+        titles = [event for event in events if event.type == "session/title"]
+        assert titles, "the fallback title must be written to the Session log"
+        assert titles[0].run_id is None
+        assert titles[0].data["source"] == {"kind": "fallback"}
+        assert titles[0].data["request_id"]
+
+
+@pytest.mark.asyncio
+async def test_each_title_request_stamps_every_event_with_its_own_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fallback, request, and provider answer share one request identity.
+
+    The fallback is written before the model-facing request exists, so seq
+    ordering alone cannot tell which unit it belongs to.  The stable id is
+    what keeps two consecutive requests from merging.
+    """
+
+    release = asyncio.Event()
+
+    async def slow_title(_self, prompt: str, *, agent_id: str) -> dict[str, object]:
+        await release.wait()
+        return {
+            "title": f"{prompt} title",
+            "request": {"system": "s", "input": prompt},
+            "route": {"provider": "p", "model": prompt},
+        }
+
+    monkeypatch.setattr(
+        "bianbu_agent.server.runtime.BianbuAgentRuntime.generate_session_title",
+        slow_title,
+    )
+    async with _api(tmp_path) as (client, runtime):
+        await client.post(
+            "/api/v1/sessions",
+            json={"id": "stamped-title", "agent_id": "default"},
+        )
+        for message in ("first", "second"):
+            response = await client.post(
+                "/api/v1/sessions/stamped-title/generate-title",
+                json={"message_id": f"message-{message}", "content": message},
+            )
+            assert response.status_code == 202
+        release.set()
+        for _ in range(100):
+            events = await runtime.runs._store.read_session_events("stamped-title")
+            if sum(
+                event.type == "session/title"
+                and event.data.get("source", {}).get("kind") == "provider"
+                for event in events
+            ):
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+
+        events = await runtime.runs._store.read_session_events("stamped-title")
+        requests = [
+            event for event in events if event.type == "session/title/request"
+        ]
+        titles = [event for event in events if event.type == "session/title"]
+        routes = [event for event in events if event.type == "session/title/route"]
+        assert len(requests) == 2
+        request_ids = {event.data["request_id"] for event in requests}
+        assert len(request_ids) == 2
+        # Every revision is stamped, and no event points at a foreign request.
+        assert {event.data["request_id"] for event in titles} <= request_ids
+        assert {event.data["request_id"] for event in routes} <= request_ids
+        # Halting the first request must not leave its fallback attached to
+        # the second request's provider answer.
+        provider = [
+            event for event in titles
+            if event.data["source"]["kind"] == "provider"
+        ]
+        assert provider
+        assert provider[-1].data["request_id"] == requests[-1].data["request_id"]
+
+
+@pytest.mark.asyncio
+async def test_generate_title_never_invokes_run_hooks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Title generation must not pay for memory/security Hook subprocesses."""
+
+    called: list[object] = []
+
+    async def forbidden(*args, **_kwargs):
+        called.append(args)
+        raise AssertionError("a title must never run Hooks")
+
+    monkeypatch.setattr("bianbu_agent.runs.manager._run_hooks", forbidden)
+
+    async with _api(tmp_path) as (client, _runtime):
+        await client.post(
+            "/api/v1/sessions",
+            json={"id": "hookless-title", "agent_id": "default"},
+        )
+        response = await client.post(
+            "/api/v1/sessions/hookless-title/generate-title",
+            json={"message_id": "message-hookless", "content": "inspect K3"},
+        )
+
+        assert response.status_code == 202
+        await asyncio.sleep(0.05)
+        assert called == []
+
+
+@pytest.mark.asyncio
+async def test_generated_title_is_visible_in_trajectory_events(tmp_path: Path) -> None:
+    """The Trajectory reads the raw event window, so the title must be there."""
+
+    async with _graph_api(tmp_path) as (client, _runtime, _model):
+        await client.post(
+            "/api/v1/sessions",
+            json={"id": "trajectory-title", "agent_id": "default"},
+        )
+        await client.post(
+            "/api/v1/sessions/trajectory-title/generate-title",
+            json={"message_id": "message-trajectory", "content": "inspect K3"},
+        )
+        for _ in range(100):
+            current = await client.get("/api/v1/sessions/trajectory-title")
+            if current.json()["data"]["title"] == "followup saw direct history":
+                break
+            await asyncio.sleep(0.01)
+
+        events = await client.get(
+            "/api/v1/sessions/trajectory-title/events",
+            params={"max_messages": 50},
+        )
+
+        assert events.status_code == 200
+        payload = events.json()["data"]
+        titles = [item for item in payload if item["type"] == "session/title"]
+        assert [item["data"]["title"] for item in titles] == [
+            "inspect K3",
+            "followup saw direct history",
+        ]
+        assert all(item["run_id"] is None for item in titles)
+        # The exact auxiliary request is part of the trajectory too, recorded
+        # before dispatch and carrying the resolved route.
+        requests = [
+            item for item in payload if item["type"] == "session/title/request"
+        ]
+        assert len(requests) == 1
+        assert requests[0]["run_id"] is None
+        assert "Create a concise title" in requests[0]["data"]["system"]
+        assert '"text":"inspect K3"' in requests[0]["data"]["input"]
+        # A bare test model exposes no provider/model identity, so no route
+        # event follows the request.  A real route is appended once resolved.
+        routes = [
+            item for item in payload if item["type"] == "session/title/route"
+        ]
+        assert routes == []
+
+
+@pytest.mark.asyncio
 async def test_generate_title_publishes_late_auxiliary_result(tmp_path: Path) -> None:
     """A successful detached title request replaces its owned fallback."""
 
@@ -134,22 +382,23 @@ async def test_generate_title_publishes_late_auxiliary_result(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_title_failure_keeps_fallback_title_and_completes_run(
+async def test_title_failure_keeps_fallback_title(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Reasoning-only title answers must not fail the auxiliary Run.
+    """Reasoning-only title answers leave the deterministic fallback in place.
 
     MiniMax spends the whole title budget on in-band reasoning, so the visible
-    answer stays empty.  The Run keeps the deterministic fallback title the
-    Console already shows instead of reporting a failed Run.
+    answer stays empty.  Because the title is a log-only revision rather than a
+    Run, a failed model call simply publishes nothing and the fallback event
+    stays the latest revision.
     """
 
     async def reasoning_only_title(*_args, **_kwargs) -> str:
         raise SessionTitleError("session title model produced no text")
 
     monkeypatch.setattr(
-        "bianbu_agent.runs.manager.generate_session_title",
+        "bianbu_agent.server.runtime.BianbuAgentRuntime.generate_session_title",
         reasoning_only_title,
     )
     async with _graph_api(tmp_path) as (client, runtime, _model):
@@ -165,7 +414,7 @@ async def test_title_failure_keeps_fallback_title_and_completes_run(
 
         assert response.status_code == 202
         assert response.json()["data"]["title"] == "inspect K3"
-        await _wait_for_run(runtime, response.json()["data"]["run_id"])
+        await asyncio.sleep(0.05)
         current = await client.get("/api/v1/sessions/fallback-title")
         assert current.json()["data"]["title"] == "inspect K3"
 
@@ -186,7 +435,7 @@ async def test_pending_title_never_blocks_next_conversation(
         return "late title"
 
     monkeypatch.setattr(
-        "bianbu_agent.runs.manager.generate_session_title",
+        "bianbu_agent.server.runtime.BianbuAgentRuntime.generate_session_title",
         slow_title,
     )
     async with _api(tmp_path) as (client, _runtime):
@@ -236,7 +485,7 @@ async def test_late_title_does_not_overwrite_explicit_rename(
         return "stale generated title"
 
     monkeypatch.setattr(
-        "bianbu_agent.runs.manager.generate_session_title",
+        "bianbu_agent.server.runtime.BianbuAgentRuntime.generate_session_title",
         slow_title,
     )
     async with _api(tmp_path) as (client, runtime):
@@ -257,12 +506,7 @@ async def test_late_title_does_not_overwrite_explicit_rename(
         )
         assert renamed.status_code == 200
         release_title.set()
-        await _wait_for_run(
-            runtime,
-            response.json()["data"]["run_id"],
-            status="completed",
-        )
-        await asyncio.sleep(0.02)
+        await asyncio.sleep(0.05)
 
         current = await client.get("/api/v1/sessions/renamed-title")
         assert current.json()["data"]["title"] == "my explicit title"
@@ -323,6 +567,9 @@ async def test_session_events_persist_per_run_token_usage(
 
         assert response.status_code == 200
         assert response.json()["hidden_run_ids"] == [title_id]
+        assert title_id in {
+            item["run_id"] for item in response.json()["data"]
+        }
         terminal_by_run = {
             item["run_id"]: item["data"]
             for item in response.json()["data"]
@@ -1353,3 +1600,47 @@ async def test_polled_session_history_reuses_the_rendered_body(
         # transcript 追加过事件，tail 变了，于是重新渲染并返回新内容。
         assert renders == 2
         assert grown.content != first.content
+
+
+@pytest.mark.asyncio
+async def test_title_fallback_and_request_are_one_durable_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fallback and its model request must not be separated by a Run.
+
+    They used to be written by two different tasks, so the second one queued
+    behind the concurrent Run on the Session log.  The trajectory then showed
+    that wait as a 1.2 s "fallback" duration.  One batch keeps them adjacent.
+    """
+
+    async def slow_title(_self, prompt: str, *, agent_id: str) -> dict[str, object]:
+        await asyncio.sleep(0.2)
+        return {
+            "title": f"{prompt} title",
+            "request": {"system": "s", "input": prompt},
+            "route": {"provider": "p", "model": prompt},
+        }
+
+    monkeypatch.setattr(
+        "bianbu_agent.server.runtime.BianbuAgentRuntime.generate_session_title",
+        slow_title,
+    )
+    async with _api(tmp_path) as (client, runtime):
+        await client.post(
+            "/api/v1/sessions",
+            json={"id": "batched-title", "agent_id": "default"},
+        )
+        response = await client.post(
+            "/api/v1/sessions/batched-title/generate-title",
+            json={"message_id": "message-one", "content": "open terminal"},
+        )
+        assert response.status_code == 202
+
+        # Both events already exist when the request is accepted, before the
+        # model has answered.
+        accepted = await runtime.runs._store.read_session_events("batched-title")
+        title_types = [event.type for event in accepted if event.type.startswith("session/title")]
+        assert title_types == ["session/title", "session/title/request"]
+        assert accepted[-1].seq == accepted[-2].seq + 1
+        assert accepted[-1].data["request_id"] == accepted[-2].data["request_id"]

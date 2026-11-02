@@ -8,6 +8,7 @@ from bianbu_agent.agents import AgentDeclaration, AgentModel, AgentRegistry, Age
 from bianbu_agent.agents.presets import with_presets
 from bianbu_agent.config import RuntimePresetsConfig
 from bianbu_agent.errors import AgentValidationError, ModelResolutionError
+from bianbu_agent.inventory import CapabilityKind
 from bianbu_agent.mcp import resolve_mcp_selectors
 from bianbu_agent.models import ModelRegistry
 
@@ -118,18 +119,23 @@ class AgentManager:
         )
         plugins = tuple(dict.fromkeys(
             (*_materialize(spec.plugins, _plugin_catalog(generation)),
-             *_plugin_owners(spec, generation))
+             *_plugin_owners(spec, generation),
+             *_private_ids(generation, "plugin", spec.id))
         ))
-        mcps = _select_members(
-            resolve_mcp_selectors(spec.mcps, generation.mcps),
-            generation.mcps,
-            generation,
-            plugins,
-            mcp=True,
-        )
-        selected_skills = _select_members(
-            spec.skills, generation.skills, generation, plugins
-        )
+        mcps = tuple(dict.fromkeys((
+            *_select_members(
+                resolve_mcp_selectors(spec.mcps, generation.mcps),
+                generation.mcps,
+                generation,
+                plugins,
+                mcp=True,
+            ),
+            *_private_ids(generation, "mcp", spec.id),
+        )))
+        selected_skills = tuple(dict.fromkeys((
+            *_select_members(spec.skills, generation.skills, generation, plugins),
+            *_private_ids(generation, "skill", spec.id),
+        )))
         return replace(
             spec,
             tools=_materialize_agent_tools(
@@ -257,6 +263,32 @@ class AgentManager:
             raise AgentValidationError("; ".join(details))
         if details and not allow_capability_gap:
             raise AgentValidationError("; ".join(details))
+
+
+def _private_ids(generation: object, kind: str, agent_id: str) -> tuple[str, ...]:
+    """IDs of the capabilities this Agent package ships for itself.
+
+    They are always materialized and cannot be deselected: an Agent's private
+    ``skills/``, ``mcps/`` and ``plugins/`` trees are part of the expert, not a
+    device-wide choice.
+    """
+
+    catalog = getattr(generation, "capability_catalog", None)
+    owners = getattr(catalog, "private_owners", None)
+    if not isinstance(owners, Mapping):
+        return ()
+    wanted = {
+        "plugin": CapabilityKind.PLUGIN,
+        "mcp": CapabilityKind.MCP,
+        "skill": CapabilityKind.SKILL,
+    }[kind]
+    return tuple(
+        sorted(
+            capability_id
+            for (capability_kind, capability_id), owner in owners.items()
+            if capability_kind is wanted and owner == agent_id
+        )
+    )
 
 
 def _plugin_catalog(generation: object) -> Mapping[str, object]:

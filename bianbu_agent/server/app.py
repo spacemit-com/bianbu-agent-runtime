@@ -108,6 +108,9 @@ def create_app(
             template.replace(
                 "{{BIANBU_DEFAULT_LANG}}",
                 json.dumps(runtime.config.language, ensure_ascii=False),
+            ).replace(
+                "{{BIANBU_INITIAL_AGENT}}",
+                json.dumps(runtime.config.initial_agent, ensure_ascii=False),
             ).replace("{{BIANBU_ASSET_VERSION}}", asset_version),
             headers={"Cache-Control": "no-cache, must-revalidate"},
         )

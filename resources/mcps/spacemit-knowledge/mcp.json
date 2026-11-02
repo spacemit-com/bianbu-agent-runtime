@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "display_name": "进迭社区知识库",
+  "transport": "stdio",
+  "command": "${RUNTIME_PYTHON}",
+  "args": ["${BIANBU_SYSTEM_RESOURCE_ROOT}/mcps/spacemit-knowledge/server.py"],
+  "timeout_seconds": 125,
+  "startup_timeout_seconds": 15
+}

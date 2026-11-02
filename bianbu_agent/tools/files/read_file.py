@@ -3,18 +3,7 @@ import asyncio
 import json
 from pathlib import Path
 from bianbu_agent.tools import tool
-
-
-def _resolve(workspace: Path, raw_path: str) -> Path:
-    if not raw_path:
-        raise ValueError("path must be a non-empty string")
-    candidate = Path(raw_path).expanduser()
-    if not candidate.is_absolute():
-        candidate = workspace / candidate
-    resolved = candidate.resolve()
-    if not resolved.is_relative_to(workspace.resolve()):
-        raise PermissionError("path is outside the Tool workspace")
-    return resolved
+from bianbu_agent.tools.files.paths import resolve_path
 
 
 def _read(path: Path, offset: int, limit: int) -> dict[str, object]:
@@ -52,24 +41,18 @@ def create_tool(context):
 
     @tool(parse_docstring=True)
     async def read_file(path: str, offset: int = 1, limit: int = 500) -> str:
-        """Read a UTF-8 text file from the current Tool workspace.
+        """Read a UTF-8 text file.
 
         Args:
-            path: Absolute or workspace-relative file path.
+            path: File path; a relative path resolves against the workspace.
             offset: First line to return, using one-based numbering.
             limit: Maximum number of lines to return, capped at 2000.
         """
         try:
-            resolved = _resolve(context.workspace_root, path)
+            resolved = resolve_path(context.workspace_root, path)
             payload = await asyncio.to_thread(
                 _read, resolved, max(1, offset), min(2000, max(1, limit))
             )
-        except PermissionError as exc:
-            payload = {
-                "success": False,
-                "code": "path_outside_workspace",
-                "error": str(exc),
-            }
         except (OSError, TypeError, ValueError) as exc:
             payload = {"success": False, "code": "invalid_request", "error": str(exc)}
         return json.dumps(payload, ensure_ascii=False)

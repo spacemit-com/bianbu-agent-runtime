@@ -22,13 +22,14 @@ STREAM_LIMIT = MAX_MESSAGE_BYTES + 1
 REQUEST_TYPES = frozenset({
     "hello", "health", "run.start", "run.cancel", "run.step_input",
     "approval.result", "worker.activate", "worker.reload", "worker.catalog",
-    "shutdown",
+    "session.terminate", "title.generate", "shutdown",
 })
 RESPONSE_TYPES = frozenset({
     "hello.result", "health.result", "run.accepted", "run.event",
     "run.result", "run.cancel.result", "run.step_input.result", "approval.result",
     "approval.request", "worker.activate.result", "shutdown.ack", "error",
     "worker.reload.result", "worker.catalog.result",
+    "session.terminate.result", "title.generate.result",
 })
 
 _COMMON_FIELDS = frozenset({"protocol", "type", "request_id", "instance_id"})
@@ -48,6 +49,14 @@ _REQUEST_FIELDS = {
     "worker.activate": _REQUEST_COMMON_FIELDS,
     "worker.reload": _REQUEST_COMMON_FIELDS | frozenset({"force"}),
     "worker.catalog": _REQUEST_COMMON_FIELDS,
+    # Session deletion drops private DLP state; it carries a reason so a future
+    # lifecycle point can distinguish close, delete and Agent removal.
+    "session.terminate": _REQUEST_COMMON_FIELDS | frozenset({
+        "session_id", "agent_id", "reason",
+    }),
+    # 标题是辅助请求，不需要 Run/lease，但仍要走与其它 Worker 操作相同的
+    # 严格消息契约，否则控制面会在本地校验阶段就把它拒掉。
+    "title.generate": _REQUEST_COMMON_FIELDS | frozenset({"prompt", "agent_id"}),
 }
 _RESPONSE_FIELDS = {
     "hello.result": _COMMON_FIELDS | frozenset({
@@ -71,6 +80,14 @@ _RESPONSE_FIELDS = {
     "worker.reload.result": _COMMON_FIELDS | frozenset({"status", "generation_id", "changed"}),
     "worker.catalog.result": _COMMON_FIELDS | frozenset({
         "generation_id", "capabilities", "mcps", "mcp_servers", "mcp_statuses",
+    }),
+    "session.terminate.result": _COMMON_FIELDS | frozenset({
+        "session_id", "cleared",
+    }),
+    # 标题回复同时带回精确请求与解析后的 provider 路由，控制面无需 Run
+    # 就能把两者写进 Session 日志。
+    "title.generate.result": _COMMON_FIELDS | frozenset({
+        "title", "agent_id", "request", "route",
     }),
     # 错误帧必须能带上定位信息（哪个工具/哪条能力/哪个上游状态码）；少了
     # details，服务端写出的帧会被本文件的严格校验拒绝、静默丢弃，客户端
@@ -173,6 +190,22 @@ def validate_message(message: Mapping[str, Any], *, direction: str = "request") 
     if direction == "request" and kind == "approval.result":
         _text(value.get("action"), "action")
         _object(value.get("payload"), "payload")
+    if direction == "request" and kind == "session.terminate":
+        _text(value.get("session_id"), "session_id")
+        _text(value.get("agent_id"), "agent_id")
+        _text(value.get("reason"), "reason")
+    if direction == "response" and kind == "session.terminate.result":
+        _text(value.get("session_id"), "session_id")
+        if type(value.get("cleared")) is not bool:
+            raise ProtocolError("cleared must be a boolean")
+    if direction == "request" and kind == "title.generate":
+        _text(value.get("prompt"), "prompt")
+        _text(value.get("agent_id"), "agent_id")
+    if direction == "response" and kind == "title.generate.result":
+        _text(value.get("title"), "title", allow_empty=True)
+        _text(value.get("agent_id"), "agent_id")
+        _object(value.get("request"), "request")
+        _object(value.get("route"), "route")
     return value
 
 

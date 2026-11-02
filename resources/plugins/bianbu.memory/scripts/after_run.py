@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import asyncio
-import json
 import logging
 import os
 
@@ -58,48 +55,21 @@ def _memory_identity(run) -> tuple[str, str | None]:
 
 
 async def _record_agent_memory(run) -> bool:
-    if run["metadata"].get("console_operation") == "generate_title":
-        return False
     try:
         from bianbu_agent_sdk.memory import get_memory_bridge
-
         config = run.get("config", {})
-        account_id, agent_name = _memory_identity(run)
-        bridge = await get_memory_bridge(
-            socket_path=config.get("socket_path"),
-            timeout=config.get("timeout_seconds", 2.0),
-            account_id=account_id,
-            agent_name=agent_name,
-        )
-        if run["status"] == "completed" and run["response"].strip():
-            return await asyncio.wait_for(
-                bridge.record_turn(
-                    run_id=run["run_id"],
-                    session_id=run["session_id"],
-                    agent_id=run["agent_id"],
-                    user_text=run["request"],
-                    assistant_text=run["response"],
-                ),
-                timeout=config.get("timeout_seconds", 2.0),
-            )
-        record_interrupted = getattr(bridge, "record_interrupted_turn", None)
-        if not callable(record_interrupted):
-            return False
-        return await asyncio.wait_for(
-            record_interrupted(
-                run_id=run["run_id"],
-                session_id=run["session_id"],
-                agent_id=run["agent_id"],
-                user_text=run["request"],
-                status=run["status"] or "interrupted",
-                error=str(run["metadata"].get("error") or "").strip() or None,
-            ),
-            timeout=config.get("timeout_seconds", 2.0),
-        )
+        account, agent = _memory_identity(run)
+        bridge = await get_memory_bridge(socket_path=config.get("socket_path"),
+            timeout=config.get("timeout_seconds", 2.0), account_id=account, agent_name=agent)
+        return await asyncio.wait_for(bridge.record_runtime_result(
+            run_id=run["run_id"], session_id=run["session_id"], agent_id=run["agent_id"],
+            user_text=run["request"], assistant_text=run["response"], status=run["status"],
+            metadata=run.get("metadata", {}), config=config),
+            timeout=config.get("timeout_seconds", 2.0))
     except asyncio.CancelledError:
         raise
-    except Exception as exc:  # memory is best-effort and must not fail the run
-        logger.warning("AgentMemory turn recording unavailable: %s", exc)
+    except Exception:
+        logger.warning("AgentMemory turn recording unavailable", exc_info=True)
         return False
 
 
@@ -109,19 +79,20 @@ async def after_run(run: dict) -> dict | None:
     if _agent_memory_enabled():
         await _record_agent_memory(run)
         return None
-    content = str(run["metadata"].get("memory_to_record") or "").strip()
-    if not content:
+    try:
+        from bianbu_agent_sdk.memory.lifecycle import record_legacy_result
+        return record_legacy_result(os.environ["PLUGIN_DATA_ROOT"], run)
+    except Exception:
+        logger.warning("Legacy memory recording unavailable", exc_info=True)
         return None
-    Path(os.environ["PLUGIN_DATA_ROOT"]).mkdir(parents=True, exist_ok=True)
-    path = Path(os.environ["PLUGIN_DATA_ROOT"]) / "memory.jsonl"
-    with path.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps({"content": content}, ensure_ascii=False) + "\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    return None
+
+
+def _warmup():
+    from bianbu_agent_sdk.memory import get_memory_bridge  # noqa: F401
+    from bianbu_agent_sdk.memory import lifecycle  # noqa: F401
 
 
 if __name__ == "__main__":
     from protocol import main
 
-    main(after_run)
+    main(after_run, warmup=_warmup)

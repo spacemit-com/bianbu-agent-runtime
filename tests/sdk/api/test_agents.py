@@ -205,6 +205,7 @@ async def test_agents_create_patch_and_delete_without_erasing_omitted_fields(
         assert item["model"] == {
             "provider": "editor-provider",
             "name": "editor-model",
+            "effort": "low",
         }
         assert item["tools"] == []
         assert item["skills"] == []
@@ -342,6 +343,41 @@ async def test_agent_avatar_is_stored_served_and_deleted_with_its_agent(
 
 
 @pytest.mark.asyncio
+async def test_agent_avatar_is_served_from_the_declared_package_asset(
+    tmp_path: Path,
+) -> None:
+    """An Expert installed by APM keeps its avatar under assets/."""
+
+    png = b"\x89PNG\r\n\x1a\n"
+    async with _file_backed_api(tmp_path) as (client, runtime):
+        source = tmp_path / "source" / "demo"
+        (source / "assets").mkdir(parents=True)
+        (source / "agent.yaml").write_text(
+            "schema_version: 1\n"
+            "agent:\n"
+            "  id: demo\n"
+            "  version: 1.0.0\n"
+            "  name: demo\n"
+            "  metadata:\n"
+            "    avatar: assets/avatar.png\n",
+            encoding="utf-8",
+        )
+        (source / "assets" / "avatar.png").write_bytes(png)
+        runtime.agent_packages.install(source)
+
+        listing = await client.get("/api/v1/agents")
+        detail = await client.get("/api/v1/agents/demo")
+        fetched = await client.get("/api/v1/agents/demo/avatar")
+
+    item = next(entry for entry in listing.json()["data"] if entry["id"] == "demo")
+    assert item["avatar"] == "/api/v1/agents/demo/avatar"
+    assert detail.json()["data"]["avatar"] == "/api/v1/agents/demo/avatar"
+    assert fetched.status_code == 200
+    assert fetched.content == png
+    assert fetched.headers["content-type"] == "image/png"
+
+
+@pytest.mark.asyncio
 async def test_agent_avatar_rejects_spoofed_oversized_and_unknown_uploads(
     tmp_path: Path,
 ) -> None:
@@ -451,10 +487,95 @@ async def test_agent_structured_model_and_mcps_round_trip_and_validate_provider(
     assert created.json()["data"]["model"] == {
         "provider": "openrouter",
         "name": "qwen/qwen3",
+        "effort": "low",
     }
     assert created.json()["data"]["mcps"] == []
     assert missing_provider.status_code == 422
     assert missing_provider.json()["error"]["code"] == "validation_error"
+
+
+@pytest.mark.asyncio
+async def test_agent_model_effort_defaults_to_low_and_round_trips(tmp_path: Path) -> None:
+    """Effort is part of the persisted model selection, not a transient option."""
+
+    async with _api(tmp_path) as (client, _):
+        assert (
+            await client.post(
+                "/api/v1/providers",
+                json={
+                    "id": "effort-provider",
+                    "base_url": "https://model.test/v1",
+                    "api_key": "secret",
+                    "parameters": {"protocol": "openai-compatible"},
+                },
+            )
+        ).status_code == 201
+
+        defaulted = await client.post(
+            "/api/v1/agents",
+            json={
+                "name": "Defaulted Effort",
+                "model": {"provider": "effort-provider", "name": "chat"},
+            },
+        )
+        selected = await client.post(
+            "/api/v1/agents",
+            json={
+                "name": "Selected Effort",
+                "model": {
+                    "provider": "effort-provider",
+                    "name": "chat",
+                    "effort": "max",
+                },
+            },
+        )
+        assert selected.status_code == 201, selected.text
+        agent_id = selected.json()["data"]["id"]
+
+        renamed = await client.patch(
+            f"/api/v1/agents/{agent_id}",
+            json={"model": {"provider": "effort-provider", "name": "chat-v2"}},
+        )
+        lowered = await client.patch(
+            f"/api/v1/agents/{agent_id}",
+            json={
+                "model": {
+                    "provider": "effort-provider",
+                    "name": "chat-v2",
+                    "effort": "off",
+                }
+            },
+        )
+        invalid = await client.post(
+            "/api/v1/agents",
+            json={
+                "name": "Invalid Effort",
+                "model": {
+                    "provider": "effort-provider",
+                    "name": "chat",
+                    "effort": "medium",
+                },
+            },
+        )
+
+    assert defaulted.status_code == 201, defaulted.text
+    assert defaulted.json()["data"]["model"] == {
+        "provider": "effort-provider",
+        "name": "chat",
+        "effort": "low",
+    }
+    assert selected.json()["data"]["model"]["effort"] == "max"
+    # An older client that only changes provider/name must not reset effort.
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["data"]["model"] == {
+        "provider": "effort-provider",
+        "name": "chat-v2",
+        "effort": "max",
+    }
+    assert lowered.status_code == 200, lowered.text
+    assert lowered.json()["data"]["model"]["effort"] == "off"
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["code"] == "validation_error"
 
 
 @pytest.mark.asyncio
@@ -776,3 +897,46 @@ async def test_agents_reject_removed_agent_level_hooks(tmp_path: Path) -> None:
         )
         assert created.status_code == 422, created.text
         assert created.json()["error"]["code"] == "validation_error"
+
+
+@pytest.mark.asyncio
+async def test_private_capabilities_are_not_persisted_when_an_editor_clears_skills(
+    tmp_path: Path,
+) -> None:
+    """Private Powers are a Runtime view, not a selectable declaration.
+
+    The editor submits the whole list on save.  If the runtime folded private
+    IDs into ``agent.yaml``, deleting the private directory would leave a
+    dangling selector behind.
+    """
+
+    async with _file_backed_api(tmp_path) as (client, runtime):
+        package = runtime.agent_packages.inspect("default")
+        assert package is not None
+        private = package.root / "skills" / "private-probe"
+        private.mkdir(parents=True)
+        (private / "SKILL.md").write_text(
+            "---\nname: private-probe\ndescription: Probe.\n---\n\nProbe.\n",
+            encoding="utf-8",
+        )
+
+        patched = await client.patch("/api/v1/agents/default", json={"skills": []})
+
+        assert patched.status_code == 200, patched.text
+        stored = await runtime.agents.get("default")
+        assert stored.skills == ()
+        assert "private-probe" not in (package.root / "agent.yaml").read_text(
+            encoding="utf-8"
+        )
+        # The package tree is discovered by the Skill watcher.  Publish it now
+        # instead of waiting for the watcher's backoff in this test.
+        await runtime.plugin_runtime.refresh_skills()
+        caps = await client.get(
+            "/api/v1/capabilities/skill", params={"agent_id": "default"}
+        )
+        assert caps.status_code == 200, caps.text
+        probe = next(
+            item for item in caps.json()["data"] if item["id"] == "private-probe"
+        )
+        assert probe["private"] is True
+        assert probe["enabled"] is True

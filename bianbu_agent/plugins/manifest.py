@@ -24,6 +24,19 @@ from bianbu_agent.plugins.models import (
 
 
 PLUGIN_MANIFEST_FILENAME = "plugin.yaml"
+APC_PLUGIN_MANIFEST_FILENAME = "apc-plugin.json"
+_APC_ROOT_KEYS = frozenset(
+    {
+        "schema_version",
+        "name",
+        "name_zh",
+        "name_en",
+        "version",
+        "description",
+        "description_zh",
+        "skills",
+    }
+)
 _ROOT_KEYS = frozenset(
     {
         "schema_version",
@@ -117,10 +130,23 @@ def _scan_contributions(root: Path) -> PluginContributionManifest:
 
 
 def load_plugin_manifest(root: Path) -> PluginManifest:
-    """Parse and validate ``root/plugin.yaml`` without importing Plugin code."""
+    """Parse one Plugin manifest without importing Plugin code.
+
+    An APM-installed Agent may carry a submitted Plugin sub-resource, whose
+    manifest is ``apc-plugin.json``.  A native ``plugin.yaml`` always wins, so
+    the Runtime keeps its installed-package contract for everything it owns.
+    """
 
     package_root = Path(root)
     path = package_root / PLUGIN_MANIFEST_FILENAME
+    submitted = package_root / APC_PLUGIN_MANIFEST_FILENAME
+    if (
+        not path.exists()
+        and not path.is_symlink()
+        and submitted.is_file()
+        and not submitted.is_symlink()
+    ):
+        return _load_apc_plugin(package_root, submitted)
     if path.is_symlink() or not path.is_file():
         raise ValueError("plugin.yaml is required and must be a regular file")
     try:
@@ -171,10 +197,53 @@ def load_plugin_manifest(root: Path) -> PluginManifest:
     )
 
 
+def _load_apc_plugin(package_root: Path, path: Path) -> PluginManifest:
+    """Read an Agent-private Plugin from its APM submission manifest."""
+
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid apc-plugin.json: {exc}") from exc
+    payload = _mapping(document, "apc-plugin.json")
+    unknown = sorted(set(payload) - _APC_ROOT_KEYS)
+    if unknown:
+        raise ValueError(f"unknown apc-plugin.json key: {unknown[0]}")
+    if payload.get("schema_version") != 2:
+        raise ValueError("apc-plugin.json schema_version must be 2")
+    declared = _names(payload.get("skills"), "skills")
+    if not declared:
+        raise ValueError("apc-plugin.json skills must not be empty")
+    resolved_root = package_root.resolve()
+    for entry in declared:
+        relative = Path(entry)
+        if (
+            relative.is_absolute()
+            or len(relative.parts) != 2
+            or relative.parts[0] != "skills"
+            or ".." in relative.parts
+        ):
+            raise ValueError(f"unsupported apc-plugin.json skill path: {entry}")
+        target = (package_root / relative).resolve()
+        if not target.is_dir() or not target.is_relative_to(resolved_root):
+            raise ValueError(f"apc-plugin.json skill is missing: {entry}")
+    return PluginManifest(
+        id=_text(payload.get("name"), "name"),
+        version=_text(payload.get("version"), "version"),
+        description=_text(payload.get("description"), "description", required=False),
+        config_defaults=_load_directory_config(package_root),
+        contributions=_scan_contributions(package_root),
+    )
+
+
 def plugin_definition_path(root: Path) -> Path:
     """Return the single file that describes one installed Plugin package."""
 
-    return Path(root) / PLUGIN_MANIFEST_FILENAME
+    root = Path(root)
+    native = root / PLUGIN_MANIFEST_FILENAME
+    if native.exists() or native.is_symlink():
+        return native
+    submitted = root / APC_PLUGIN_MANIFEST_FILENAME
+    return submitted if submitted.exists() else native
 
 
 def load_installed_plugin_manifest(root: Path) -> PluginManifest:
@@ -184,6 +253,7 @@ def load_installed_plugin_manifest(root: Path) -> PluginManifest:
 
 
 __all__ = [
+    "APC_PLUGIN_MANIFEST_FILENAME",
     "PLUGIN_MANIFEST_FILENAME",
     "load_installed_plugin_manifest",
     "load_plugin_manifest",

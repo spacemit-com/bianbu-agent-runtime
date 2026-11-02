@@ -45,6 +45,10 @@ export BIANBU_WORKER_MEMORY_MAX="${BIANBU_WORKER_MEMORY_MAX:-off}"
 # 本来就在抢同一颗核，放开后它们才能真正并行。给值即可恢复（例如
 # BIANBU_WORKER_CPU_QUOTA=200% ./run.sh）。
 export BIANBU_WORKER_CPU_QUOTA="${BIANBU_WORKER_CPU_QUOTA:-off}"
+# 同理不限制 Worker 的 task 数（进程 + 线程）：securityd 默认下发的 256
+# 会被 Worker 常驻的 MCP server 加几个并发会话正常越过。给值即可恢复
+# （例如 BIANBU_WORKER_TASKS_MAX=256 ./run.sh）。
+export BIANBU_WORKER_TASKS_MAX="${BIANBU_WORKER_TASKS_MAX:-off}"
 export BIANBU_RUNTIME_ALLOW_UNMANAGED_WORKER="${BIANBU_RUNTIME_ALLOW_UNMANAGED_WORKER:-0}"
 export BIANBU_RUNTIME_SECURITY_ID="${BIANBU_RUNTIME_SECURITY_ID:-com.bianbu.runtime.development}"
 export BIANBU_AGENT_ID="${BIANBU_AGENT_ID:-${BIANBU_RUNTIME_SECURITY_ID}}"
@@ -103,45 +107,23 @@ site_packages="$(uv run --locked --no-dev python -c \
 printf '%s\n' "${memory_python_root}" "/home/agent/runtime/python-packages" \
   > "${site_packages}/bianbu-agent-memory-sdk.pth"
 
-# ── 3. 生成启动配置：合并安全清单、把 Worker 指到源码入口、备好 Starter Agent ──
+# ── 3. 生成启动配置：把 Worker 指到源码入口、备好 Starter Agent ─────────────
 runtime_config="${BIANBU_ALL_CONFIG:-${project_root}/.bianbu-agent/config-all.yaml}"
-manifest_root="${BIANBU_ALL_SECURITY_MANIFEST_ROOT:-${project_root}/.bianbu-agent/runtime/development-security-manifest}"
-uv run --locked --no-dev python "${project_root}/scripts/prepare-development-security-manifest.py" \
+uv run --locked --no-dev python "${project_root}/scripts/prepare-development-config.py" \
   --project-root "${project_root}" \
   --config "${config_path}" \
-  --runtime-config-output "${runtime_config}" \
-  --output "${manifest_root}"
+  --runtime-config-output "${runtime_config}"
 config_path="${runtime_config}"
 
 starter_agent_id="$(uv run --locked --no-dev python \
   "${project_root}/scripts/provision-starter-agent.py" \
   --config "${config_path}" \
-  --template "${project_root}/resources/default-profile/starter-agent.yaml")"
+  --template "${project_root}/resources/agents/com.bianbu.627d97ad908c/agent.yaml")"
 echo "Starter Agent 已就绪：${starter_agent_id}" >&2
 export COM_BIANBU_AGENT_ID="${COM_BIANBU_AGENT_ID:-${starter_agent_id}}"
 export BIANBU_WORKER_AGENT_ID="${BIANBU_WORKER_AGENT_ID:-${COM_BIANBU_AGENT_ID}}"
 
-# ── 4. 注册开发自签安全身份（需要 root）─────────────────────────────────────
-# 自签清单每次启动现生成（key 也是新的），所以注册跟生成必须同源，不能挪到一次性准备。
-manifest_package="${manifest_root}/${BIANBU_RUNTIME_SECURITY_ID}"
-manifest_stage="${BIANBU_SECURITY_MANIFEST_STAGE:-/run/bianbu/runtime-manifests/${BIANBU_RUNTIME_SECURITY_ID}}"
-run_as_root install -d -m 0750 -o bianbu-security -g bianbu-security "${manifest_stage}"
-for manifest_file in manifest.toml manifest.toml.sig pubkey.hex; do
-  run_as_root install -m 0640 -o bianbu-security -g bianbu-security \
-    "${manifest_package}/${manifest_file}" "${manifest_stage}/${manifest_file}"
-done
-run_as_root env \
-  BIANBU_SEC_SESSION="${BIANBU_SEC_SESSION}" \
-  BIANBU_SECURITY_CLIENT_DIR="${BIANBU_SECURITY_CLIENT_DIR:-}" \
-  "${project_root}/debian/reset-security-binding.py" "${BIANBU_RUNTIME_SECURITY_ID}" source-run
-run_as_root env \
-  BIANBU_SEC_SESSION="${BIANBU_SEC_SESSION}" \
-  BIANBU_SECURITY_CLIENT_DIR="${BIANBU_SECURITY_CLIENT_DIR:-}" \
-  BIANBU_SECURITY_TEST_ADMIN="${BIANBU_SECURITY_TEST_ADMIN}" \
-  "${project_root}/debian/register-security-manifest.py" "${manifest_stage}" \
-  --expected-agent-id "${BIANBU_RUNTIME_SECURITY_ID}"
-
-# ── 5. 让出端口：停掉打包实例与同一数据目录下的残留实例 ─────────────────────
+# ── 4. 让出端口：停掉打包实例与同一数据目录下的残留实例 ─────────────────────
 runtime_instance="${BIANBU_INSTALLED_RUNTIME_UNIT:-bianbu-agent-runtime.service}"
 if systemctl is-active --quiet "${runtime_instance}" 2>/dev/null; then
   echo "停止占用源码 Runtime 端口的已安装系统服务：${runtime_instance}" >&2
@@ -151,6 +133,6 @@ uv run --locked --no-dev python \
   "${project_root}/scripts/stop-development-runtime.py" \
   --config "${config_path}" --timeout 3
 
-# ── 6. 启动 ───────────────────────────────────────────────────────────────
+# ── 5. 启动 ───────────────────────────────────────────────────────────────
 exec uv run --locked --no-dev bianbu-agent \
   --config "${config_path}" "$@"

@@ -146,3 +146,36 @@ def test_rejects_malformed_json_and_non_object_documents(tmp_path: Path) -> None
         load_mcp_config(malformed, workspace=tmp_path)
     with pytest.raises(ValueError, match="mcp.json must contain an object"):
         load_mcp_config(array, workspace=tmp_path)
+
+
+def test_accepts_the_supported_schema_version(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path / "mcp.json",
+        {
+            "schema_version": 1,
+            "display_name": "Versioned",
+            "transport": "stdio",
+            "command": "server",
+        },
+    )
+
+    config = load_mcp_config(path, workspace=tmp_path)
+
+    assert config.display_name == "Versioned"
+
+
+@pytest.mark.parametrize("schema_version", [0, 2, "1", None])
+def test_rejects_unknown_schema_versions(tmp_path: Path, schema_version: object) -> None:
+    """A future document must fail loudly instead of being half-read."""
+    path = _write(
+        tmp_path / "mcp.json",
+        {
+            "schema_version": schema_version,
+            "display_name": "Versioned",
+            "transport": "stdio",
+            "command": "server",
+        },
+    )
+
+    with pytest.raises(ValueError, match="unsupported_schema_version"):
+        load_mcp_config(path, workspace=tmp_path)

@@ -236,6 +236,38 @@ async def test_unusable_projection_is_dropped_and_the_log_still_answers(
 
 
 @pytest.mark.asyncio
+async def test_deleting_a_session_survives_a_directory_the_session_store_removed(
+    tmp_path: Path,
+) -> None:
+    """The Session store owns the directory and may delete it before the runs.
+
+    A Run that is still winding down has rows sitting in the write-behind queue.
+    Deleting the Session has to drop them rather than append to a transcript
+    that is already gone: the append used to raise and the DELETE answered 500,
+    with the directory recreated by the write it could not complete.
+    """
+
+    root = tmp_path / "sessions"
+    store = SessionLogStore(root, write_batch_max_delay=60)
+    await store.open()
+    await store.start("run-a", "session-a", {"prompt": "hi"})
+    await store.finish(
+        "run-a",
+        RunResult(request_id="run-a", status="completed", content="done"),
+    )
+    await store.flush_session("session-a")
+    assert store.durable_events("session-a") > 0
+    assert (root / "session-a" / "session.jsonl.zstd").is_file()
+
+    await store.start("run-b", "session-a", {"prompt": "again"})
+    shutil.rmtree(root / "session-a")
+
+    assert await store.delete_session("session-a") == 2
+    assert not (root / "session-a").exists()
+    await store.close()
+
+
+@pytest.mark.asyncio
 async def test_deleting_a_session_drops_its_projection(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     await _one_session(root)
@@ -373,6 +405,7 @@ async def test_list_row_says_blank_and_when_the_session_was_prompted(
     assert store.list_metadata("session-a") == {
         "blank": True,
         "last_prompt_at": None,
+        "title": "",
         "as_of_seq": None,
     }
     await store.start("run-a", "session-a", {"prompt": "hi"})
@@ -415,3 +448,48 @@ async def test_console_operations_never_count_as_user_prompts(tmp_path: Path) ->
     assert row["blank"] is True
     assert row["last_prompt_at"] is None
     await store.close()
+
+
+@pytest.mark.asyncio
+async def test_title_and_its_route_survive_a_restart(tmp_path: Path) -> None:
+    """Title work is log-only, but it must remain readable after a cold start."""
+
+    root = tmp_path / "sessions"
+    store = SessionLogStore(root, write_batch_max_delay=60)
+    await store.open()
+    await store.append_title_request(
+        "session-a",
+        {"system": "instructions", "input": "picked message"},
+        request_id="request-a",
+    )
+    await store.append_title_route(
+        "session-a",
+        {"provider": "p", "model": "m"},
+        request_id="request-a",
+    )
+    await store.append_title(
+        "session-a",
+        "cold title",
+        message_seqs=(0,),
+        source_kind="provider",
+        durable=True,
+        request_id="request-a",
+    )
+    await store.close()
+
+    reopened = SessionLogStore(root)
+    await reopened.open()
+    try:
+        assert await reopened.read_title("session-a") == "cold title"
+        events = await reopened.read_session_events("session-a")
+        assert [event.type for event in events] == [
+            "session/title/request",
+            "session/title/route",
+            "session/title",
+        ]
+        assert events[0].data["request_id"] == "request-a"
+        assert events[1].data["route"] == {"provider": "p", "model": "m"}
+        assert events[1].data["request_id"] == "request-a"
+        assert events[2].data["request_id"] == "request-a"
+    finally:
+        await reopened.close()

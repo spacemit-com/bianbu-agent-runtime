@@ -42,8 +42,12 @@ def test_skill_text_uses_securityd_offsets_and_masks_only_mask_findings(monkeypa
     result = skill_dlp.scan_skill_text(
         "com.test", "guide", "秘钥 13812345678 邮箱 a@example.test")
 
+    import re
+
     assert "13812345678" not in result
-    assert "[PII-phone-001]" in result
+    assert "PII" not in result
+    # A natural, format-valid phone stand-in; not a visible marker.
+    assert re.search(r"1[3-9]\d{9}", result)
     assert "a@example.test" in result
 
 

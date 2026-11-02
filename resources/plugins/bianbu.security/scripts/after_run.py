@@ -25,6 +25,8 @@ async def after_run(run: dict) -> dict | None:
     text = str(run["metadata"].get("output") or run["metadata"].get("response") or "")
 
     payload = {"stage": "output"}
+    denial = None
+    user_visible_text = None
     if text:
         try:
             result = await bridge.invoke(
@@ -34,25 +36,59 @@ async def after_run(run: dict) -> dict | None:
             meta = dict(result.metadata or {})
             meta.pop("_handler_trace", None)
             payload.update(meta)
-            if result.modified_data is not None:
+            if result.decision.value == "BLOCK":
+                denial = SecurityDenied(
+                    tool="<run>", capability="output.scan",
+                    reason=result.message or "最终输出含受限敏感信息",
+                )
+            elif result.modified_data is not None:
                 payload["dlp_final_output"] = result.modified_data
+            # The user is entitled to see their own values.  securityd has just
+            # restored this session's stand-ins and re-scanned the result, so
+            # hand that governed text to the Runtime as the user-visible body.
+            # Raw stream deltas may still contain stand-ins; the terminal value
+            # is what the console renders once the Run finishes.
+            governed = (
+                result.modified_data
+                if result.modified_data is not None else text
+            )
+            if governed != text:
+                user_visible_text = str(governed)
+        except PermissionError as exc:
+            denial = exc
         except Exception:  # noqa: BLE001
             pass
 
-    # session 结束 → 清零 PII 映射表（含明文，只在内存）
+    # A Run ends on every user turn, but the Session's stand-in map must
+    # survive so the next turn can still restore an earlier stand-in.  Only an
+    # explicit Session termination clears it; report the retained state here.
     try:
         shutdown = await bridge.invoke(
             bridge.hook_point("agent_shutdown"), agent_id,
             {"exit_reason": "run_complete"}, session_id=run["session_id"])
-        payload["pii_cleared"] = (shutdown.metadata or {}).get(
-            "pii_mappings_cleared", 0)
+        payload["pii_mappings_retained"] = bool(
+            (shutdown.metadata or {}).get("pii_mappings_retained", True))
     except Exception:  # noqa: BLE001
         pass
 
-    return dict(metadata={"securityd": payload})
+    # The shutdown probe still runs when the output is vetoed so a future
+    # explicit Session close has an up-to-date view of the map.
+    if denial is not None:
+        raise denial
+    response = dict(metadata={"securityd": payload})
+    if user_visible_text is not None:
+        response["user_visible_text"] = user_visible_text
+    return response
+
+
+def _warmup():
+    _bootstrap()
+    from lib import warm_bridge
+
+    warm_bridge()
 
 
 if __name__ == "__main__":
     from protocol import main
 
-    main(after_run)
+    main(after_run, warmup=_warmup)

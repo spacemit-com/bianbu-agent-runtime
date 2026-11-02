@@ -6,7 +6,7 @@
 也不再从参数里提取 scope。
 
 `resolve_capability` 保留 (tool, scope) 的返回形状供既有调用方使用；scope 恒为
-空。未识别的工具返回 None，由调用方按 unmapped_policy() 处置（默认 allow）。
+空。未识别的工具返回 None，由调用方按 unmapped_policy() 处置（默认 ask）。
 
 返回 capability 为空字符串表示显式免判权仍受支持：某些纯交互工具（如
 `clarify`）不需要策略门。
@@ -22,8 +22,8 @@ __all__ = ["resolve_capability", "unmapped_policy", "unmapped_decision",
            "UNMAPPED_CAPABILITY", "BUILTIN_MAP"]
 
 # 未映射工具的处置策略以 securityd 权威字典为准。
-# 默认 allow：与工具目录的默认值一致，未声明的工具也直接放行。需要收紧时
-# 用 BIANBU_SECURITY_UNMAPPED=ask|deny，生产模式下该覆盖被忽略。
+# 默认 ask：不认识就交给人确认，绝不静默放行。需要放开时用
+# BIANBU_SECURITY_UNMAPPED=allow（仅开发期有效，生产模式下该覆盖被忽略）。
 UNMAPPED_CAPABILITY = "*"
 
 # 兼容旧导入名；新模型不再使用独立的能力映射表。
@@ -42,15 +42,16 @@ def _unmapped_from_securityd():
 
 
 _UNMAPPED_POLICIES = ("allow", "ask", "deny")
-_UNMAPPED_DEFAULT = "allow"
+_UNMAPPED_DEFAULT = "ask"
 
 
 def unmapped_policy() -> str:
-    """未映射工具的默认策略：allow | ask | deny（默认 allow）。
+    """未映射工具的默认策略：allow | ask | deny（默认 ask）。
 
     与 securityd 的权威实现 `capabilities.unmapped_policy()` 保持一致：生产
     模式下环境变量覆盖被忽略，一律使用目录默认值——`BIANBU_SECURITY_UNMAPPED`
-    只是开发期的调试开关，不能成为生产环境放宽新工具判权的后门。
+    只是开发期的调试开关，不能成为生产环境放宽新工具判权的后门。securityd
+    不可导入时（插件单测/sidecar 缺失）回落到同一默认值：不认识就交给人确认。
     """
     shared = _unmapped_from_securityd()
     if shared is not None:

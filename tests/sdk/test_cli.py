@@ -644,7 +644,11 @@ async def test_runtime_cli_agent_create_persists_structured_provider_and_model(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["id"].startswith("com.bianbu.")
-    assert payload["model"] == {"provider": "openrouter", "name": "qwen/qwen3"}
+    assert payload["model"] == {
+        "provider": "openrouter",
+        "name": "qwen/qwen3",
+        "effort": "low",
+    }
     assert "hooks" not in payload, "Hooks belong to Plugins, not to the Agent contract"
     stored = AgentManifest.from_path(home.agents_dir / payload["id"] / "agent.yaml")
     assert stored.spec.model == AgentModel("openrouter", "qwen/qwen3")
@@ -667,3 +671,38 @@ def test_runtime_cli_agent_create_requires_provider_and_model_pair() -> None:
                 "qwen/qwen3",
             ]
         )
+
+
+@pytest.mark.asyncio
+async def test_runtime_cli_agent_create_persists_selected_effort(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--effort`` is stored in the Agent declaration like the model pair."""
+
+    config_path, home = _config(tmp_path)
+
+    assert await main_async(
+        [
+            "--config",
+            str(config_path),
+            "agent",
+            "create",
+            "Thinker",
+            "--provider",
+            "deepseek",
+            "--model",
+            "deepseek-flash",
+            "--effort",
+            "max",
+        ]
+    ) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["model"] == {
+        "provider": "deepseek",
+        "name": "deepseek-flash",
+        "effort": "max",
+    }
+    stored = AgentManifest.from_path(home.agents_dir / payload["id"] / "agent.yaml")
+    assert stored.spec.model == AgentModel("deepseek", "deepseek-flash", "max")

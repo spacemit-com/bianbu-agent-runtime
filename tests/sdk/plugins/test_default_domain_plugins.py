@@ -55,7 +55,6 @@ async def test_default_domain_plugins_capture_members_without_bibit_console(
         assert set(generation.plugins) == {
             "bianbu.memory",
             "bianbu.security",
-            "bianbu.audit",
             "bianbu.bibit.intent",
         }
         # Memory Tools now arrive through the plugin's MCP server, so the

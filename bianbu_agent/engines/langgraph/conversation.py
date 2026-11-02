@@ -35,6 +35,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
+from bianbu_agent.engines.names import encode_tool_name
 from bianbu_agent.sessions.events import SessionEvent
 
 #: Events that carry no model-visible message content.
@@ -43,7 +44,6 @@ _IGNORED_TYPES = frozenset(
         "agent/inbox/claimed",
         "agent/inbox/spliced",
         "agent/input.applied",
-        "assistant/reasoning.delta",
         "context/compressed",
         "hook/invoked",
         "hook/result",
@@ -55,6 +55,9 @@ _IGNORED_TYPES = frozenset(
         "run/progress",
     }
 )
+
+#: The provider's key for the reasoning that preceded an assistant turn.
+_REASONING_KEY = "reasoning_content"
 
 #: The synthetic result a tool call gets when its Run ended before it finished.
 _UNFINISHED_TOOL_RESULT = (
@@ -88,6 +91,8 @@ def fold_messages(
             messages.append(_human_message(event, data, input_id_for_run))
         elif event_type == "assistant/text.delta":
             open_ai.add_text(str(data.get("text") or ""))
+        elif event_type == "assistant/reasoning.delta":
+            open_ai.add_reasoning(str(data.get("text") or ""))
         elif event_type == "assistant/message.end":
             if not data.get("has_tool_calls"):
                 open_ai.flush(messages)
@@ -111,11 +116,24 @@ def fold_messages(
 class _OpenAssistant:
     """The assistant message currently being assembled, not yet in the list."""
 
-    __slots__ = ("_text", "_tool_calls")
+    __slots__ = ("_text", "_tool_calls", "_reasoning")
 
     def __init__(self) -> None:
         self._text: list[str] = []
         self._tool_calls: list[dict[str, Any]] = []
+        self._reasoning: list[str] = []
+
+    def add_reasoning(self, text: str) -> None:
+        """Accumulate the reasoning that belongs to the turn being assembled.
+
+        Providers that think in a separate channel require an assistant turn to
+        carry its reasoning back on any tool-enabled request, so the fold keeps
+        it instead of dropping it as bookkeeping.  It is not message content:
+        reasoning with no text and no tool call stays out of the history.
+        """
+
+        if text:
+            self._reasoning.append(text)
 
     def add_text(self, text: str) -> None:
         if not text:
@@ -124,6 +142,7 @@ class _OpenAssistant:
             # Text after tool calls opens the next assistant turn.
             self._text = []
             self._tool_calls = []
+            self._reasoning = []
         self._text.append(text)
 
     def add_tool_call(self, data: Mapping[str, object]) -> None:
@@ -134,7 +153,12 @@ class _OpenAssistant:
         arguments = data.get("arguments")
         self._tool_calls.append(
             {
-                "name": name,
+                # The transcript stores the canonical SDK tool id so the console
+                # and audit can show it, but the provider only ever saw the
+                # encoded name bound to the tool.  Replaying the raw id made the
+                # model copy a name LangChain rejects ("not a valid tool") and
+                # OpenAI-compatible endpoints refuse, so encode it again here.
+                "name": encode_tool_name(name),
                 "args": dict(arguments) if isinstance(arguments, Mapping) else {},
                 "id": call_id,
                 "type": "tool_call",
@@ -143,13 +167,23 @@ class _OpenAssistant:
 
     def flush(self, messages: list[BaseMessage]) -> None:
         text = "".join(self._text)
+        reasoning = "".join(self._reasoning)
         if not text and not self._tool_calls:
+            # Reasoning alone is not a message: a turn that produced no text and
+            # no tool call has nothing to continue from.
+            self._reasoning = []
             return
+        additional = {_REASONING_KEY: reasoning} if reasoning else {}
         messages.append(
-            AIMessage(content=text, tool_calls=list(self._tool_calls))
+            AIMessage(
+                content=text,
+                tool_calls=list(self._tool_calls),
+                additional_kwargs=additional,
+            )
         )
         self._text = []
         self._tool_calls = []
+        self._reasoning = []
 
 
 def _human_message(
@@ -185,7 +219,7 @@ def _tool_message(
     return ToolMessage(
         content=content,
         tool_call_id=str(data.get("call_id") or ""),
-        name=str(data.get("name") or "") or None,
+        name=encode_tool_name(str(data.get("name") or "")) if data.get("name") else None,
         status="error" if selected == "error" else "success",
     )
 

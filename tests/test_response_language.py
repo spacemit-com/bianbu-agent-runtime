@@ -37,7 +37,7 @@ class _RecordingModel(FakeMessagesListChatModel):
 def _capture_system_prompt(monkeypatch, agent: AgentSpec, generation) -> str:
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        "bianbu_agent.engines.default.build_plugin_tools",
+        "bianbu_agent.engines.langgraph.build_plugin_tools",
         lambda *args, **kwargs: [],
     )
     monkeypatch.setattr(
@@ -50,7 +50,7 @@ def _capture_system_prompt(monkeypatch, agent: AgentSpec, generation) -> str:
         return object()
 
     monkeypatch.setattr(
-        "bianbu_agent.engines.default.build_langgraph_agent", capture_graph
+        "bianbu_agent.engines.langgraph.build_langgraph_agent", capture_graph
     )
     build_default_engine(agent, generation, object())
     return str(captured["system_prompt"])

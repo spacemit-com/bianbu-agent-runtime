@@ -1,0 +1,50 @@
+# System-wide Bianbu Agent configuration. Do not store secrets here.
+data_dir: ~/.bianbu-agent
+
+# Agent template provisioned as the device's starter Expert. It names an
+# ``agent.id`` under resources/agents/; omit it to use BibitEdgeAssistant.
+initial_agent: com.bianbu.627d97ad908c
+
+service:
+  title: Bianbu Agent
+  host: 0.0.0.0
+  port: 9899
+
+language: zh
+require_file_backed_capabilities: true
+plugin_stop_timeout_seconds: 5.0
+allow_unmanaged_capabilities: false
+
+# Capabilities every Agent receives whatever its own selectors say.  Experts
+# cannot turn them off, so a package that declares no Tools still reaches the
+# APM handbook and the file/process Tools it needs to install its own Powers.
+# Only entries this device ships are materialized.
+presets:
+  tools: [skills_list, skill_view, skill_manage, terminal, process, read_file, write_file, search_files, patch]
+  skills: [using-apm]
+
+# Installed Security Runtime boundary.  ``securityd_home`` is intentionally
+# omitted from the production profile; source checkouts may set it only for
+# development compatibility.
+security:
+  required: true
+  securityd_uds: /run/bianbu/securityd.sock
+  client_dir: /usr/lib/bianbu-securityd/client
+
+runtime:
+  control:
+    # Worker activation includes MCP discovery and health verification. On K3
+    # a cold import of Bibit's 131-tool catalog can exceed 30 seconds, so the
+    # handshake is the timeout that bounds a cold start.
+    handshake_timeout_seconds: 60
+    heartbeat_interval_seconds: 5
+    heartbeat_timeout_seconds: 15
+    restart_policy:
+      enabled: true
+      max_restarts: 5
+      backoff_seconds: [1, 2, 5, 10, 30]
+  worker:
+    # Security Runtime replaces /home/agent/config.yaml with the host path
+    # for host mode and keeps it canonical inside bwrap for sandbox mode.
+    entrypoint: [/usr/bin/bianbu-agent-runtime, --role, agent-worker, --config, /home/agent/config.yaml, worker]
+    max_concurrent_runs: 4

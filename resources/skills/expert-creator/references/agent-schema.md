@@ -17,6 +17,7 @@ agent:
   model:
     provider: deepseek
     name: deepseek-flash
+    effort: low
   tools: []
   skills: []
   mcps: []
@@ -30,7 +31,8 @@ Required fields are `id`, `version`, and `name`. `name` is the call name; `name_
 `name_en`, `description_zh` are the display fields a client shows for its own
 language, and every new record is written as `schema_version: 2` (version 1 is still
 read, never written). A runnable expert also needs a model mapping with non-empty
-`provider` and `name`. Version is semantic `major.minor.patch`
+`provider` and `name`. `effort` is the reasoning intensity and accepts `off`, `low`,
+`high`, or `max`; when omitted it defaults to `low`. Version is semantic `major.minor.patch`
 with an optional `v` prefix.
 
 Selectors contain live catalog IDs. Empty means none. A single `"*"` selects every
@@ -41,10 +43,10 @@ under `plugins` is still the canonical form: it is what the Console shows, and i
 activates the Plugin's Hooks.
 
 A declared Skill, MCP server or Plugin the device has not installed is a gap, not a
-failure: the Runtime reports it in the expert's `## Power Dependencies` context and the
-expert closes it through the bundled `using-apm` handbook. Declared `tools` are still
-validated strictly, because they bound what the model may call. Every expert receives
-`using-apm` whether or not it selects it.
+failure: the declaration's verification reports it, and the expert closes it through
+the bundled `using-apm` handbook. Declared `tools` are still validated strictly,
+because they bound what the model may call. Every expert receives `using-apm`
+whether or not it selects it.
 
 Hooks are Plugin members, not an Agent field: selecting the Plugin that provides a
 Hook activates it, so there is no `hooks` selector. A Plugin still provides its Hooks

@@ -202,6 +202,7 @@ class ContextCompressionMiddleware(AgentMiddleware):
                 **metadata,
                 "compressed": True,
                 "compression_id": result.marker_id,
+                "summary": str(marker.content)[:8000],
             },
         )
         return {
@@ -252,6 +253,7 @@ class ContextCompressionMiddleware(AgentMiddleware):
                 **metadata,
                 "compressed": True,
                 "compression_id": result.marker_id,
+                "summary": str(marker.content)[:8000],
             }
         )
         return list(result.messages)

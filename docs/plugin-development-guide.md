@@ -55,6 +55,32 @@ Hook 脚本读取 JSON 的 `account_id` 和 `agent_id`；直接贡献的 Tool ha
 
 Hook 配置、`RUNTIME_PYTHON`、权限、取消和私有内存 `state` 见命令 Hook 协议。
 
+### 常驻模式
+
+命令 Hook 的 `hook.json` 可以声明 `"mode"`：
+
+```json
+{
+  "type": "command",
+  "command": "exec \"${RUNTIME_PYTHON}\" \"$PLUGIN_ROOT/scripts/before_run.py\"",
+  "timeout": 10,
+  "mode": "resident"
+}
+```
+
+- `oneshot`（缺省）：每次调用启动一个进程，协议是一帧 stdin、一帧 stdout、退出。
+- `resident`：进程只启动一次，之后每行 stdin 一帧请求、每行 stdout 一帧响应。
+  解释器启动和模块 import 只付一次，适合业务只有几毫秒、但 import 要几百毫秒的
+  Hook。仓库内置插件全部使用该模式。
+
+协议本身不变，仍然是 `schema_version: 1` 的 JSON。脚本通过
+`BIANBU_HOOK_RESIDENT=1` 判断是否进入循环；Runtime 在 stdin EOF 时视为关闭信号，
+随后才升级为 `SIGTERM`/`SIGKILL` 清理整个进程组。
+
+常驻进程绑定它所来自的 `PluginGeneration` 和内容摘要：插件内容一变就是新一代，
+旧代退休时连同其常驻进程一起停止，因此不存在“进程里还跑着旧代码”的情况。
+Hook 的 stdout 超过 1 MiB、超时或进程退出都会使该进程作废，下一次调用重新拉起。
+
 ## 成员加载
 
 Tool、Skill 与 MCP 由宿主加载；Hook 在 Worker 的外部子进程运行并继承其安全边界。

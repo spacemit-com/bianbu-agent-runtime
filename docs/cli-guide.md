@@ -52,7 +52,7 @@ data_dir: .
 
 ```bash
 bianbu-agent agent list
-bianbu-agent agent create Writer --provider my-provider --model my-model
+bianbu-agent agent create Writer --provider my-provider --model my-model --effort low
 bianbu-agent agent show com.bianbu.实际ID
 bianbu-agent agent verify com.bianbu.实际ID
 bianbu-agent agent remove com.bianbu.实际ID
@@ -60,7 +60,9 @@ bianbu-agent agent remove com.bianbu.实际ID
 
 `create` 将模型选择写入 `agents/<ID>/agent.yaml`，生成 `com.bianbu.` 加十二位随机十六进制字符的 ID。
 以返回的 ID 执行后续命令。可以重复传入 `--tool`、`--skill`、`--mcp`、`--plugin` 声明资源引用；
+`remove` 会先注销 securityd 中的 Agent 身份，注销失败时不删除本地声明。
 Hook 属于 Plugin，不需要也不可能在 Agent 上单独声明。
+`--effort` 取值为 `off`、`low`、`high`、`max`，省略时为 `low`。
 创建不调用模型、不启动专家。单个专家的查询和校验只检查该专家的文件，不执行旧数据迁移或预先扫描全部专家。
 
 ### Skill 与 Plugin
@@ -175,7 +177,7 @@ bianbu-agent model remove local
 `bootstrap-chat` 在终端交互填写 Provider ID、Base URL 和 API Key，并保存到模型目录。
 它不探测模型服务；已配置 Provider 时立即退出，非交互终端返回错误。
 `create/show/list/remove` 操作模型 YAML 文件，输出隐藏凭据；本地 Provider 主机白名单校验继续生效。
-Agent 使用的具体模型选择仍由 `agent create --provider ... --model ...` 写入专家声明。
+Agent 使用的具体模型选择仍由 `agent create --provider ... --model ... --effort ...` 写入专家声明。
 
 ### Session
 

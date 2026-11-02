@@ -19,17 +19,20 @@ def layers(tmp_path, monkeypatch):
 
 def test_packaged_plugin_loads_without_copy_and_user_override_wins(layers):
     system, home = layers
-    source = Path(__file__).resolve().parents[2] / 'resources/plugins/bianbu.audit'
-    packaged = system / 'plugins/bianbu.audit'
+    source = Path(__file__).resolve().parents[2] / 'resources/plugins/bianbu.security'
+    packaged = system / 'plugins/bianbu.security'
     shutil.copytree(source, packaged)
     manager = PluginInstaller(home)
-    assert manager.inspect('bianbu.audit').id == 'bianbu.audit'
-    assert not (home.plugins_dir / 'bianbu.audit').exists()
-    assert manager.with_open_member('bianbu.audit/audit.after_run', lambda path, _: (path / 'hook.json').is_file())
+    assert manager.inspect('bianbu.security').id == 'bianbu.security'
+    assert not (home.plugins_dir / 'bianbu.security').exists()
+    assert manager.with_open_member(
+        'bianbu.security/security.before_tool',
+        lambda path, _: (path / 'hook.json').is_file(),
+    )
     manager.install(packaged)
-    assert manager.package_root('bianbu.audit') == home.plugins_dir / 'bianbu.audit'
+    assert manager.package_root('bianbu.security') == home.plugins_dir / 'bianbu.security'
     with pytest.raises(ValueError, match='system Plugin'):
-        manager.uninstall('bianbu.audit')
+        manager.uninstall('bianbu.security')
     assert not (system / '.capability.lock').exists()
 
 

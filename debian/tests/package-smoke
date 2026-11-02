@@ -10,8 +10,6 @@ test ! -e /usr/bin/bianbu-agent-launcher
 test ! -e /usr/lib/bianbu-agent-runtime/desktop-launcher.py
 test -r /usr/lib/bianbu-agent-runtime/retired-bianbu-agent.desktop
 test -x /usr/lib/bianbu-agent-runtime/provision-user.py
-test -x /usr/lib/bianbu-agent-runtime/register-security-manifest.py
-test -x /usr/lib/bianbu-agent-runtime/reset-security-binding.py
 test -x /usr/lib/bianbu-agent-runtime/runtime-admin-token.py
 test -x /usr/bin/bianbu-agent-runtime-token
 test -r /etc/bianbu-agent/runtime.env
@@ -53,17 +51,15 @@ grep -qx 'ExecStartPre=+/usr/bin/install -d -m 2770 -o root -g bianbu /run/bianb
 grep -qx 'ExecStartPre=+/usr/bin/install -d -m 2770 -o root -g bianbu-agent /run/bianbu/agent-runtime/memory-registry' "$unit"
 ! grep -q '^ReadWritePaths=' "$unit"
 ! grep -q '/opt/bibit-intent' "$unit"
-test -r /usr/share/bianbu-agent-runtime/default-profile/config.yaml
+test -r /usr/share/bianbu-agent-runtime/config.yaml
 test -r /usr/share/bianbu-agent-runtime/plugins/bianbu.bibit.intent/mcps/bibit-readonly/mcp.json
 test -r /usr/share/bianbu-agent-runtime/plugins/bianbu.bibit.intent/mcps/bibit-control/mcp.json
 test -r /usr/share/bianbu-agent-runtime/plugins/bianbu.bibit.intent/mcps/bibit-admin/mcp.json
 test ! -e /usr/share/bianbu-agent-runtime/plugins/bianbu.bibit.intent/mcps/bibit-intent
 test ! -e /usr/share/bianbu-agent-runtime/mcps/bibit-intent
-test -r /usr/share/bianbu-agent-runtime/security-manifest/com.bianbu.runtime/manifest.toml
-test -r /usr/share/bianbu-agent-runtime/security-manifest/com.bianbu.runtime/manifest.toml.sig
-test -r /usr/share/bianbu-agent-runtime/security-manifest/com.bianbu.runtime/pubkey.hex
+test ! -e /usr/share/bianbu-agent-runtime/security-manifest
 test -r /usr/share/bianbu-agent-runtime/models/custom-bibit/provider.yaml
-test ! -e /usr/share/bianbu-agent-runtime/default-profile/tools/read_file/tool.py
+test ! -e /usr/share/bianbu-agent-runtime/default-profile
 test -d /usr/share/bianbu-agent-runtime/plugins/bianbu.bibit.intent
 test -r /usr/share/bianbu-agent-runtime/plugins/bianbu.bibit.intent/plugin.yaml
 test ! -e /usr/share/bianbu-agent-runtime/plugins/bianbu.bibit.intent/tools/intent_classify
@@ -88,9 +84,8 @@ trap cleanup EXIT HUP INT TERM
 
 python=/usr/lib/bianbu-agent-runtime/venv/bin/python
 resources=/usr/share/bianbu-agent-runtime
-profile="$resources/default-profile"
 HOME="$test_home" "$python" /usr/lib/bianbu-agent-runtime/provision-user.py \
-    --profile "$profile" --home "$test_home" --uid 1000 >"$test_home/provision.json"
+    --resource-root "$resources" --home "$test_home" --uid 1000 >"$test_home/provision.json"
 grep -q '"updated": true' "$test_home/provision.json"
 config=$test_home/.bianbu-agent/config.yaml
 starter_agent_id=$("$python" -c '
@@ -104,7 +99,7 @@ esac
 starter_agent="$test_home/.bianbu-agent/agents/$starter_agent_id/agent.yaml"
 test -r "$config"
 test ! -e "$starter_agent"
-starter_agent="$profile/starter-agent.yaml"
+starter_agent="$resources/agents/com.bianbu.627d97ad908c/agent.yaml"
 test ! -e "$test_home/.bianbu-agent/tools"
 "$python" -c "from bianbu_agent.tools.builtins import builtin_source; assert builtin_source('read_file').is_file()"
 test ! -e "$test_home/.bianbu-agent/plugins/bianbu.memory/plugin.yaml"
@@ -118,7 +113,7 @@ printf '%s\n' keep >"$test_home/.bianbu-agent/sessions/preserve-smoke/session.js
 printf '%s\n' '{"transport":"stdio","command":"/bin/true"}' \
     >"$test_home/.bianbu-agent/mcps/user-owned/mcp.json"
 HOME="$test_home" "$python" /usr/lib/bianbu-agent-runtime/provision-user.py \
-    --profile "$profile" --home "$test_home" --uid 1000 >"$test_home/reprovision.json"
+    --resource-root "$resources" --home "$test_home" --uid 1000 >"$test_home/reprovision.json"
 test -r "$test_home/.bianbu-agent/sessions/preserve-smoke/session.json"
 test -r "$test_home/.bianbu-agent/mcps/user-owned/mcp.json"
 rm -rf "$test_home/.bianbu-agent/mcps/user-owned"

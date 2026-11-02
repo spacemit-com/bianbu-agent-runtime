@@ -23,6 +23,12 @@ class RunControl:
     step_input_admission_open: bool = True
     _control_gate: asyncio.Lock = field(default_factory=asyncio.Lock)
 
+    #: Private Session mapping of DLP stand-in -> original value.  Tools and
+    #: streamed text both pass through DLP, and ``after_tool`` runs inside the
+    #: engine rather than the Run loop; this field is how its newly assigned
+    #: stand-ins reach the stream restorer without entering public metadata.
+    dlp_stand_ins: dict[str, str] = field(default_factory=dict, repr=False)
+
     _model_deadline: asyncio.Timeout | None = field(default=None, repr=False)
     _model_timeout: float = field(default=0.0, repr=False)
     _model_deadline_pauses: int = 0

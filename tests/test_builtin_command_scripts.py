@@ -76,12 +76,6 @@ def test_intent_before_tool_reads_the_user_prompt_not_the_tool_id(tmp_path):
     assert allowed == {}
 
 
-def test_audit_script_persists_identity(tmp_path):
-    invoke('bianbu.audit', 'after_run', tmp_path, status='completed')
-    entry = json.loads((tmp_path / 'audit.jsonl').read_text())
-    assert entry == {'kind': 'run.completed', 'run_id': 'run', 'session_id': 'session', 'agent_id': 'agent'}
-
-
 def test_security_denial_is_structured_json(tmp_path):
     result = invoke('bianbu.security', 'before_tool', tmp_path, request='execute', metadata={'security_denied': True})
     assert result['decision'] == 'deny'
@@ -169,7 +163,19 @@ def test_security_private_state_survives_degraded_nonterminal_hook(tmp_path):
     assert 'private name' not in json.dumps(result.get('metadata', {}))
 
 
-def test_security_terminal_hook_clears_private_state(tmp_path):
+def test_security_run_end_keeps_private_state(tmp_path):
+    """A Run is one turn; its terminal Hook must not drop the Session map."""
+    state = {'pii_map': {'placeholder': 'private'}}
     for event, status in [('after_run', 'completed'), ('on_error', 'failed')]:
-        result = invoke('bianbu.security', event, tmp_path, status=status, state={'pii_map': {'placeholder': 'private'}})
+        result = invoke('bianbu.security', event, tmp_path, status=status, state=state)
+        assert result['state'] == state
+
+
+def test_security_session_end_clears_private_state(tmp_path):
+    for reason in ('session_closed', 'session_deleted', 'agent_removed'):
+        result = invoke(
+            'bianbu.security', 'after_run', tmp_path,
+            status='completed', state={'pii_map': {'placeholder': 'private'}},
+            exit_reason=reason,
+        )
         assert result['state'] == {}

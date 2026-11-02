@@ -11,6 +11,7 @@ import shlex
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 
+from bianbu_agent.mcp.authorization import MCPAuthorizer
 from bianbu_agent.mcp.client import MCPClient, MCPRemoteTool
 from bianbu_agent.mcp.config import (
     MCPServerConfig,
@@ -112,7 +113,6 @@ def _annotation_metadata(
 
 
 ClientFactory = Callable[[MCPServerConfig], MCPClient]
-MCPAuthorizer = Callable[[str, str], bool | Awaitable[bool]]
 _UNSAFE_NAME = re.compile(r"[^a-z0-9]+")
 
 
@@ -122,6 +122,7 @@ class MCPDirectoryPlugin:
         manifest: PluginManifest,
         *,
         root: Path,
+        source: Path | None = None,
         workspace: Path,
         mcp_id: str | None = None,
         owner_plugin_id: str | None = None,
@@ -132,7 +133,11 @@ class MCPDirectoryPlugin:
         self.manifest = manifest
         self._root = Path(root).expanduser().resolve()
         self._workspace = Path(workspace).expanduser().resolve()
-        self._source = (self._root / "mcp.json").resolve()
+        self._source = (
+            Path(source).expanduser().resolve()
+            if source is not None
+            else (self._root / "mcp.json").resolve()
+        )
         self._client_factory = client_factory
         self.mcp_id = str(mcp_id or manifest.id)
         self.runtime_id = manifest.id

@@ -35,7 +35,7 @@ from bianbu_agent.plugins.composition import (
 )
 from bianbu_agent.skills import DirectorySkillLoader
 from bianbu_agent.skills.versions import SkillVersions
-from bianbu_agent.mcp.plugin import MCPAuthorizer
+from bianbu_agent.mcp.authorization import MCPAuthorizer
 
 
 SnapshotProvider = Callable[[], InventorySnapshot | Awaitable[InventorySnapshot]]
@@ -425,6 +425,11 @@ class PluginManager:
                     skills = {}
                     sources = {key: source for key, source in catalog.sources.items()
                                if key[0] is not CapabilityKind.SKILL}
+                    private_owners = {
+                        key: owner
+                        for key, owner in catalog.private_owners.items()
+                        if key[0] is not CapabilityKind.SKILL
+                    }
                     for item in snapshot.items:
                         if item.source.kind is CapabilityKind.SKILL and item.enabled:
                             skill = DirectorySkillLoader().load(item.source.root)
@@ -432,9 +437,13 @@ class PluginManager:
                             sources[(CapabilityKind.SKILL, skill.spec.name)] = (
                                 CapabilityCatalogBuilder._source_from_skill(skill)
                             )
+                            owner = str(item.source.metadata.get("owner_agent_id") or "")
+                            if item.source.metadata.get("agent_private") and owner:
+                                private_owners[(CapabilityKind.SKILL, skill.spec.name)] = owner
                     candidate = replace(current, id=self._next_generation_id,
                                         capability_catalog=replace(catalog, skills=skills,
-                                                                   sources=sources))
+                                                                   sources=sources,
+                                                                   private_owners=private_owners))
                     candidate = self._skill_versions.freeze(candidate)
                     await self._begin_generation_candidate()
                     prepared = await self._prepare_generation_candidate(candidate)
@@ -621,10 +630,27 @@ class PluginManager:
                 if not overlay.enabled
             } | set(self._env_disabled_plugins)
             snapshot = self._apply_parent_enablement(snapshot, disabled_plugins)
-            catalog = CapabilityCatalogBuilder(
+            catalog_builder = CapabilityCatalogBuilder(
                 workspace_root=self._workspace_root,
                 tool_services=self._services,
-            ).build(snapshot)
+            )
+            prepared_catalog = catalog_builder.prepare(snapshot)
+            # Building the builtin Tool catalog is the CPU-heavy part of a
+            # Worker start and has no bearing on which MCP servers start, so
+            # run it while the MCP children handshake.
+            tool_catalog_task = asyncio.create_task(
+                asyncio.to_thread(catalog_builder.build_tools),
+                name="capability-tool-catalog",
+            )
+
+            async def resolve_catalog() -> CapabilityCatalog:
+                return catalog_builder.finish(
+                    prepared_catalog, await tool_catalog_task
+                )
+
+            catalog_task = asyncio.create_task(
+                resolve_catalog(), name="capability-catalog"
+            )
         except BaseException as exc:
             await self._abort_generation_candidate(primary=exc)
         registry = PluginRegistry()
@@ -712,13 +738,17 @@ class PluginManager:
             data_root=self._plugin_data_root,
             services=self._services,
             stop_timeout_seconds=self._stop_timeout_seconds,
-            capability_catalog=catalog,
+            capability_catalog=None,
             initial_generation_id=self._next_generation_id,
             generation_transform=self._skill_versions.freeze,
         )
         try:
-            generation = await host.start(configs, config_provenance)
+            generation = await host.start(
+                configs, config_provenance, pending_catalog=catalog_task
+            )
         except BaseException as exc:
+            catalog_task.cancel()
+            tool_catalog_task.cancel()
             await self._abort_generation_candidate(primary=exc)
         mcp_plugin_ids = {
             candidate.manifest.id

@@ -6,6 +6,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 
+from bianbu_agent.hooks.resident import CommandProcessPool
 from bianbu_agent.hooks.state import CommandSessionState
 
 
@@ -27,6 +28,9 @@ class HookLoadContext:
     services: Mapping[str, object] = field(default_factory=dict)
     config: Mapping[str, object] = field(default_factory=dict)
     command_state: CommandSessionState = field(default_factory=CommandSessionState)
+    #: Resident command Hooks live in the Plugin generation that declared
+    #: them, so the pool is closed when that generation stops.
+    command_processes: CommandProcessPool = field(default_factory=CommandProcessPool)
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -45,6 +49,8 @@ class HookLoadContext:
             _required_text(self.owner_plugin_id, "owner_plugin_id"),
         )
         object.__setattr__(self, "services", MappingProxyType(dict(self.services)))
+        if not isinstance(self.command_processes, CommandProcessPool):
+            raise TypeError("command_processes must be a CommandProcessPool")
         object.__setattr__(self, "config", MappingProxyType(dict(self.config)))
 
     @property

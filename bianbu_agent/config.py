@@ -26,6 +26,7 @@ _TOP_LEVEL_KEYS = frozenset(
     {
         "schema_version",
         "data_dir",
+        "initial_agent",
         "service",
         "language",
         "require_file_backed_capabilities",
@@ -40,12 +41,21 @@ _TOP_LEVEL_KEYS = frozenset(
 _SERVICE_KEYS = frozenset({"title", "host", "port"})
 _PRESET_KEYS = frozenset({"tools", "skills"})
 _RUNTIME_KEYS = frozenset({"control", "worker"})
-_CONTROL_RUNTIME_KEYS = frozenset({"execution", "worker_socket_root", "startup_timeout_seconds", "handshake_timeout_seconds", "heartbeat_interval_seconds", "heartbeat_timeout_seconds", "restart_policy"})
-_EXECUTION_KEYS = frozenset({"requested_mode"})
-_WORKER_KEYS = frozenset({"execution", "entrypoint", "startup_timeout_seconds", "max_concurrent_runs"})
+_CONTROL_RUNTIME_KEYS = frozenset({"worker_socket_root", "handshake_timeout_seconds", "heartbeat_interval_seconds", "heartbeat_timeout_seconds", "restart_policy"})
+_WORKER_KEYS = frozenset({"entrypoint", "max_concurrent_runs"})
 _RESTART_KEYS = frozenset({"enabled", "max_restarts", "backoff_seconds"})
+# Keys that used to exist and were never read by the process supervisor. They
+# stay rejected with an explanation instead of a bare "unknown key", so an
+# operator who kept the packaged template knows why it stopped loading.
+_RETIRED_RUNTIME_KEYS = {
+    ("runtime.control", "execution"): "the execution mode is derived by securityd",
+    ("runtime.control", "startup_timeout_seconds"): "use runtime.control.handshake_timeout_seconds",
+    ("runtime.worker", "execution"): "the execution mode is derived by securityd",
+    ("runtime.worker", "startup_timeout_seconds"): "use runtime.control.handshake_timeout_seconds",
+}
 _SECURITY_KEYS = frozenset({"required", "securityd_uds", "client_dir", "securityd_home"})
 _OPTIONAL_DEFAULTS: dict[str, Any] = {
+    "initial_agent": "BibitEdgeAssistant",
     "service": {},
     "language": "zh",
     "require_file_backed_capabilities": True,
@@ -91,16 +101,10 @@ plugins: {}
 
 runtime:
   control:
-    execution:
-      requested_mode: host
-    startup_timeout_seconds: 10
     handshake_timeout_seconds: 10
     heartbeat_interval_seconds: 5
     heartbeat_timeout_seconds: 15
   worker:
-    execution:
-      requested_mode: host
-    startup_timeout_seconds: 10
     # Leave unset to admit independent Sessions without a global Run cap.
     max_concurrent_runs: null
 """
@@ -116,23 +120,6 @@ class RuntimeServiceConfig:
         object.__setattr__(self, "title", _require_text(self.title, "service.title"))
         object.__setattr__(self, "host", _require_text(self.host, "service.host"))
         _require_port(self.port)
-
-
-@dataclass(frozen=True, slots=True)
-class RuntimeExecutionConfig:
-    """One security.runtime execution preference.
-
-    The value is deliberately only a preference.  The effective mode is
-    returned by securityd and is never inferred from this configuration.
-    """
-
-    requested_mode: str = "host"
-
-    def __post_init__(self) -> None:
-        value = _require_text(self.requested_mode, "requested_mode").lower()
-        if value not in {"sandbox", "host"}:
-            raise RuntimeConfigError("requested_mode must be one of: sandbox, host")
-        object.__setattr__(self, "requested_mode", value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,20 +146,16 @@ class RuntimeRestartConfig:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeControlConfig:
-    execution: RuntimeExecutionConfig = field(default_factory=lambda: RuntimeExecutionConfig("host"))
     worker_socket_root: str | Path | None = None
-    startup_timeout_seconds: float = 10.0
     handshake_timeout_seconds: float = 10.0
     heartbeat_interval_seconds: float = 5.0
     heartbeat_timeout_seconds: float = 15.0
     restart_policy: RuntimeRestartConfig = field(default_factory=RuntimeRestartConfig)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.execution, RuntimeExecutionConfig):
-            raise RuntimeConfigError("runtime.control.execution must be RuntimeExecutionConfig")
         if self.worker_socket_root is not None:
             object.__setattr__(self, "worker_socket_root", _resolve_path(self.worker_socket_root))
-        for name in ("startup_timeout_seconds", "handshake_timeout_seconds", "heartbeat_interval_seconds", "heartbeat_timeout_seconds"):
+        for name in ("handshake_timeout_seconds", "heartbeat_interval_seconds", "heartbeat_timeout_seconds"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or float(value) <= 0:
                 raise RuntimeConfigError(f"runtime.control.{name} must be positive and finite")
@@ -183,9 +166,7 @@ class RuntimeControlConfig:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeWorkerConfig:
-    execution: RuntimeExecutionConfig = field(default_factory=RuntimeExecutionConfig)
     entrypoint: tuple[str, ...] = ()
-    startup_timeout_seconds: float = 10.0
     max_concurrent_runs: int | None = None
 
     def __post_init__(self) -> None:
@@ -198,11 +179,6 @@ class RuntimeWorkerConfig:
         if any(not isinstance(value, str) or not value.strip() or "\x00" in value for value in raw_values):
             raise RuntimeConfigError("runtime.worker.entrypoint contains an invalid value")
         object.__setattr__(self, "entrypoint", tuple(value.strip() for value in raw_values))
-        if not isinstance(self.execution, RuntimeExecutionConfig):
-            raise RuntimeConfigError("runtime.worker.execution must be RuntimeExecutionConfig")
-        if isinstance(self.startup_timeout_seconds, bool) or not isinstance(self.startup_timeout_seconds, (int, float)) or not math.isfinite(float(self.startup_timeout_seconds)) or float(self.startup_timeout_seconds) <= 0:
-            raise RuntimeConfigError("runtime.worker.startup_timeout_seconds must be positive")
-        object.__setattr__(self, "startup_timeout_seconds", float(self.startup_timeout_seconds))
         if self.max_concurrent_runs is not None and (
             isinstance(self.max_concurrent_runs, bool)
             or not isinstance(self.max_concurrent_runs, int)
@@ -294,6 +270,7 @@ def _preset_selectors(value: object, field_name: str) -> tuple[str, ...]:
 class RuntimeConfig:
     data_dir: str | Path
     config_path: str | Path | None = None
+    initial_agent: str = "BibitEdgeAssistant"
     service: RuntimeServiceConfig = field(default_factory=RuntimeServiceConfig)
     plugin_dirs: tuple[str | Path, ...] = ()
     mcp_dirs: tuple[str | Path, ...] = ()
@@ -317,6 +294,9 @@ class RuntimeConfig:
             object.__setattr__(self, "config_path", _resolve_path(self.config_path))
         if not isinstance(self.service, RuntimeServiceConfig):
             raise RuntimeConfigError("service must be a RuntimeServiceConfig")
+        object.__setattr__(
+            self, "initial_agent", _require_text(self.initial_agent, "initial_agent")
+        )
         defaults = {
             "plugin_dirs": (data_dir / "plugins",),
             "mcp_dirs": (data_dir / "mcps",),
@@ -435,6 +415,9 @@ def _parse_document(document: dict[str, Any], path: Path) -> RuntimeConfig:
         raise RuntimeConfigError("service must be a mapping")
     _require_string_keys(service_value)
     _reject_unknown(service_value, _SERVICE_KEYS, "service")
+    initial_agent = values["initial_agent"]
+    if not isinstance(initial_agent, str) or not initial_agent.strip():
+        raise RuntimeConfigError("initial_agent must be a non-empty string")
     service = RuntimeServiceConfig(
         title=service_value.get("title", "Bianbu Agent"),
         host=service_value.get("host", "0.0.0.0"),
@@ -464,6 +447,7 @@ def _parse_document(document: dict[str, Any], path: Path) -> RuntimeConfig:
         config_path=path,
         schema_version=values.get("schema_version", 1),
         data_dir=_resolve_config_path(data_value, path.parent),
+        initial_agent=initial_agent.strip(),
         service=service,
         language=values["language"],
         require_file_backed_capabilities=values["require_file_backed_capabilities"],
@@ -515,14 +499,15 @@ def _parse_runtime(value: object, path: Path) -> RuntimeProcessConfig:
     worker_value = value.get("worker", {})
     if not isinstance(control_value, dict) or not isinstance(worker_value, dict):
         raise RuntimeConfigError("runtime.control and runtime.worker must be mappings")
+    for scope, section in (("runtime.control", control_value), ("runtime.worker", worker_value)):
+        retired = [key for key in _RETIRED_RUNTIME_KEYS if key[0] == scope and key[1] in section]
+        if retired:
+            reasons = "; ".join(
+                f"{key[1]}: {_RETIRED_RUNTIME_KEYS[key]}" for key in sorted(retired))
+            raise RuntimeConfigError(
+                f"{scope} declares removed key(s) ({reasons}); remove them from the config")
     _require_string_keys(control_value); _reject_unknown(control_value, _CONTROL_RUNTIME_KEYS, "runtime.control")
     _require_string_keys(worker_value); _reject_unknown(worker_value, _WORKER_KEYS, "runtime.worker")
-
-    def execution(raw: object, scope: str, default: str) -> RuntimeExecutionConfig:
-        if raw is None: raw = {}
-        if not isinstance(raw, dict): raise RuntimeConfigError(f"{scope}.execution must be a mapping")
-        _require_string_keys(raw); _reject_unknown(raw, _EXECUTION_KEYS, f"{scope}.execution")
-        return RuntimeExecutionConfig(raw.get("requested_mode", default))
 
     raw_restart = control_value.get("restart_policy", {})
     if not isinstance(raw_restart, dict): raise RuntimeConfigError("runtime.control.restart_policy must be a mapping")
@@ -536,9 +521,7 @@ def _parse_runtime(value: object, path: Path) -> RuntimeProcessConfig:
     if worker_socket_root is not None:
         worker_socket_root = _resolve_config_path(worker_socket_root, path.parent)
     control = RuntimeControlConfig(
-        execution=execution(control_value.get("execution"), "runtime.control", "host"),
         worker_socket_root=worker_socket_root,
-        startup_timeout_seconds=control_value.get("startup_timeout_seconds", 10),
         handshake_timeout_seconds=control_value.get("handshake_timeout_seconds", 10),
         heartbeat_interval_seconds=control_value.get("heartbeat_interval_seconds", 5),
         heartbeat_timeout_seconds=control_value.get("heartbeat_timeout_seconds", 15),
@@ -550,9 +533,7 @@ def _parse_runtime(value: object, path: Path) -> RuntimeProcessConfig:
     return RuntimeProcessConfig(
         control=control,
         worker=RuntimeWorkerConfig(
-            execution=execution(worker_value.get("execution"), "runtime.worker", "host"),
             entrypoint=tuple(entrypoint),
-            startup_timeout_seconds=worker_value.get("startup_timeout_seconds", 10),
             max_concurrent_runs=worker_value.get("max_concurrent_runs"),
         ),
     )
@@ -622,7 +603,6 @@ __all__ = [
     "RUNTIME_VERSION",
     "RuntimeConfig",
     "RuntimeServiceConfig",
-    "RuntimeExecutionConfig",
     "RuntimeRestartConfig",
     "RuntimeControlConfig",
     "RuntimeWorkerConfig",

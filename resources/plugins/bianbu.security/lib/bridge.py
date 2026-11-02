@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -20,6 +21,24 @@ from typing import Any, Optional
 from .errors import SecurityDenied
 
 logger = logging.getLogger("bianbu.security.bridge")
+
+
+def payload_fingerprint(document: str, data: Any) -> str:
+    """Describe a governed payload without keeping prompts or model output.
+
+    Audit needs to prove that a payload was checked and to correlate the same
+    payload later.  Byte length, a SHA-256 digest and the top-level field names
+    do that; the text itself (including ``think``/``content``) stays out of
+    the audit database.
+    """
+    encoded = document.encode("utf-8")
+    fields = sorted(str(key) for key in data)[:12] if isinstance(data, dict) else []
+    return json.dumps({
+        "kind": "content_fingerprint",
+        "bytes": len(encoded),
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+        "fields": fields,
+    }, ensure_ascii=False, separators=(",", ":"))
 
 
 class _HelperSecurityClient:
@@ -159,13 +178,59 @@ class SecurityBridge:
             for key, value in mapping.items()
         ):
             raise ValueError("invalid private DLP session mapping")
+        # The Runtime is the authority for this private state.  Replacing
+        # rather than merging is what makes an absent mapping (a deleted or
+        # restarted Session) clear a resident process that still has one.
+        sessions.clear(session_id)
         sessions.merge(session_id, mapping)
+
+    def clear_session_state(self, session_id: str) -> int:
+        """Drop plaintext stand-in mappings when the Session terminates."""
+
+        sessions = self._dlp_ctx.get("dlp_sessions")
+        return sessions.clear(session_id) if sessions is not None else 0
 
     def session_state(self, session_id: str) -> dict:
         """Return the mapping through private state, never public metadata."""
         sessions = self._dlp_ctx.get("dlp_sessions")
         mapping = sessions.get(session_id) if sessions is not None else {}
         return {"pii_map": mapping} if mapping else {}
+
+    def restore_placeholders(self, session_id: str, value, *, _mapping=None):
+        """Resolve this session's DLP handles inside the trusted Hook process.
+
+        Returns ``(restored_value, replacements)``.  The mapping is the same
+        private store that produced the placeholders in the first place, so a
+        value from an earlier tool result or user turn can be handed back to a
+        local tool without ever re-entering the model context.
+        """
+        if _mapping is None:
+            sessions = self._dlp_ctx.get("dlp_sessions")
+            _mapping = sessions.get(session_id) if sessions is not None else {}
+        if not _mapping:
+            return value, 0
+        from securityd.dlp.pii_scanner import PIIScanner  # noqa: PLC0415
+
+        if isinstance(value, str):
+            replacements = sum(1 for placeholder in _mapping if placeholder in value)
+            return PIIScanner.unmask(value, _mapping), replacements
+        if isinstance(value, list):
+            restored, total = [], 0
+            for item in value:
+                item_value, item_count = self.restore_placeholders(
+                    session_id, item, _mapping=_mapping)
+                restored.append(item_value)
+                total += item_count
+            return restored, total
+        if isinstance(value, dict):
+            restored, total = {}, 0
+            for key, item in value.items():
+                item_value, item_count = self.restore_placeholders(
+                    session_id, item, _mapping=_mapping)
+                restored[key] = item_value
+                total += item_count
+            return restored, total
+        return value, 0
 
     # —— 客户端 ——
     def client(self):
@@ -213,7 +278,11 @@ class SecurityBridge:
 
     def _audit_large_payload(self, hook_point, agent_id: str, data: Any,
                              result, context: dict) -> None:
-        """>1KB 的完整治理载荷走正式 audit.batch；失败不覆盖 DLP 决策。"""
+        """>1KB 的治理载荷只记指纹，失败不覆盖 DLP 决策。
+
+        提示词、模型输出和对话内容属于用户内容。审计只保留这次检查
+        发生过、载荷多大、摘要是什么，方便关联和证伪，不保存原文。
+        """
         threshold = int(os.environ.get("BIANBU_AGENT_AUDIT_UDS_THRESHOLD", "1024"))
         try:
             document = json.dumps(data, ensure_ascii=False, sort_keys=True,
@@ -234,7 +303,7 @@ class SecurityBridge:
                     "op_type": f"hook_payload:{hp}",
                     "target": str(decision),
                     "result": str(getattr(result, "message", ""))[:1024],
-                    "payload": document,
+                    "payload": payload_fingerprint(document, data),
                 }],
             })
             result.metadata["audit_payload_transport"] = "uds"
@@ -313,6 +382,23 @@ def get_bridge(*, with_dlp: bool = True) -> SecurityBridge:
                 else:
                     SecurityBridge._instance = SecurityBridge(home, with_dlp=with_dlp)
     return SecurityBridge._instance
+
+
+def warm_bridge() -> None:
+    """Pay the securityd bootstrap while the Worker is still starting.
+
+    A resident Hook process keeps its singleton for its whole lifetime.  If
+    securityd is not reachable yet, leave no degraded singleton behind so the
+    first real Hook can retry instead of staying fail-open until the process
+    expires.
+    """
+
+    bridge = get_bridge()
+    if bridge.available:
+        return
+    with SecurityBridge._init_lock:
+        if SecurityBridge._instance is bridge:
+            SecurityBridge._instance = None
 
 
 def agent_security_mode_is_yolo(agent_id: str, *, client_provider=None) -> bool:

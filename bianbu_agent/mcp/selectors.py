@@ -16,8 +16,10 @@ def resolve_mcp_selectors(
     APM installs an MCP under the name its registry shows (``nws``) while this
     Runtime names the package ``mcp.nws``, and an expert author may declare
     either form.  An exact installed ID wins; otherwise the ``mcp.``-prefixed
-    name is tried.  A selector this device does not have is kept as written so
-    validation and the catalog can still report it missing.
+    name is tried, then a unique case-insensitive match.  The last step covers
+    an APM Expert package that declares ``fileSystem`` while the packaged MCP
+    document names ``filesystem``.  A selector this device does not have is
+    kept as written so validation and the catalog can still report it missing.
 
     Only names are rewritten: ``*`` stays ``*`` and keeps meaning "every server
     this device has", so an Agent that declares a wildcard is never turned into
@@ -30,7 +32,17 @@ def resolve_mcp_selectors(
     resolved: list[str] = []
     for selector in selectors:
         candidates = (selector,) if "." in selector else (selector, managed_mcp_id(selector))
-        match = next((name for name in candidates if name in known), selector)
+        match = next((name for name in candidates if name in known), None)
+        if match is None:
+            for candidate in candidates:
+                folded = [
+                    name for name in known if name.casefold() == candidate.casefold()
+                ]
+                if len(folded) == 1:
+                    match = folded[0]
+                    break
+        if match is None:
+            match = selector
         if match not in resolved:
             resolved.append(match)
     return tuple(resolved)

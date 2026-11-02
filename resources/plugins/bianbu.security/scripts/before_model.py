@@ -28,14 +28,6 @@ async def before_model(run: dict) -> dict | None:
             tool="<model>", capability="model.invoke",
             reason="run denied by bianbu.security")
 
-    # 兜住 after_context 的 BLOCK（那个点抛异常会被 host 吞掉）
-    scoped = run["metadata"].get("bianbu.security", run["metadata"])
-    upstream = scoped.get("securityd") if isinstance(scoped, dict) else None
-    if not yolo and isinstance(upstream, dict) and upstream.get("deny_run") is True:
-        raise SecurityDenied(
-            tool="<model>", capability="model.invoke",
-            reason=str(upstream.get("deny_reason") or "输入含受限敏感信息"))
-
     if not bridge.available:
         return None
     prompt = str(run["request"] or "")
@@ -62,10 +54,24 @@ async def before_model(run: dict) -> dict | None:
     payload.update(meta)
     if result.decision.value == "MODIFY" and result.modified_data is not None:
         payload["dlp_masked_prompt"] = result.modified_data
-    return dict(metadata={"securityd": payload})
+    # Prompt masking may have added new stand-ins; the private map lets the
+    # Runtime restore streamed model output before it is published.
+    return dict(
+        metadata={"securityd": payload},
+        # Read after ``invoke``: masking a tool result or model output creates
+        # stand-ins that did not exist when the Hook started.
+        stream_stand_ins=bridge.session_state(run["session_id"]).get("pii_map") or None,
+    )
+
+
+def _warmup():
+    _bootstrap()
+    from lib import warm_bridge
+
+    warm_bridge()
 
 
 if __name__ == "__main__":
     from protocol import main
 
-    main(before_model)
+    main(before_model, warmup=_warmup)

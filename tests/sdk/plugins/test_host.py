@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -7,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from bianbu_agent.plugins import (
+    HookContribution,
+    HookPoint,
     PluginDependency,
     PluginHealth,
     PluginManifest,
@@ -46,6 +49,27 @@ class _Plugin:
         self.calls.append(f"{self.manifest.id}.stop")
 
 
+class _PrewarmPlugin(_Plugin):
+    async def setup(self, context):
+        await super().setup(context)
+        self.prewarm_event = asyncio.Event()
+
+        async def prewarm() -> None:
+            self.prewarm_event.set()
+
+        async def handler(_context):
+            return None
+
+        context.scope.register_hook(
+            HookContribution(
+                self.manifest.id,
+                HookPoint.BEFORE_RUN,
+                handler,
+                prewarm=prewarm,
+            )
+        )
+
+
 def _manifest(plugin_id: str, dependency: str = "") -> PluginManifest:
     return PluginManifest(
         id=plugin_id,
@@ -76,6 +100,23 @@ def _host(tmp_path: Path, calls: list[str], *, failures: dict[str, str] | None =
         enabled_ids={"a.core", "b.feature"},
         data_root=tmp_path,
     )
+
+
+@pytest.mark.asyncio
+async def test_host_prewarms_hooks_without_blocking_generation_ready(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest("a.prewarm")
+    plugin = _PrewarmPlugin(manifest, [])
+    registry = PluginRegistry()
+    registry.register(lambda context: plugin, manifest)
+    host = PluginHost(registry=registry, enabled_ids={manifest.id}, data_root=tmp_path)
+
+    generation = await host.start()
+
+    assert generation.statuses[manifest.id].state is PluginState.RUNNING
+    await asyncio.wait_for(plugin.prewarm_event.wait(), timeout=1)
+    await host.stop()
 
 
 @pytest.mark.asyncio
@@ -155,6 +196,104 @@ async def test_unhealthy_plugin_is_not_published(tmp_path: Path) -> None:
     assert generation.plugins == {}
     assert generation.statuses[manifest.id].state is PluginState.FAILED
     assert generation.statuses[manifest.id].diagnostics[0].code == "plugin_unhealthy"
+
+
+@pytest.mark.asyncio
+async def test_mcp_leaves_start_concurrently(tmp_path: Path) -> None:
+    entered = 0
+    all_entered = asyncio.Event()
+
+    class BarrierPlugin(_Plugin):
+        async def setup(self, context):
+            nonlocal entered
+            entered += 1
+            if entered == 4:
+                all_entered.set()
+            await asyncio.wait_for(all_entered.wait(), timeout=2)
+            return None
+
+    registry = PluginRegistry()
+    manifests = [_manifest(f"mcp.runtime-{index}") for index in range(4)]
+    for index, manifest in enumerate(manifests):
+        registry.register(
+            lambda _context, manifest=manifest: BarrierPlugin(manifest, []),
+            manifest,
+            source=f"mcp:server-{index}",
+        )
+    host = PluginHost(
+        registry=registry,
+        enabled_ids={manifest.id for manifest in manifests},
+        data_root=tmp_path,
+    )
+
+    generation = await host.start()
+
+    assert {status.state for status in generation.statuses.values()} == {
+        PluginState.RUNNING
+    }
+    assert len(generation.plugins) == 4
+
+
+@pytest.mark.asyncio
+async def test_mcp_failure_does_not_cancel_sibling_starts(tmp_path: Path) -> None:
+    class SlowPlugin(_Plugin):
+        async def setup(self, context):
+            await asyncio.sleep(0.05)
+            return await super().setup(context)
+
+    registry = PluginRegistry()
+    manifests = [_manifest(f"mcp.runtime-{index}") for index in range(4)]
+    for index, manifest in enumerate(manifests):
+        registry.register(
+            lambda _context, manifest=manifest: SlowPlugin(
+                manifest,
+                [],
+                "setup" if manifest.id == manifests[0].id else "",
+            ),
+            manifest,
+            source=f"mcp:server-{index}",
+        )
+    host = PluginHost(
+        registry=registry,
+        enabled_ids={manifest.id for manifest in manifests},
+        data_root=tmp_path,
+    )
+
+    generation = await host.start()
+
+    assert generation.statuses[manifests[0].id].state is PluginState.FAILED
+    assert all(
+        generation.statuses[manifest.id].state is PluginState.RUNNING
+        for manifest in manifests[1:]
+    )
+
+
+@pytest.mark.asyncio
+async def test_mcp_with_dependency_keeps_topological_order(tmp_path: Path) -> None:
+    calls: list[str] = []
+    registry = PluginRegistry()
+    core = _manifest("a.core")
+    mcp = _manifest("mcp.runtime-dependent", "a.core")
+    for manifest in (core, mcp):
+        registry.register(
+            lambda _context, manifest=manifest: _Plugin(manifest, calls),
+            manifest,
+            source="mcp:server" if manifest is mcp else "explicit",
+        )
+    host = PluginHost(
+        registry=registry,
+        enabled_ids={core.id, mcp.id},
+        data_root=tmp_path,
+    )
+
+    await host.start()
+
+    assert calls[:4] == [
+        "a.core.setup",
+        "a.core.start",
+        "mcp.runtime-dependent.setup",
+        "mcp.runtime-dependent.start",
+    ]
 
 
 @pytest.mark.asyncio

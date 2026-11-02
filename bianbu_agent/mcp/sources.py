@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from collections.abc import Mapping
-from bianbu_agent.mcp.plugin import MCPAuthorizer
+from bianbu_agent.mcp.authorization import MCPAuthorizer
 
 from bianbu_agent.inventory import (
     CapabilityKind,
@@ -32,6 +32,7 @@ class MCPSourceRecord:
     id: str
     runtime_id: str
     root: Path
+    config_path: Path
     content_digest: str
     source_kind: str
     owner_plugin_id: str | None
@@ -53,12 +54,18 @@ class MCPSourceCatalog:
             if not item.enabled or source.kind is not CapabilityKind.MCP:
                 continue
             public_id = source.capability_id
-            expected = (source.root / "mcp.json").resolve()
+            private = bool(source.metadata.get("agent_private"))
+            expected = (
+                source.manifest_path.resolve()
+                if private
+                else (source.root / "mcp.json").resolve()
+            )
             if (
                 source.root.is_symlink()
                 or source.manifest_path != expected
                 or expected.is_symlink()
                 or not expected.is_file()
+                or not expected.is_relative_to(source.root.resolve())
             ):
                 raise ValueError(f"MCP source {public_id} is not backed by mcp.json")
             if source.origin is CapabilityOrigin.PLUGIN:
@@ -70,7 +77,7 @@ class MCPSourceCatalog:
                     )
                 source_kind = "plugin"
             else:
-                if public_id != source.root.name:
+                if not private and public_id != source.root.name:
                     raise ValueError(
                         f"standalone MCP ID {public_id!r} must match directory name"
                     )
@@ -81,6 +88,7 @@ class MCPSourceCatalog:
                 id=public_id,
                 runtime_id=runtime_mcp_id(public_id),
                 root=source.root,
+                config_path=expected,
                 content_digest=source.content_digest,
                 source_kind=source_kind,
                 owner_plugin_id=source.plugin_id,
@@ -107,6 +115,7 @@ class MCPSourceCatalog:
                 return MCPDirectoryPlugin(
                     _manifest,
                     root=_record.root,
+                    source=_record.config_path,
                     workspace=workspace,
                     mcp_id=_record.id,
                     owner_plugin_id=_record.owner_plugin_id,

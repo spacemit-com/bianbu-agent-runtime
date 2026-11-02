@@ -32,7 +32,7 @@ def test_packaged_debian_defaults_bind_bibit_provider_without_exposing_key_in_te
     output_path = tmp_path / "packaged-agent.yaml"
 
     source = yaml.safe_load(
-        (ROOT / "resources/default-profile/starter-agent.yaml").read_text(encoding="utf-8")
+        (ROOT / "resources/agents/com.bianbu.627d97ad908c/agent.yaml").read_text(encoding="utf-8")
     )
     source["agent"]["model"] = {"provider": "custom:test", "name": "other"}
     source_path.write_text(
@@ -87,13 +87,13 @@ def test_builtin_bibit_expert_names_every_capability_kind():
     """出厂专家逐个点名工具/技能/插件，不写通配符，也不重复点名插件名下的成员。
 
     通配符把含义交给了「这台机器上装了什么」，于是能力计数、编辑器勾选和
-    「临时使用技能」菜单都得各自特判一次；改成本包发布的那份清单之后，四处读的
+    「选择常驻技能」菜单都得各自特判一次；改成本包发布的那份清单之后，四处读的
     是同一个列表。选中插件就已经选中了它名下的 MCP 服务器、技能和 Hook，再逐个
     点名等于把同一件事写两遍，所以 `mcps:` 只列不属于任何已选插件的服务器。
     清单随包更新，`tests/sdk/test_project_definitions.py` 会检查每一项都真实
     存在于本仓。
     """
-    document = yaml.safe_load((ROOT / 'resources/default-profile/starter-agent.yaml').read_text())
+    document = yaml.safe_load((ROOT / 'resources/agents/com.bianbu.627d97ad908c/agent.yaml').read_text())
     agent = document['agent']
     assert agent['name'] == 'BibitEdgeAssistant'
     for kind in ('tools', 'skills', 'mcps', 'plugins'):

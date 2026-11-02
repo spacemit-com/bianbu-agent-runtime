@@ -214,6 +214,8 @@ async def test_control_api_exposes_plugin_skill_with_its_qualified_id(
             "enabled": True,
             "assignable": True,
             "preset": False,
+            "private": False,
+            "owner_agent_id": None,
             "unavailable_reason": "",
         },
     ]
@@ -547,6 +549,8 @@ async def test_control_catalog_reads_installed_skill_without_a_worker(
         "enabled": True,
         "assignable": True,
         "preset": False,
+        "private": False,
+        "owner_agent_id": None,
         "unavailable_reason": "",
     }]
 
@@ -598,6 +602,8 @@ async def test_control_lists_installed_mcp_without_a_worker(tmp_path: Path) -> N
         "removable": True,
         "health_checked_at": None,
         "detail": "",
+        "private": False,
+        "owner_agent_id": None,
     }]
 
 
@@ -978,6 +984,50 @@ async def test_control_mcp_view_counts_the_tools_of_a_ready_server(monkeypatch):
     assert views[0].tools_count == 2
     # Tools come back sorted by id, which is what every list view shows.
     assert [tool.name for tool in views[0].tools] == ['detail', 'search']
+
+
+@pytest.mark.asyncio
+async def test_control_mcp_view_dedupes_a_tool_seen_by_two_layers(monkeypatch):
+    """Preparation and a loaded Generation name the same tool differently.
+
+    A preparation reports the bare MCP name while a Generation registers
+    ``<server>/<name>``.  Counting both left the Console showing 2 tools for a
+    server that declares 1.
+    """
+
+    from bianbu_agent.api.mcp_servers import _control_server_views
+    base = dict(id='spacemit-knowledge', display_name='spacemit-knowledge',
+                command='/usr/bin/bibit-gui --knowledge-mcp', kind='mcp',
+                status='not_loaded', transport='stdio', tools=[],
+                source_kind='standalone', owner_plugin_id=None, removable=True,
+                health_checked_at=None)
+    monkeypatch.setattr('bianbu_agent.api.mcp_servers.control_catalog_snapshot',
+                        lambda _: {'mcp_servers': [base]})
+
+    async def catalogs():
+        return [
+            {'catalog': {
+                'mcp_servers': [dict(base, status='not_loaded')],
+                'mcp_statuses': {'spacemit-knowledge': {
+                    'state': 'preparing', 'phase': 'handshaking', 'reason': '',
+                    'tools': [{'id': 'spacemit_knowledge_search',
+                               'name': 'spacemit_knowledge_search'}],
+                }},
+            }},
+            {'catalog': {'mcp_servers': [dict(base, status='healthy', tools=[
+                {'id': 'spacemit-knowledge/spacemit_knowledge_search',
+                 'name': 'spacemit_knowledge_search',
+                 'display_name': 'spacemit_knowledge_search'},
+            ])]}},
+        ]
+
+    views = await _control_server_views(
+        SimpleNamespace(worker_supervisor=SimpleNamespace(catalogs=catalogs))
+    )
+    assert views[0].tools_count == 1
+    assert views[0].tools[0].id == (
+        'spacemit-knowledge/spacemit_knowledge_search'
+    )
 
 
 @pytest.mark.asyncio

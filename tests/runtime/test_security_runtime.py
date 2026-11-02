@@ -211,35 +211,6 @@ async def test_syscall_v2_denial_does_not_fallback_to_legacy(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_network_learning_client_forwards_lease_bound_event_and_status(monkeypatch):
-    calls = []
-    module = SimpleNamespace(
-        record_network_learning_event=lambda *args, **kwargs: calls.append(
-            ("event", args, kwargs)) or True,
-        report_network_learning_collector=lambda *args, **kwargs: calls.append(
-            ("status", args, kwargs)) or True,
-    )
-    monkeypatch.setattr(security_runtime, "_client_module", lambda: module)
-    client = SecurityRuntimeClient(required=True)
-    event = {
-        "event_id": "evt-1", "observed_at": 1000.0,
-        "event_type": "connect", "protocol": "tcp",
-        "remote_ip": "203.0.113.8", "remote_port": 443,
-        "outcome": "success", "backend": "strace", "policy_version": 4,
-    }
-
-    assert await client.record_network_learning_event(
-        "agent", "worker-1", "lease-1", 42, event) is True
-    assert await client.report_network_learning_collector(
-        "agent", "worker-1", "lease-1", 42, "degraded", "observer exited") is True
-    assert calls == [
-        ("event", ("agent", "worker-1", "lease-1", 42, event), {}),
-        ("status", ("agent", "worker-1", "lease-1", 42,
-                    "degraded", "observer exited"), {}),
-    ]
-
-
-@pytest.mark.asyncio
 async def test_stop_instance_failure_records_registered_metric():
     """停止失败必须记进已注册指标，且返回 None 而不是抛出。"""
     from bianbu_agent.server.metrics import RuntimeMetrics

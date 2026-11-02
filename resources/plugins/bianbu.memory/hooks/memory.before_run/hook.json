@@ -8,11 +8,11 @@
             "type": "command",
             "command": "exec \"${RUNTIME_PYTHON}\" \"$PLUGIN_ROOT/scripts/before_run.py\"",
             "timeout": 5,
+            "mode": "resident",
             "on_timeout": "skip"
           }
         ]
       }
     ]
-  },
-  "parallel": true
+  }
 }

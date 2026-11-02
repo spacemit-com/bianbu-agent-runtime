@@ -119,11 +119,13 @@ async def test_system_agent_typed_delete_hides_the_package_and_unregisters_ident
     monkeypatch.setattr(system_paths, 'SYSTEM_PROFILE_ROOT', tmp_path / 'profiles')
     async with _file_backed_api(tmp_path) as (client, runtime):
         system_dir = system_paths.system_agent_directory(runtime.home.root)
-        spec = AgentSpec(id='com.bianbu.abcdef012345', name='BibitEdgeAssistant')
+        spec = AgentSpec(id='com.bianbu.abcdef012345', name='BibitEdgeAssistant', plugins=('*',))
         AgentPackageManager(AgentHome(system_dir.parent)).create(spec)
         unregistered = []
         async def unregister(agent_id):
             unregistered.append(agent_id)
+            return True
+        monkeypatch.setattr(runtime, '_security_registration_enabled', lambda: True)
         monkeypatch.setattr(runtime, 'unregister_logical_agent', unregister)
         response = await client.delete(f'/api/v1/packages/agent/{spec.id}')
         assert response.status_code == 204, response.text
@@ -144,7 +146,7 @@ async def test_failed_agent_override_registration_restores_system_layer(tmp_path
     monkeypatch.setattr(system_paths, 'SYSTEM_PROFILE_ROOT', tmp_path / 'profiles')
     async with _file_backed_api(tmp_path) as (client, runtime):
         system_dir = system_paths.system_agent_directory(runtime.home.root)
-        spec = AgentSpec(id='com.bianbu.abcdef012345', name='BibitEdgeAssistant')
+        spec = AgentSpec(id='com.bianbu.abcdef012345', name='BibitEdgeAssistant', plugins=('*',))
         original = AgentPackageManager(AgentHome(system_dir.parent)).create(spec)
         incoming = AgentPackageManager(AgentHome(tmp_path / 'incoming')).create(spec)
         declaration = incoming.root / 'agent.yaml'

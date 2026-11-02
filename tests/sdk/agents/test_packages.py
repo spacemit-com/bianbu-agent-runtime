@@ -32,12 +32,17 @@ def write_source(
     *,
     agent_id: str = "writer",
     name: str = "Writer",
+    metadata: dict | None = None,
 ) -> Path:
     root.mkdir(parents=True)
     manifest = AgentManifest(
         schema_version=1,
         version=version,
-        spec=AgentSpec(id=agent_id, name=name, metadata={"avatar": "✍️"}),
+        spec=AgentSpec(
+            id=agent_id,
+            name=name,
+            metadata={"avatar": "✍️"} if metadata is None else metadata,
+        ),
     )
     (root / "agent.yaml").write_text(manifest.to_yaml(), encoding="utf-8")
     (root / "README.md").write_text(f"# {name}\n", encoding="utf-8")
@@ -553,3 +558,55 @@ def test_agent_package_new_publication_rolls_back_after_fsync_failure(
 
     assert manager.inspect("writer") is None
     assert not any(home.staging_dir.iterdir())
+
+
+def test_agent_package_serves_avatar_declared_in_metadata(tmp_path: Path) -> None:
+    """APM Experts declare ``assets/avatar.png`` instead of a root avatar file."""
+
+    home = AgentHome(tmp_path / ".bianbu-agent").prepare()
+    manager = AgentPackageManager(home)
+    source = write_source(
+        tmp_path / "source" / "writer",
+        metadata={"avatar": "assets/avatar.png"},
+    )
+    (source / "assets").mkdir()
+    (source / "assets" / "avatar.png").write_bytes(b"png")
+
+    installed = manager.install(source)
+
+    assert manager.avatar_path("writer") == installed.root / "assets" / "avatar.png"
+
+
+def test_agent_package_ignores_unsafe_avatar_declarations(tmp_path: Path) -> None:
+    home = AgentHome(tmp_path / ".bianbu-agent").prepare()
+    manager = AgentPackageManager(home)
+
+    for index, declared in enumerate(
+        ("assets/avatar.txt", "../avatar.png", "/tmp/avatar.png", "\x00avatar.png")
+    ):
+        source = write_source(
+            tmp_path / f"source{index}" / "writer",
+            version=f"1.0.{index}",
+            metadata={"avatar": declared},
+        )
+        (source / "assets").mkdir()
+        (source / "assets" / "avatar.png").write_bytes(b"png")
+        manager.install(source, upgrade=index > 0)
+
+        assert manager.avatar_path("writer") is None
+
+
+def test_uploaded_avatar_wins_over_the_packaged_one(tmp_path: Path) -> None:
+    home = AgentHome(tmp_path / ".bianbu-agent").prepare()
+    manager = AgentPackageManager(home)
+    source = write_source(
+        tmp_path / "source" / "writer",
+        metadata={"avatar": "assets/avatar.png"},
+    )
+    (source / "assets").mkdir()
+    (source / "assets" / "avatar.png").write_bytes(b"packaged")
+    manager.install(source)
+
+    manager.write_avatar("writer", ".png", b"uploaded")
+
+    assert manager.avatar_path("writer").read_bytes() == b"uploaded"

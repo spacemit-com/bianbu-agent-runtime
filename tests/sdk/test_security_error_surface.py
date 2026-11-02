@@ -298,7 +298,6 @@ const formatTime = () => '';
     # 策略放行了这个域名，超时就不再是「没授权」，而是 Provider 真的没回包。
     ("whitelist", ["api.minimaxi.com"], PROVIDER_TIMEOUT_CODE),
     ("allow_all", [], PROVIDER_TIMEOUT_CODE),
-    ("learning", [], PROVIDER_TIMEOUT_CODE),
 ])
 def test_model_timeout_uses_policy_evidence(mode, domains, code):
     result = classify_run_exception(
@@ -422,7 +421,7 @@ def test_managed_worker_diagnoses_startup_policy_without_control_plane(monkeypat
 
     class Client:
         def get_agent_security_mode(self, agent_id):
-            return {"mode": "normal"}
+            return {"mode": "safe"}
 
         def get_network_policy(self, agent_id):
             calls.append(True)

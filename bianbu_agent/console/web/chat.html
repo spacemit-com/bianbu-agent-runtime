@@ -68,6 +68,7 @@
     (function() {
         // Server-rendered product default from SDK config.yaml.
         window.__BIANBU_DEFAULT_LANG__ = {{BIANBU_DEFAULT_LANG}};
+        window.__BIANBU_INITIAL_AGENT__ = {{BIANBU_INITIAL_AGENT}};
         var theme = localStorage.getItem('bianbu_theme') || 'dark';
         if (theme === 'dark') document.documentElement.classList.add('dark');
         document.documentElement.setAttribute('lang', window.__bianbuResolveLang__());
@@ -461,7 +462,7 @@
                             <div id="selected-skills" class="selected-skills hidden"
                                  aria-live="polite"
                                  data-i18n-aria-label="skill_picker_selected_skills"
-                                 aria-label="下一条消息临时使用的技能"></div>
+                                 aria-label="当前会话已启用的技能"></div>
                             <!-- Attachment preview bar -->
                             <div id="attachment-preview" class="attachment-preview hidden"></div>
                             <p id="composer-notice" class="composer-notice hidden" role="status"></p>
@@ -471,7 +472,7 @@
                                      role="dialog" aria-modal="false"
                                      aria-labelledby="skill-picker-title">
                                     <div class="skill-picker-header">
-                                        <strong id="skill-picker-title" data-i18n="skill_picker_title">临时使用技能</strong>
+                                        <strong id="skill-picker-title" data-i18n="skill_picker_title">选择常驻技能</strong>
                                         <button id="skill-picker-close" type="button"
                                                 data-i18n-aria-label="skill_picker_close"
                                                 aria-label="关闭技能选择器">×</button>
@@ -493,7 +494,7 @@
                                                      text-sm leading-relaxed"
                                               rows="1"
                                               data-i18n-placeholder="input_placeholder"
-                                              placeholder="输入消息，@ 切换专家，/ 临时使用技能"></textarea>
+                                              placeholder="输入消息，@ 切换专家，/ 选择技能"></textarea>
                                 </div>
                                 <!-- The picker is anchored to the button it belongs
                                      to, so it opens directly above the clip. -->
@@ -647,7 +648,7 @@
                         <div class="flex items-start justify-between gap-4 mb-6"><div><h2 class="text-xl font-bold text-slate-800 dark:text-slate-100">安全控制中心</h2><p class="text-sm text-slate-500 dark:text-slate-400 mt-1">Runtime 原生控制台，策略通过 bianbu_security_client 交由 securityd 执行</p></div><div class="flex items-center gap-2"><span id="security-runtime-status" class="text-xs px-3 py-1.5 rounded-full bg-slate-100 dark:bg-white/10 text-slate-500">未连接</span><button id="security-global-refresh" type="button" class="security-button secondary">刷新</button></div></div>
                         <div id="security-agent-context" class="security-agent-context flex items-center gap-3 mb-5 rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5 px-4 py-3"><label for="security-agent-select" class="text-sm font-medium text-slate-700 dark:text-slate-200">当前 Agent</label><select id="security-agent-select" class="security-agent-context__select min-w-56 px-3 py-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 text-sm"><option value="">加载中...</option></select><span class="text-xs text-slate-500 dark:text-slate-400">切换后将刷新当前安全页面</span></div>
                         <div class="flex flex-wrap gap-2 border-b border-slate-200 dark:border-white/10 mb-5"><button class="security-tab px-3 py-2 text-sm border-b-2 border-primary-500 text-primary-600" data-security-tab="agents">Agent</button><button class="security-tab px-3 py-2 text-sm text-slate-500" data-security-tab="capabilities">能力管理</button><button class="security-tab px-3 py-2 text-sm text-slate-500" data-security-tab="permissions">安全权限设置</button><button class="security-tab px-3 py-2 text-sm text-slate-500" data-security-tab="syscalls">系统调用黑名单</button><button class="security-tab px-3 py-2 text-sm text-slate-500" data-security-tab="dlp">DLP/个人信息</button><button class="security-tab px-3 py-2 text-sm text-slate-500" data-security-tab="audit">审计</button></div>
-                        <section id="security-panel-syscalls" class="hidden bg-white dark:bg-[#1A1A1A] rounded-xl border border-slate-200 dark:border-white/10 p-5"><div class="security-section-heading"><div><span class="security-eyebrow">SYSCALL POLICY</span><h3>系统调用黑名单</h3><p>默认不限制：勾选即拦截，没有强制基线。改动仅对该 Agent 生效，且需重启 Worker（并进入沙箱）才装载过滤器。</p></div><div class="flex gap-2"><label class="text-xs text-slate-500">架构<select id="security-syscall-arch" class="mt-1 block px-3 py-2 rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5"><option value="x86_64">x86_64</option><option value="riscv64">riscv64</option></select></label></div></div><div id="security-syscall-list" class="security-table-wrap"></div><div class="flex items-center gap-3 mt-5"><button id="security-syscall-refresh" type="button" class="security-button secondary">刷新</button><button id="security-syscall-reset" type="button" class="security-button secondary">恢复 Agent 默认</button><button id="security-syscall-save" type="button" class="security-button">保存策略</button><span id="security-syscall-message" class="text-sm"></span></div><div class="mt-6 pt-5 border-t border-slate-200 dark:border-white/10"><div class="flex items-center justify-between"><div><h4>拦截事件审计</h4><p class="text-xs text-slate-500">仅展示独立 syscall 审计链中已校验的拒绝事件。</p></div><button id="security-syscall-audit-refresh" type="button" class="security-button secondary">刷新事件</button></div><div id="security-syscall-audit-list" class="security-table-wrap mt-3"></div></div></section>
+                        <section id="security-panel-syscalls" class="hidden bg-white dark:bg-[#1A1A1A] rounded-xl border border-slate-200 dark:border-white/10 p-5"><div class="security-page" data-security-page="syscalls"><div class="security-page-header"><div class="security-page-heading"><span class="security-eyebrow">SYSCALL POLICY</span><h3>系统调用黑名单</h3><p>默认不限制：勾选即拦截，没有强制基线。改动仅对该 Agent 生效；保存后下一次请求会自动重启 Worker 并装载 seccomp（无需手动重启）。若当时仍有任务在执行，则在之后的空闲请求中生效。</p></div><div class="security-page-actions"><label class="security-field">架构<select id="security-syscall-arch" class="security-config-control"><option value="x86_64">x86_64</option><option value="riscv64">riscv64</option></select></label></div></div><div id="security-syscall-mode-note"></div><div id="security-syscall-list"></div><div class="security-page-footer"><button id="security-syscall-refresh" type="button" class="security-button secondary">刷新</button><button id="security-syscall-reset" type="button" class="security-button secondary">恢复 Agent 默认</button><button id="security-syscall-save" type="button" class="security-button">保存策略</button><span id="security-syscall-message" class="security-form-status"></span></div><section class="security-subpanel"><div class="security-subpanel__heading"><div><h4>拦截事件审计</h4><p class="security-permission-hint">仅展示独立 syscall 审计链中已校验的拒绝事件。</p></div><button id="security-syscall-audit-refresh" type="button" class="security-button secondary">刷新事件</button></div><div id="security-syscall-audit-list" class="security-table-wrap"></div></section></div></section>
                         <section id="security-panel-permissions" class="hidden bg-white dark:bg-[#1A1A1A] rounded-xl border border-slate-200 dark:border-white/10 p-5"><div id="security-permission-content" class="text-sm"></div></section>
                         <section id="security-panel-other" class="bg-white dark:bg-[#1A1A1A] rounded-xl border border-slate-200 dark:border-white/10 p-5"><div id="security-other-content" class="text-sm"></div></section>
                     </div></div>
@@ -1204,6 +1205,16 @@
                             <div id="agent-model-options" class="cfg-dropdown-menu"></div>
                         </div>
                         <small id="agent-model-discovery-status"></small>
+                    </label>
+                    <label class="agent-field">
+                        <span data-i18n="agents_effort">推理强度</span>
+                        <div id="agent-form-effort" class="cfg-dropdown" tabindex="0">
+                            <div class="cfg-dropdown-selected">
+                                <span class="cfg-dropdown-text"></span>
+                                <i class="fas fa-chevron-down cfg-dropdown-arrow"></i>
+                            </div>
+                            <div class="cfg-dropdown-menu"></div>
+                        </div>
                     </label>
                 </div>
                 <div class="grid md:grid-cols-2 xl:grid-cols-4 gap-4">

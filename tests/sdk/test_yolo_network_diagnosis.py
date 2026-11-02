@@ -1,4 +1,4 @@
-"""A live mode switch must not diagnose stale normal policy as a YOLO denial."""
+"""A live mode switch must not diagnose stale safe policy as a YOLO denial."""
 import pytest
 
 from bianbu_agent.runs.manager import _agent_network_policy
@@ -7,7 +7,7 @@ from bianbu_agent.security import security_runtime
 
 
 @pytest.mark.parametrize('managed', [False, True])
-def test_yolo_connection_failure_ignores_normal_policy_then_restores(monkeypatch, managed):
+def test_yolo_connection_failure_ignores_safe_policy_then_restores(monkeypatch, managed):
     mode = 'yolo'
     policy_reads = []
     policy = {'agent_id': 'agent.demo', 'mode': 'deny_all', 'domains': []}
@@ -33,5 +33,5 @@ def test_yolo_connection_failure_ignores_normal_policy_then_restores(monkeypatch
     assert policy_reads == []
     assert effective is None
     assert result is None or result['code'] != 'network_policy_blocked'
-    mode = 'normal'
+    mode = 'safe'
     assert _agent_network_policy('agent.demo') == policy

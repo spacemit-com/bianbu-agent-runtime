@@ -27,6 +27,7 @@ from bianbu_agent.api.packages import (
     _reload_active_worker,
     _reload_active_worker_bounded,
 )
+from bianbu_agent.inventory import CapabilityKind
 from bianbu_agent.mcp.lifecycle import (
     MCP_STATE_DEGRADED,
     MCP_STATE_FAILED,
@@ -90,6 +91,29 @@ def _tool_views(raw_tools: object) -> list[MCPServerToolView]:
     return views
 
 
+def _merge_mcp_tool(
+    tools: dict[str, Mapping[str, object]], tool: Mapping[str, object]
+) -> None:
+    """Add one tool by its server-declared name.
+
+    The same tool arrives twice with different identities: a preparation
+    reports the bare MCP name, while a loaded Generation registers it under
+    ``<server>/<name>``.  Identity is per layer, so dedupe has to be by name;
+    the namespaced copy wins because it is the one the Generation actually
+    registered and every other catalog uses.
+    """
+
+    name = str(tool.get("name") or tool.get("id") or "").strip()
+    identity = str(tool.get("id") or "").strip()
+    if not name or not identity:
+        return
+    existing = tools.get(name)
+    if existing is not None and "/" in str(existing.get("id") or ""):
+        return
+    if existing is None or "/" in identity:
+        tools[name] = tool
+
+
 def _preparation_phase(preparation: object, mcp_id: str, state: str) -> str:
     """What an in-flight preparation is doing, as one of the shared phases."""
 
@@ -108,6 +132,10 @@ async def _server_views(
     preparation: object | None = None,
 ) -> list[MCPServerView]:
     servers: list[MCPServerView] = []
+    catalog = generation.capability_catalog
+    private_owners = dict(
+        getattr(catalog, "private_owners", {}) or {}
+    ) if catalog is not None else {}
     for mcp_id, mcp_runtime in generation.mcps.items():
         plugin_status = generation.statuses.get(mcp_runtime.runtime_id)
         status = str(
@@ -133,12 +161,19 @@ async def _server_views(
                 tools=tools,
                 source_kind=mcp_runtime.source_kind,
                 owner_plugin_id=mcp_runtime.owner_plugin_id,
-                removable=mcp_runtime.owner_plugin_id is None and mcp_runtime.source_kind != "system",
+                removable=(
+                    mcp_runtime.owner_plugin_id is None
+                    and mcp_runtime.source_kind != "system"
+                    and (CapabilityKind.MCP, str(mcp_id)) not in private_owners
+                ),
                 health_checked_at=snapshot.checked_at,
                 detail=_status_detail(plugin_status),
+                private=(CapabilityKind.MCP, str(mcp_id)) in private_owners,
+                owner_agent_id=private_owners.get(
+                    (CapabilityKind.MCP, str(mcp_id))
+                ),
             )
         )
-    catalog = generation.capability_catalog
     if catalog is not None:
         active_ids = set(generation.mcps)
         for runtime_id, source in catalog.mcp_sources.items():
@@ -164,9 +199,17 @@ async def _server_views(
                 tools=[],
                 source_kind="system" if source.metadata.get("system_managed") else source.origin.value,
                 owner_plugin_id=source.plugin_id,
-                removable=source.plugin_id is None and not source.metadata.get("system_managed", False),
+                removable=(
+                    source.plugin_id is None
+                    and not source.metadata.get("system_managed", False)
+                    and (CapabilityKind.MCP, source.capability_id) not in private_owners
+                ),
                 health_checked_at=snapshot.checked_at,
                 detail=_status_detail(plugin_status),
+                private=(CapabilityKind.MCP, source.capability_id) in private_owners,
+                owner_agent_id=private_owners.get(
+                    (CapabilityKind.MCP, source.capability_id)
+                ),
             ))
     return sorted(servers, key=lambda item: item.id)
 
@@ -221,8 +264,24 @@ def _warm_mcp_worker(runtime) -> None:
         warm(starter)
 
 
-async def _control_server_views(runtime) -> list[MCPServerView]:
-    snapshot = control_catalog_snapshot(runtime)
+async def _control_server_views(
+    runtime, agent_id: str | None = None
+) -> list[MCPServerView]:
+    # Keep compatibility with callers that patch the one-argument form.
+    try:
+        snapshot = control_catalog_snapshot(runtime, agent_id)
+    except TypeError:
+        snapshot = control_catalog_snapshot(runtime)
+    private_ids = {
+        str(item["id"]): str(item.get("owner_agent_id") or "")
+        for item in snapshot.get("mcp_servers", [])
+        if item.get("private")
+    }
+    private_removable = {
+        str(item["id"]): item.get("removable", True)
+        for item in snapshot.get("mcp_servers", [])
+        if item.get("private")
+    }
     supervisor = getattr(runtime, "worker_supervisor", None)
     reports = []
     if callable(getattr(supervisor, "catalogs", None)):
@@ -282,7 +341,7 @@ async def _control_server_views(runtime) -> list[MCPServerView]:
             # 上次握手是什么时候，都只能从这里取，否则界面只剩一个 not_loaded。
             for tool in entry.get("tools") or []:
                 if isinstance(tool, Mapping) and tool.get("id"):
-                    tools.setdefault(str(tool["id"]), tool)
+                    _merge_mcp_tool(tools, tool)
             stamp = entry.get("prepared_at")
             if isinstance(stamp, (int, float)) and float(stamp) > 0:
                 prepared_at.append(float(stamp))
@@ -292,7 +351,7 @@ async def _control_server_views(runtime) -> list[MCPServerView]:
                 raw_states.append(str(loaded.get("status") or "unknown"))
                 for tool in loaded.get("tools") or []:
                     if isinstance(tool, Mapping) and tool.get("id"):
-                        tools.setdefault(str(tool["id"]), tool)
+                        _merge_mcp_tool(tools, tool)
         if not reports:
             # No Worker answered at all: "not_loaded" would blame the server for
             # a catalog that was never read.
@@ -306,6 +365,11 @@ async def _control_server_views(runtime) -> list[MCPServerView]:
             # so existing readers do not see a stale ``not_loaded``.
             view["status"] = _STATE_TO_STATUS[state]
         view["state"] = state
+        view["private"] = str(view["id"]) in private_ids
+        view["owner_agent_id"] = private_ids.get(str(view["id"])) or None
+        view["removable"] = private_removable.get(
+            str(view["id"]), view.get("removable", True)
+        )
         view["phase"] = _collapse(phases) if state == MCP_STATE_PREPARING and phases else ""
         view["ready"] = mcp_state_ready(state)
         view["tools"] = _tool_views([tools[key] for key in sorted(tools)])
@@ -342,10 +406,14 @@ async def _view_inputs(
 
 
 @router.get("", response_model=MCPServerCollectionEnvelope)
-async def list_mcp_servers(request: Request) -> MCPServerCollectionEnvelope:
+async def list_mcp_servers(
+    request: Request, agent_id: str | None = None
+) -> MCPServerCollectionEnvelope:
     runtime = request.app.state.runtime
     if getattr(runtime, "role", "worker") == "control":
-        return MCPServerCollectionEnvelope(data=await _control_server_views(runtime))
+        return MCPServerCollectionEnvelope(
+            data=await _control_server_views(runtime, agent_id)
+        )
     generation, snapshot = await _view_inputs(
         runtime,
         request.app.state.mcp_health_cache,

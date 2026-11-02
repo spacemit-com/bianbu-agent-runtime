@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically ensure the Bianbu Agent Runtime is running
+Documentation=file:/usr/share/doc/bianbu-agent-runtime/README.Debian
+
+[Timer]
+OnBootSec=15s
+OnUnitInactiveSec=5s
+AccuracySec=1s
+Unit=bianbu-agent-runtime-keepalive.service
+
+[Install]
+WantedBy=timers.target

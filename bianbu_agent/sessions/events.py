@@ -45,6 +45,9 @@ SESSION_EVENT_TYPES = frozenset(
         "run/cancelled",
         "agent/inbox/claimed",
         "agent/inbox/spliced",
+        "session/title",
+        "session/title/request",
+        "session/title/route",
         *_RUN_EVENT_TYPES.values(),
     }
 )
@@ -196,6 +199,91 @@ def session_event_for_inbox_user_message(
     )
 
 
+def session_event_for_title(
+    session_id: str,
+    title: str,
+    *,
+    message_seqs: tuple[int, ...],
+    source_kind: str,
+    seq: int,
+    event_time: float,
+    request_id: str = "",
+) -> SessionEvent:
+    """One log-only title revision; it belongs to no Run and no model turn.
+
+    ``request_id`` binds every revision to the exact request that produced
+    it.  Without it a late answer would be attributed to whichever request
+    happened to be newest when the transcript is replayed.
+    """
+
+    data: dict[str, object] = {
+        "title": str(title),
+        "message_seqs": [int(item) for item in message_seqs],
+        "source": {"kind": str(source_kind)},
+    }
+    if request_id:
+        data["request_id"] = str(request_id)
+    return SessionEvent(
+        session_id,
+        seq,
+        "session/title",
+        event_time,
+        None,
+        data,
+    )
+
+
+def session_event_for_title_request(
+    session_id: str,
+    request: Mapping[str, object],
+    *,
+    route: Mapping[str, object] | None = None,
+    message_seqs: tuple[int, ...],
+    request_id: str,
+    seq: int,
+    event_time: float,
+) -> SessionEvent:
+    """One log-only record of the exact auxiliary title request.
+
+    It is written before dispatch so a failed, timed-out, or abandoned title
+    request is still explainable from the Session log alone.  ``route`` is
+    filled only when the caller resolved it before dispatch; otherwise a
+    separate ``session/title/route`` event follows.
+    """
+
+    data: dict[str, object] = {
+        "request_id": str(request_id),
+        "system": str(request.get("system") or ""),
+        "input": str(request.get("input") or ""),
+        "message_seqs": [int(item) for item in message_seqs],
+    }
+    if route:
+        data["route"] = dict(route)
+    return SessionEvent(
+        session_id, seq, "session/title/request", event_time, None, data,
+    )
+
+
+def session_event_for_title_route(
+    session_id: str,
+    route: Mapping[str, object],
+    *,
+    request_id: str,
+    seq: int,
+    event_time: float,
+) -> SessionEvent:
+    """The resolved provider/model for a title request already in the log."""
+
+    return SessionEvent(
+        session_id,
+        seq,
+        "session/title/route",
+        event_time,
+        None,
+        {"route": dict(route), "request_id": str(request_id)},
+    )
+
+
 def session_event_to_dict(event: SessionEvent) -> dict[str, object]:
     data = dict(event.data)
     attachments = data.get("attachments")
@@ -219,5 +307,7 @@ __all__ = [
     "session_event_for_inbox_claim", "session_event_for_inbox_splice",
     "session_event_for_inbox_user_message",
     "session_event_for_run_result", "session_event_for_run_start",
+    "session_event_for_title", "session_event_for_title_request",
+    "session_event_for_title_route",
     "session_event_to_dict",
 ]

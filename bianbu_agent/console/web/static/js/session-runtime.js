@@ -516,8 +516,10 @@
                 last_seq: this.lastSeq,
                 has_more: this.hasMore,
                 messages: this.state.messages.map(message => ({...message})),
-                events: events.filter(event => event.run_id == null
-                    || !this.hiddenRuns.has(String(event.run_id))).map(event => ({
+                // Trajectory renders the persisted timeline, including
+                // Console-operation Runs.  Their IDs stay in hiddenRuns so
+                // only the Chat reducer ignores them.
+                events: events.map(event => ({
                     ...event,
                     data: {...(event.data || {})},
                 })),

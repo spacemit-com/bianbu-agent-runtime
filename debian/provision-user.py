@@ -55,13 +55,7 @@ LEGACY_FILES = (
 # skipped.
 OPTIONAL_DIRECTORIES = ("mcps", "plugins", "skills", "tools")
 STATE_NAME = ".managed-profile.json"
-RECOMMENDED_AGENT_NAME = "BibitEdgeAssistant"
-
-
-#: Execution modes a package release retired.  ``auto`` asked securityd to
-#: choose between host and sandbox; the Runtime now states the mode itself, so
-#: a config that still carries it is moved to the packaged default.
-RETIRED_EXECUTION_MODES = ("auto",)
+DEFAULT_INITIAL_AGENT = "com.bianbu.627d97ad908c"
 
 
 class ProvisionError(RuntimeError):
@@ -87,7 +81,7 @@ def _require_directory(path: Path, label: str) -> Path:
     return path
 
 
-def _component_ids(profile: Path) -> dict[str, list[str]]:
+def _component_ids(resources: Path) -> dict[str, list[str]]:
     # Package definitions are read directly from the system resource root.
     # Empty desired sets retire only IDs recorded by previous provisioners.
     return {kind: [] for kind in MANAGED_KINDS}
@@ -107,31 +101,67 @@ def _validated_component_id(value: object) -> str:
     return value
 
 
-def _recommended_agent_ids(root: Path) -> list[str]:
+def _agent_template_directories(root: Path) -> list[Path]:
     agents_root = root / "agents"
-    matches: list[str] = []
+    if not agents_root.is_dir():
+        return []
+    directories: list[Path] = []
     for directory in sorted(agents_root.iterdir(), key=lambda item: item.name):
         if directory.is_symlink():
             raise ProvisionError(
-                f"recommended Agent directory must not be a symbolic link: {directory}"
+                f"Agent template directory must not be a symbolic link: {directory}"
             )
         if not directory.is_dir():
             continue
         manifest = directory / "agent.yaml"
         if manifest.is_symlink():
             raise ProvisionError(
-                f"recommended Agent must not be a symbolic link: {manifest}"
+                f"Agent template must not be a symbolic link: {manifest}"
             )
-        if not manifest.is_file():
-            continue
+        if manifest.is_file():
+            directories.append(directory)
+    return directories
+
+
+def _configured_initial_agent(resources: Path) -> str:
+    source = _initial_config_source(resources)
+    if not source.is_file():
+        return DEFAULT_INITIAL_AGENT
+    try:
+        document = yaml.safe_load(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise ProvisionError(f"could not read packaged config: {exc}") from exc
+    if not isinstance(document, dict):
+        raise ProvisionError("packaged config must be a mapping")
+    value = document.get("initial_agent")
+    if value is None:
+        return DEFAULT_INITIAL_AGENT
+    if not isinstance(value, str) or not value.strip():
+        raise ProvisionError("config initial_agent must be a non-empty string")
+    return value.strip()
+
+
+def _initial_agent_source(resources: Path) -> Path:
+    configured = _configured_initial_agent(resources)
+    templates: list[tuple[str, Path]] = []
+    for directory in _agent_template_directories(resources):
+        manifest = directory / "agent.yaml"
         try:
             document = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, yaml.YAMLError):
-            continue
+        except (OSError, UnicodeError, yaml.YAMLError) as exc:
+            raise ProvisionError(
+                f"could not read packaged Agent template {manifest}: {exc}"
+            ) from exc
         agent = document.get("agent") if isinstance(document, dict) else None
-        if isinstance(agent, dict) and agent.get("name") == RECOMMENDED_AGENT_NAME:
-            matches.append(directory.name)
-    return matches
+        agent_id = agent.get("id") if isinstance(agent, dict) else None
+        if isinstance(agent_id, str):
+            templates.append((agent_id, manifest))
+    for agent_id, manifest in templates:
+        if agent_id == configured:
+            return manifest
+    raise ProvisionError(
+        f"config initial_agent does not name a packaged Agent template: {configured!r}"
+    )
 
 
 def _rebind_starter_sessions(root: Path, previous_ids: list[str], agent_id: str) -> None:
@@ -166,12 +196,17 @@ def _hash_path(digest: hashlib._Hash, root: Path, path: Path) -> None:
             digest.update(chunk)
 
 
-def _profile_digest(profile: Path) -> str:
+def _initial_config_source(resources: Path) -> Path:
+    return resources / "config.yaml"
+
+
+def _profile_digest(resources: Path) -> str:
     digest = hashlib.sha256(b"system-resources-v1")
-    for name in ("config.yaml", "starter-agent.yaml", *MANAGED_KINDS):
-        path = profile / name
+    names = ["config.yaml", *MANAGED_KINDS]
+    for name in names:
+        path = resources / name
         if path.exists() or path.is_symlink():
-            _hash_path(digest, profile, path)
+            _hash_path(digest, resources, path)
     return digest.hexdigest()
 
 
@@ -181,8 +216,8 @@ def _tree_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _initial_config(profile: Path, uid: int) -> bytes:
-    source = profile / "config.yaml"
+def _initial_config(resources: Path, uid: int) -> bytes:
+    source = _initial_config_source(resources)
     try:
         document = yaml.safe_load(source.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
@@ -198,8 +233,8 @@ def _initial_config(profile: Path, uid: int) -> bytes:
     return yaml.safe_dump(document, allow_unicode=True, sort_keys=False).encode("utf-8")
 
 
-def _initial_agent(profile: Path, agent_id: str) -> bytes:
-    source = profile / "starter-agent.yaml"
+def _initial_agent(resources: Path, agent_id: str) -> bytes:
+    source = _initial_agent_source(resources)
     try:
         document = yaml.safe_load(source.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
@@ -340,60 +375,53 @@ def _apply_profile_presets(root: Path, payload: bytes) -> bool:
     return True
 
 
-def _requested_mode(document: object, scope: str) -> str | None:
-    """The normalised execution mode one scope declares, when it declares one."""
+def _strip_retired_runtime_keys(root: Path, digest: str) -> bool:
+    """Remove runtime keys an earlier release parsed but never acted on.
 
-    if not isinstance(document, dict):
-        return None
-    runtime = document.get("runtime")
-    section = runtime.get(scope) if isinstance(runtime, dict) else None
-    execution = section.get("execution") if isinstance(section, dict) else None
-    mode = execution.get("requested_mode") if isinstance(execution, dict) else None
-    if not isinstance(mode, str):
-        return None
-    return mode.strip().lower() or None
-
-
-def _apply_profile_execution_defaults(root: Path, digest: str, payload: bytes) -> bool:
-    """Carry the packaged execution defaults into an existing user config.
-
-    ``runtime.{control,worker}.execution.requested_mode`` is device policy: it
-    is the mode every Expert that states none of its own runs in.  A device
-    that still carries a retired mode would keep the retired behaviour after
-    the upgrade, so an unchanged retired value follows the packaged profile.
-    Every other value -- an explicit ``sandbox``, an Expert's own choice --
-    keeps its place.
+    ``execution.requested_mode`` on ``runtime.control``/``runtime.worker`` never
+    selected a mode: the supervisor always asked securityd to decide. The two
+    ``startup_timeout_seconds`` keys never bounded a start either; the real
+    deadline is ``runtime.control.handshake_timeout_seconds``. The loader now
+    rejects them, so an upgraded profile must not keep them.
     """
 
     path = root / "config.yaml"
     if path.is_symlink() or not path.is_file():
         return False
     try:
-        current = yaml.safe_load(path.read_text(encoding="utf-8"))
-        profile = yaml.safe_load(payload.decode("utf-8"))
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise ProvisionError(
-            f"could not read config for the execution default update: {exc}"
+            f"could not read config for the retired runtime key update: {exc}"
         ) from exc
-    if not isinstance(current, dict) or not isinstance(profile, dict):
+    if not isinstance(document, dict):
+        return False
+    runtime = document.get("runtime")
+    if not isinstance(runtime, dict):
         return False
     changed = False
     for scope in ("control", "worker"):
-        packaged = _requested_mode(profile, scope)
-        if packaged is None or packaged in RETIRED_EXECUTION_MODES:
+        section = runtime.get(scope)
+        if not isinstance(section, dict):
             continue
-        if _requested_mode(current, scope) in RETIRED_EXECUTION_MODES:
-            current["runtime"][scope]["execution"]["requested_mode"] = packaged
+        removed = False
+        for key in ("execution", "startup_timeout_seconds"):
+            if key in section:
+                del section[key]
+                removed = True
+        if removed:
             changed = True
+            if not section:
+                del runtime[scope]
     if not changed:
         return False
-    payload_bytes = yaml.safe_dump(
-        current, allow_unicode=True, sort_keys=False
+    payload = yaml.safe_dump(
+        document, allow_unicode=True, sort_keys=False
     ).encode("utf-8")
-    if payload_bytes == path.read_bytes():
+    if payload == path.read_bytes():
         return False
     _backup_config(root, digest, path)
-    _atomic_private_bytes(path, payload_bytes)
+    _atomic_private_bytes(path, payload)
     return True
 
 
@@ -517,7 +545,7 @@ def _make_private_tree(root: Path) -> None:
 
 
 def _sync_components(
-    profile: Path,
+    resources: Path,
     root: Path,
     digest: str,
     previous: dict[str, list[str]],
@@ -533,7 +561,7 @@ def _sync_components(
         for kind, component_ids in current.items():
             for component_id in component_ids:
                 shutil.copytree(
-                    profile / kind / component_id,
+                    resources / kind / component_id,
                     staging / kind / component_id,
                 )
                 if kind in {"agents", "models"}:
@@ -553,7 +581,7 @@ def _sync_components(
                 _backup_component(root, digest, kind, component_id, None)
                 _remove_entry(target_root / component_id)
             for component_id in current[kind]:
-                source = profile / kind / component_id
+                source = resources / kind / component_id
                 target = target_root / component_id
                 _backup_component(root, digest, kind, component_id, source)
                 if target.is_symlink():
@@ -582,9 +610,9 @@ def _provision_lock(root: Path) -> Iterator[None]:
         os.close(descriptor)
 
 
-def provision(profile_root: Path, home: Path, uid: int | None = None) -> ProvisionResult:
-    profile = Path(profile_root).expanduser().resolve()
-    _require_directory(profile, "default profile")
+def provision(resource_root: Path, home: Path, uid: int | None = None) -> ProvisionResult:
+    resources = Path(resource_root).expanduser().resolve()
+    _require_directory(resources, "system resource root")
     resolved_home = Path(home).expanduser().resolve()
     _require_directory(resolved_home, "user home")
     selected_uid = os.getuid() if uid is None else int(uid)
@@ -607,10 +635,22 @@ def provision(profile_root: Path, home: Path, uid: int | None = None) -> Provisi
     for relative in LEGACY_FILES:
         _prune_retired_file(root / relative)
 
-    digest = _profile_digest(profile)
-    current = _component_ids(profile)
+    # Retired runtime keys have to disappear before anything else reads the
+    # user config. The Runtime unit runs this provisioner, then publishes the
+    # system starter, then provisions again; a config the loader rejects would
+    # fail the middle step even though this same startup is the one migrating
+    # it. The packaged profile digest belongs to the package, so it can be
+    # computed before the migration.
+    digest = _profile_digest(resources)
+    _strip_retired_runtime_keys(root, digest)
+
+    # Resolve the selected template before touching the user profile: a
+    # mistyped initial_agent must fail loudly instead of silently publishing a
+    # different Expert.
+    _initial_agent_source(resources)
+    current = _component_ids(resources)
     state_path = root / STATE_NAME
-    config_payload = _initial_config(profile, selected_uid)
+    config_payload = _initial_config(resources, selected_uid)
     with _provision_lock(root):
         state = _read_state(state_path)
         raw_previous = state.get("managed", {})
@@ -622,14 +662,13 @@ def provision(profile_root: Path, home: Path, uid: int | None = None) -> Provisi
         }
         system_id = system_starter_id(root)
         starter_agent_id = system_id or str(state.get("starter_agent_id") or "").strip()
-        recommended_agent_ids = _recommended_agent_ids(root)
-        reusable_agent_ids = [
-            agent_id
-            for agent_id in recommended_agent_ids
-            if AGENT_ID_PATTERN.fullmatch(agent_id) is not None
-        ]
-        if not system_id and reusable_agent_ids and starter_agent_id not in reusable_agent_ids:
-            starter_agent_id = reusable_agent_ids[0]
+        configured_agent_id = _configured_initial_agent(resources)
+        if (
+            not system_id
+            and not starter_agent_id
+            and AGENT_ID_PATTERN.fullmatch(configured_agent_id) is not None
+        ):
+            starter_agent_id = configured_agent_id
         elif not starter_agent_id:
             starter_agent_id = new_agent_id()
         if AGENT_ID_PATTERN.fullmatch(starter_agent_id) is None:
@@ -648,8 +687,6 @@ def provision(profile_root: Path, home: Path, uid: int | None = None) -> Provisi
             # copies it, leaving both digests equal and the user without it.
             # Everything else stays exactly as the user left it.
             config_changed = _apply_profile_presets(root, config_payload)
-            if _apply_profile_execution_defaults(root, digest, config_payload):
-                config_changed = True
         agent_changed = False
         # The preset expert's declaration is ours, but editing a system Agent is
         # how a user makes an override, and the Agent store reads the user
@@ -664,9 +701,13 @@ def provision(profile_root: Path, home: Path, uid: int | None = None) -> Provisi
         shipped = str(state.get("starter_digest") or "")
         starter_digest = ""
         if system_id:
-            published = system_agent_directory(root) / system_id / "agent.yaml"
+            published_root = system_agent_directory(root) / system_id
+            published = published_root / "agent.yaml"
             if published.is_file():
-                starter_digest = _tree_digest(published)
+                # The digest covers the whole package, so a shipped change to
+                # the Expert's private skills/mcps/plugins also replaces the
+                # user override, not just a change to agent.yaml.
+                starter_digest = _tree_digest(published_root)
         if system_id and starter_digest and starter_digest != shipped:
             if (root / "agents" / system_id).exists():
                 archive_user_starter(root, system_id)
@@ -674,7 +715,7 @@ def provision(profile_root: Path, home: Path, uid: int | None = None) -> Provisi
             agent_changed = True
         if state.get("profile_digest") == digest and not agent_changed:
             return ProvisionResult(config_changed or agent_changed, digest)
-        _sync_components(profile, root, digest, previous, current)
+        _sync_components(resources, root, digest, previous, current)
         _atomic_private_json(
             state_path,
             {
@@ -690,7 +731,7 @@ def provision(profile_root: Path, home: Path, uid: int | None = None) -> Provisi
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", type=Path, required=True)
+    parser.add_argument("--resource-root", type=Path, required=True)
     parser.add_argument("--home", type=Path, default=Path.home())
     parser.add_argument("--uid", type=int, default=os.getuid())
     return parser
@@ -699,7 +740,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     try:
-        result = provision(arguments.profile, arguments.home, arguments.uid)
+        result = provision(arguments.resource_root, arguments.home, arguments.uid)
     except (OSError, ProvisionError, ValueError) as exc:
         print(f"bianbu-agent profile provisioning failed: {exc}", file=sys.stderr)
         return 1

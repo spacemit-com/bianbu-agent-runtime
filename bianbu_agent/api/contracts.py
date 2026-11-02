@@ -15,7 +15,6 @@ from pydantic import (
     model_validator,
 )
 
-
 # Arbitrary JSON-shaped values are permitted inside declared metadata and options
 # objects.  The enclosing request models remain strict about their own fields.
 JSONValue = Any
@@ -107,6 +106,16 @@ class SessionUpdateRequest(StrictModel):
 class AgentModelRequest(StrictModel):
     provider: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=512)
+    # Omitted on PATCH means "keep the stored effort"; omitted on POST is
+    # normalized to the default by the route.  A default here would make an
+    # old client reset an existing high/max selection just by renaming a model.
+    effort: Literal["off", "low", "high", "max"] | None = None
+
+    @model_validator(mode="after")
+    def validate_effort(self) -> "AgentModelRequest":
+        if "effort" in self.model_fields_set and self.effort is None:
+            raise ValueError("effort must be one of: off, low, high, max")
+        return self
 
 
 class AgentCreateRequest(StrictModel):
@@ -190,6 +199,10 @@ class MCPServerView(StrictModel):
     #: Empty while the server answers; a Plugins page cannot explain a missing
     #: tool set without it.
     detail: str = ""
+    #: The server lives inside one Agent package; only that Agent sees it and
+    #: the editor keeps it locked.
+    private: bool = False
+    owner_agent_id: str | None = None
 
 
 class MCPServerCollectionEnvelope(StrictModel):
@@ -251,6 +264,10 @@ class CapabilityView(StrictModel):
     # A preset capability is materialized into every Agent whatever its own
     # selectors say, so an editor must not offer to turn it off.
     preset: bool = False
+    # A private capability lives inside one Agent package.  It is always on for
+    # that Agent, so the editor shows it locked instead of offering a toggle.
+    private: bool = False
+    owner_agent_id: str | None = None
     unavailable_reason: str
 
 

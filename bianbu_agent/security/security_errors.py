@@ -68,7 +68,7 @@ _CONNECTION_MESSAGE_MARKERS = (
     "network is unreachable", "name or service not known",
     "temporary failure in name resolution",
 )
-_NETWORK_MODES = frozenset({"whitelist", "deny_all", "allow_all", "learning"})
+_NETWORK_MODES = frozenset({"whitelist", "deny_all", "allow_all"})
 
 
 def _provider_host(base_url: object) -> str:
@@ -181,11 +181,11 @@ def _provider_unreachable_payload(
         reason = (
             f"当前 Agent 只允许访问指定网站，但模型服务 {host} 不在白名单中。"
             "下一步：打开“安全控制中心 → 配置中心 → 网络策略”，将该域名加入白名单；"
-            "保存后重启此 Agent 再重试。"
+            "保存后下次请求会自动重启此 Agent 并生效，再重试即可。"
             if mode == "whitelist" else
             f"当前 Agent 已禁止所有外网访问，无法连接模型服务 {host}。"
             "下一步：打开“安全控制中心 → 配置中心 → 网络策略”，改为允许访问或白名单模式；"
-            "保存后重启此 Agent 再重试。"
+            "保存后下次请求会自动重启此 Agent 并生效，再重试即可。"
         )
         return {
             "code": NETWORK_POLICY_BLOCKED_CODE,

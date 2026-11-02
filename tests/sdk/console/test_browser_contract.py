@@ -197,11 +197,12 @@ async def _running_console(
     parallel_started: list[str] | None = None,
     parallel_release: asyncio.Event | None = None,
     role: str = "worker",
+    model_name: str = "browser-contract",
 ) -> AsyncIterator[tuple[str, AgentHome]]:
     default = AgentSpec(
         id="default",
         name="Default",
-        model=AgentModel("browser", "browser-contract"),
+        model=AgentModel("browser", model_name),
         mcps=("mcp.browser-contract",) if mcp_health_gate is not None else (),
     )
     home = AgentHome(tmp_path / ".bianbu-agent").prepare()
@@ -225,7 +226,7 @@ async def _running_console(
             if isinstance(agent.model, AgentModel)
             else replace(
                 agent,
-                model=AgentModel("browser", "browser-contract"),
+                model=AgentModel("browser", model_name),
             )
         )
     if mcp_health_gate is not None:
@@ -834,6 +835,139 @@ async def test_live_renderer_repairs_assistant_before_pending_user_dom_order(
 
 
 @pytest.mark.asyncio
+async def test_trajectory_projection_keeps_title_work_out_of_run_turns(
+    tmp_path: Path,
+) -> None:
+    """Trajectory accepts Runs and title work as two distinct input kinds."""
+
+    async with _running_console(tmp_path) as environment:
+        base_url, _ = environment
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            try:
+                page = await browser.new_page()
+                await page.goto(f"{base_url}/chat", wait_until="domcontentloaded")
+                projection = await page.evaluate(
+                    """() => BianbuTrajectory.projectTrajectory([
+                        {seq: 0, type: 'user/message', run_id: 'run-a', time: 10,
+                         data: {content: 'open terminal'}},
+                        {seq: 1, type: 'session/title', run_id: null, time: 10.1,
+                         data: {title: 'open terminal', message_seqs: [0],
+                                source: {kind: 'fallback'}}},
+                        {seq: 2, type: 'session/title/request', run_id: null,
+                         time: 10.2, data: {system: 'title instructions',
+                                            input: 'title input',
+                                            route: {provider: 'p', model: 'm'}}},
+                        {seq: 3, type: 'session/title/route', run_id: null,
+                         time: 10.3, data: {request_seq: 2,
+                                           route: {provider: 'p', model: 'm'}}},
+                        {seq: 4, type: 'session/title', run_id: null, time: 11.5,
+                         data: {title: 'terminal launch', message_seqs: [0],
+                                source: {kind: 'provider'}}},
+                        {seq: 5, type: 'run/completed', run_id: 'run-a', time: 12,
+                         data: {status: 'completed'}},
+                    ])"""
+                )
+
+                assert [turn["kind"] for turn in projection["turns"]] == [
+                    "run", "title",
+                ]
+                run_turn, title_turn = projection["turns"]
+                assert run_turn["run_id"] == "run-a"
+                assert [record["kind"] for record in run_turn["records"]] == [
+                    "user", "wait", "run",
+                ]
+                assert title_turn["run_id"] is None
+                assert title_turn["title"] == "terminal launch"
+                assert title_turn["status"] == "completed"
+                assert [record["kind"] for record in title_turn["records"]] == [
+                    "title", "context", "title",
+                ]
+                request = title_turn["records"][1]
+                assert request["input"] == "title input"
+                assert request["output"] == "title instructions"
+                assert request["duration"] == pytest.approx(1.3)
+                # The route is a separate durable event but annotates the
+                # request row, so the context and its destination stay one
+                # ledger entry.
+                assert request["data"]["route"] == {
+                    "provider": "p", "model": "m",
+                }
+                assert "p/m" in request["preview"]
+
+                repeated = await page.evaluate(
+                    """() => BianbuTrajectory.projectTrajectory([
+                        {seq: 0, type: 'session/title', run_id: null, time: 20,
+                         data: {title: 'first', message_seqs: [0],
+                                source: {kind: 'fallback'}}},
+                        {seq: 1, type: 'session/title/request', run_id: null,
+                         time: 20.1, data: {system: 's1', input: 'i1'}},
+                        {seq: 2, type: 'session/title/route', run_id: null,
+                         time: 20.2, data: {request_seq: 1,
+                                           route: {provider: 'p', model: 'm'}}},
+                        {seq: 3, type: 'session/title', run_id: null, time: 21,
+                         data: {title: 'model title', message_seqs: [0],
+                                source: {kind: 'provider'}}},
+                        {seq: 4, type: 'session/title', run_id: null, time: 25,
+                         data: {title: 'second', message_seqs: [2],
+                                source: {kind: 'fallback'}}},
+                        {seq: 5, type: 'session/title/request', run_id: null,
+                         time: 25.1, data: {system: 's2', input: 'i2'}},
+                        {seq: 6, type: 'session/title', run_id: null, time: 26,
+                         data: {title: 'second model title', message_seqs: [2],
+                                source: {kind: 'provider'}}},
+                    ])"""
+                )
+                # Each request is its own Trajectory unit: retitling a Session
+                # must not rewrite the previous request's row or merge them.
+                assert [turn["kind"] for turn in repeated["turns"]] == [
+                    "title", "title",
+                ]
+                first, second = repeated["turns"]
+                assert first["title"] == "model title"
+                assert second["title"] == "second model title"
+                assert [record["kind"] for record in first["records"]] == [
+                    "title", "context", "title",
+                ]
+                assert first["records"][1]["input"] == "i1"
+                assert second["records"][1]["input"] == "i2"
+
+                # Request ids are authoritative: an answer that arrives after
+                # a newer request still belongs to its own unit.
+                out_of_order = await page.evaluate(
+                    """() => BianbuTrajectory.projectTrajectory([
+                        {seq: 0, type: 'session/title', run_id: null, time: 30,
+                         data: {title: 'old fallback', request_id: 'r1',
+                                message_seqs: [], source: {kind: 'fallback'}}},
+                        {seq: 1, type: 'session/title/request', run_id: null,
+                         time: 30.1, data: {request_id: 'r1',
+                                            system: 's1', input: 'i1'}},
+                        {seq: 2, type: 'session/title', run_id: null, time: 30.2,
+                         data: {title: 'new fallback', request_id: 'r2',
+                                message_seqs: [], source: {kind: 'fallback'}}},
+                        {seq: 3, type: 'session/title/request', run_id: null,
+                         time: 30.3, data: {request_id: 'r2',
+                                            system: 's2', input: 'i2'}},
+                        {seq: 4, type: 'session/title', run_id: null, time: 31,
+                         data: {title: 'new title', request_id: 'r2',
+                                message_seqs: [], source: {kind: 'provider'}}},
+                        {seq: 5, type: 'session/title', run_id: null, time: 32,
+                         data: {title: 'old title', request_id: 'r1',
+                                message_seqs: [], source: {kind: 'provider'}}},
+                    ])"""
+                )
+                assert [turn["title"] for turn in out_of_order["turns"]] == [
+                    "old title", "new title",
+                ]
+                assert [
+                    [record["seq"] for record in turn["records"]]
+                    for turn in out_of_order["turns"]
+                ] == [[0, 1, 5], [2, 3, 4]]
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
 async def test_trajectory_projection_groups_records_and_calculates_metrics(
     tmp_path: Path,
 ) -> None:
@@ -918,6 +1052,84 @@ async def test_trajectory_projection_groups_records_and_calculates_metrics(
                     "custom/diagnostic"
                 )
                 assert trajectory["turns"][1]["status"] == "failed"
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_trajectory_accounts_for_every_persisted_session_event(
+    tmp_path: Path,
+) -> None:
+    """No persisted event may be skipped or hidden behind a folded seq."""
+
+    events = [
+        {"seq": 0, "type": "user/message", "run_id": "run-a", "time": 10,
+         "data": {"content": "hello"}},
+        {"seq": 1, "type": "assistant/reasoning.delta", "run_id": "run-a",
+         "time": 11, "data": {"text": "thinking", "seq_range": [1, 2]}},
+        {"seq": 3, "type": "assistant/message.end", "run_id": "run-a", "time": 12,
+         "data": {"has_tool_calls": True}},
+        {"seq": 4, "type": "tool/call.started", "run_id": "run-a", "time": 13,
+         "data": {"call_id": "call-1", "name": "terminal", "arguments": {}}},
+        {"seq": 5, "type": "tool/call.completed", "run_id": "run-a", "time": 14,
+         "data": {"call_id": "call-1", "result": "ok", "status": "success"}},
+        {"seq": 6, "type": "assistant/text.delta", "run_id": "run-a", "time": 15,
+         "data": {"text": "done"}},
+        {"seq": 7, "type": "assistant/message.end", "run_id": "run-a", "time": 16,
+         "data": {"has_tool_calls": False}},
+        {"seq": 8, "type": "run/progress", "run_id": "run-a", "time": 17,
+         "data": {"phase": "finalizing"}},
+        {"seq": 9, "type": "run/completed", "run_id": "run-a", "time": 18,
+         "data": {}},
+    ]
+
+    async with _running_console(tmp_path) as environment:
+        base_url, _ = environment
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            try:
+                page = await browser.new_page()
+                await page.goto(f"{base_url}/chat", wait_until="domcontentloaded")
+                projection = await page.evaluate(
+                    "(events) => BianbuTrajectory.projectTrajectory(events)", events,
+                )
+
+                # A record's seq_range is the span of persisted events it stands
+                # for.  Together they must cover the whole transcript: 1,2 are
+                # folded into the reasoning row, 4,5 into the tool row.
+                covered = set()
+                for record in projection["records"]:
+                    if record["kind"] == "wait":
+                        continue
+                    span = record.get("seq_range") or [
+                        record["seq"], record["end_seq"],
+                    ]
+                    covered.update(range(span[0], span[1] + 1))
+                assert covered == set(range(events[-1]["seq"] + 1))
+
+                endings = [
+                    record for record in projection["records"]
+                    if record["title"] == "Assistant message ended"
+                ]
+                assert [record["seq"] for record in endings] == [3, 7]
+                assert [record["preview"] for record in endings] == [
+                    "Tool calls follow", "Assistant reply complete",
+                ]
+
+                await page.evaluate(
+                    """(events) => {
+                        sessionRuntime.get(sessionId).installHistory(
+                            events, {hasMore: false});
+                        renderSessionModelSnapshot(sessionId);
+                        setConversationView('trajectory');
+                    }""",
+                    events,
+                )
+                await expect(
+                    page.locator(
+                        '.trajectory-record[data-trajectory-key="reasoning:1"]'
+                    ).locator(".trajectory-record-index")
+                ).to_have_text("#1–2")
             finally:
                 await browser.close()
 
@@ -1013,10 +1225,10 @@ async def test_trajectory_rows_reconcile_with_the_turn_wall_clock(
 
 
 @pytest.mark.asyncio
-async def test_trajectory_projection_excludes_internal_console_runs(
+async def test_trajectory_projects_internal_console_runs_while_chat_hides_them(
     tmp_path: Path,
 ) -> None:
-    """A hidden title Run must not leak any of its events into Trajectory."""
+    """Title generation is an execution fact: Trajectory shows it, Chat hides it."""
 
     async with _running_console(tmp_path) as environment:
         base_url, _ = environment
@@ -1031,15 +1243,26 @@ async def test_trajectory_projection_excludes_internal_console_runs(
                          data: {content: 'Generate title',
                                 console_operation: 'generate_title'}},
                         {seq: 1, type: 'assistant/text.delta', run_id: 'title-run',
-                         time: 2, data: {text: 'Hidden title'}},
+                         time: 2, data: {text: 'Generated title'}},
                         {seq: 2, type: 'run/completed', run_id: 'title-run', time: 3,
-                         data: {content: 'Hidden title'}},
+                         data: {content: 'Generated title'}},
                         {seq: 3, type: 'user/message', run_id: 'visible-run', time: 4,
                          data: {content: 'Visible question'}},
                     ])"""
                 )
-                assert "summary" not in trajectory
-                assert trajectory["records"][0]["run_id"] == "visible-run"
+                # Every persisted event belongs to a Turn, including the title
+                # Run, so the trajectory never shows an unexplained seq hole.
+                assert [turn["run_id"] for turn in trajectory["turns"]] == [
+                    "title-run", "visible-run",
+                ]
+                title_turn = trajectory["turns"][0]
+                assert title_turn["records"][0]["title"] == "User"
+                assistant = next(
+                    record for record in title_turn["records"]
+                    if record["kind"] == "assistant"
+                )
+                assert assistant["output"] == "Generated title"
+                assert title_turn["records"][-1]["kind"] == "run"
 
                 paged = await page.evaluate(
                     """() => {
@@ -1049,9 +1272,7 @@ async def test_trajectory_projection_excludes_internal_console_runs(
                             {seq: 10, type: 'user/message', run_id: 'visible-run',
                              time: 10, data: {content: 'Visible question'}},
                             {seq: 11, type: 'assistant/text.delta', run_id: 'title-run',
-                             time: 11, data: {text: 'Leaked title'}},
-                            {seq: 12, type: 'run/completed', run_id: 'title-run',
-                             time: 12, data: {content: 'Leaked title'}},
+                             time: 11, data: {text: 'Generated '}},
                         ], {hasMore: true, hiddenRunIds: ['title-run']});
                         let callbacks = 0;
                         const connection = new BianbuSessionRuntime.SessionConnection(
@@ -1059,89 +1280,119 @@ async def test_trajectory_projection_excludes_internal_console_runs(
                         );
                         connection._message('mux', JSON.stringify({
                             type: 'session/event', session_id: 'paged',
-                            event: {seq: 13, type: 'assistant/text.delta',
+                            event: {seq: 12, type: 'assistant/text.delta',
+                                run_id: 'title-run', time: 12,
+                                data: {text: 'title'}},
+                        }));
+                        connection._message('mux', JSON.stringify({
+                            type: 'session/event', session_id: 'paged',
+                            event: {seq: 13, type: 'run/completed',
                                 run_id: 'title-run', time: 13,
-                                data: {text: 'Still hidden'}},
+                                data: {content: 'Generated title'}},
                         }));
                         return {
                             projection: BianbuTrajectory.projectTrajectory(
                                 model.snapshot().events
                             ),
+                            messages: model.snapshot().messages.map(
+                                message => message.content || ''
+                            ),
                             callbacks,
                         };
                     }"""
                 )
-                assert "summary" not in paged["projection"]
-                assert paged["projection"]["records"][0]["run_id"] == (
-                    "visible-run"
-                )
+                # Chat still hides the internal Run: no title text leaks into
+                # messages and it does not drive conversation status.
+                assert paged["messages"] == ["Visible question"]
                 assert paged["callbacks"] == 0
+                title_records = [
+                    record for record in paged["projection"]["records"]
+                    if record["run_id"] == "title-run"
+                ]
+                kinds = [record["kind"] for record in title_records]
+                assert "assistant" in kinds
+                assert kinds[-1] == "run"
+                assistant = next(
+                    record for record in title_records
+                    if record["kind"] == "assistant"
+                )
+                assert assistant["output"] == "Generated title"
             finally:
                 await browser.close()
 
 
 @pytest.mark.asyncio
-async def test_trajectory_projects_context_and_pairs_hooks_without_noise(
+async def test_trajectory_projects_the_request_and_keeps_every_hook(
     tmp_path: Path,
 ) -> None:
-    """Observability records are semantic, paired, and omit no-op Hooks."""
+    """The Context row is the request itself, and no Hook row is hidden."""
 
     async with _running_console(tmp_path) as environment:
         base_url, _ = environment
+        events = [
+            {"seq": 0, "type": "user/message", "run_id": "run-a", "time": 10,
+             "data": {"content": "hello"}},
+            {"seq": 1, "type": "request/context", "run_id": "run-a", "time": 11,
+             "data": {"reason": "initial",
+                      "agent_id": "com.bianbu.123456789abc",
+                      "provider": "bibit", "model": "local",
+                      "text": "## System prompt\n\nYou are the selected agent.\n\n"
+                              "## Tools (1)\n\n### terminal\nRun a command.\n\n"
+                              "## Messages (1)\n\n### user\nhello"}},
+            {"seq": 2, "type": "hook/invoked", "run_id": "run-a", "time": 12,
+             "data": {"invocation_id": "h1", "hook_id": "bianbu.memory/context",
+                      "plugin_id": "bianbu.memory", "point": "after_context"}},
+            {"seq": 3, "type": "hook/result", "run_id": "run-a", "time": 13,
+             "data": {"invocation_id": "h1", "hook_id": "bianbu.memory/context",
+                      "plugin_id": "bianbu.memory", "point": "after_context",
+                      "status": "completed", "duration_ms": 4,
+                      "context_sections": ["Remember dark mode."]}},
+            {"seq": 4, "type": "hook/invoked", "run_id": "run-a", "time": 14,
+             "data": {"invocation_id": "h2",
+                      "hook_id": "example.plugin/example.after_run",
+                      "plugin_id": "example.plugin", "point": "after_run"}},
+            {"seq": 5, "type": "hook/result", "run_id": "run-a", "time": 15,
+             "data": {"invocation_id": "h2",
+                      "hook_id": "example.plugin/example.after_run",
+                      "plugin_id": "example.plugin", "point": "after_run",
+                      "status": "completed", "duration_ms": 1}},
+            {"seq": 6, "type": "run/completed", "run_id": "run-a", "time": 16,
+             "data": {}},
+        ]
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=True)
             try:
                 page = await browser.new_page()
                 await page.goto(f"{base_url}/chat", wait_until="domcontentloaded")
                 trajectory = await page.evaluate(
-                    """() => BianbuTrajectory.projectTrajectory([
-                        {seq: 0, type: 'user/message', run_id: 'run-a', time: 10,
-                         data: {content: 'hello'}},
-                        {seq: 1, type: 'request/context', run_id: 'run-a', time: 11,
-                         data: {reason: 'initial', agent_id: 'com.bianbu.123456789abc',
-                                provider: 'bibit', model: 'local',
-                                system_prompt: 'You are the selected agent.'}},
-                        {seq: 2, type: 'hook/invoked', run_id: 'run-a', time: 12,
-                         data: {invocation_id: 'h1', hook_id: 'bianbu.memory/context',
-                                plugin_id: 'bianbu.memory', point: 'after_context'}},
-                        {seq: 3, type: 'hook/result', run_id: 'run-a', time: 13,
-                         data: {invocation_id: 'h1', hook_id: 'bianbu.memory/context',
-                                plugin_id: 'bianbu.memory', point: 'after_context',
-                                status: 'completed', duration_ms: 4,
-                                context_sections: ['Remember dark mode.']}},
-                        {seq: 4, type: 'hook/invoked', run_id: 'run-a', time: 14,
-                         data: {invocation_id: 'h2', hook_id: 'vendor.noop',
-                                plugin_id: 'vendor', point: 'after_run'}},
-                        {seq: 5, type: 'hook/result', run_id: 'run-a', time: 15,
-                         data: {invocation_id: 'h2', hook_id: 'vendor.noop',
-                                plugin_id: 'vendor', point: 'after_run',
-                                status: 'completed', duration_ms: 1}},
-                        {seq: 6, type: 'run/completed', run_id: 'run-a', time: 16,
-                         data: {}},
-                    ])"""
+                    "(events) => BianbuTrajectory.projectTrajectory(events)",
+                    events,
                 )
 
-                assert [record["kind"] for record in trajectory["records"]] == [
-                    "user", "context", "wait", "hook", "wait", "run",
-                ]
+                kinds = [record["kind"] for record in trajectory["records"]]
+                assert kinds.count("hook") == 2
                 context = next(record for record in trajectory["records"]
                                if record["kind"] == "context")
-                assert context["title"] == "System prompt"
-                assert context["output"] == "You are the selected agent."
-                hook = next(record for record in trajectory["records"]
-                            if record["key"] == "hook:h1")
-                assert hook["title"] == "bianbu.memory/context"
-                assert hook["status"] == "completed"
-                assert hook["output"] == "Remember dark mode."
-                # 行在时间轴上占的是墙钟区间；Hook 自报的耗时留在 data 里对照。
-                assert hook["duration"] == pytest.approx(1.0)
-                assert hook["data"]["hook_elapsed_ms"] == 4
-                assert "vendor.noop" not in str(trajectory)
+                assert context["title"] == "Request"
+                # The record shows the request text verbatim, tools included.
+                assert "## System prompt" in context["output"]
+                assert "### terminal" in context["output"]
+                assert "### user" in context["output"]
+                assert context["data"]["model"] == "local"
+                memory = next(record for record in trajectory["records"]
+                              if record["key"] == "hook:h1")
+                assert memory["output"] == "Remember dark mode."
+                # A Hook that patches nothing is still a real execution fact,
+                # so it keeps its own row instead of being filtered as noise.
+                audit = next(record for record in trajectory["records"]
+                             if record["key"] == "hook:h2")
+                assert audit["title"] == "example.plugin/example.after_run"
+                assert audit["status"] == "completed"
+                assert audit["data"]["hook_elapsed_ms"] == 1
             finally:
                 await browser.close()
 
 
-@pytest.mark.asyncio
 async def test_trajectory_folds_session_events_and_summarizes_hooks(
     tmp_path: Path,
 ) -> None:
@@ -1907,6 +2158,66 @@ async def test_cancelled_run_removes_running_timer(tmp_path: Path) -> None:
 
                 await page.wait_for_function("() => !activeRequestId")
                 await expect(page.locator(".run-progress-indicator")).to_have_count(0)
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_live_renderer_deduplicates_model_recovery_notices(
+    tmp_path: Path,
+) -> None:
+    """Recovery is a status line, not an empty assistant bubble."""
+
+    async with _running_console(tmp_path) as environment:
+        base_url, _ = environment
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            try:
+                page = await browser.new_page()
+                await page.goto(f"{base_url}/chat", wait_until="domcontentloaded")
+                result = await page.evaluate(
+                    """() => {
+                        const sid = 'recovery-live';
+                        sessionId = sid;
+                        sessionRuntime.select(sid);
+                        const model = sessionRuntime.get(sid);
+                        model.installHistory([
+                            {seq: 0, type: 'user/message', run_id: 'run', time: 1,
+                             data: {content: 'question'}},
+                            {seq: 1, type: 'run/progress', run_id: 'run', time: 2,
+                             data: {phase: 'recovering', attempt: 1,
+                                    message: '模型响应超时，正在继续'}},
+                            {seq: 2, type: 'assistant/text.delta', run_id: 'run',
+                             time: 3, data: {text: 'answer'}},
+                        ]);
+                        renderSessionModelSnapshot(sid);
+                        const before = messagesDiv.querySelectorAll(
+                            '.context-compression-divider'
+                        ).length;
+                        renderLiveSessionModelSnapshot(sid);
+                        renderLiveSessionModelSnapshot(sid);
+                        const bots = Array.from(
+                            messagesDiv.querySelectorAll('.bot-message-group')
+                        );
+                        return {
+                            before,
+                            after: messagesDiv.querySelectorAll(
+                                '.context-compression-divider'
+                            ).length,
+                            botCount: bots.length,
+                            emptyBots: bots.filter(element => !(
+                                element.querySelector('.answer-content')
+                                ?.innerText || ''
+                            ).trim()).length,
+                        };
+                    }"""
+                )
+                assert result == {
+                    "before": 1,
+                    "after": 1,
+                    "botCount": 1,
+                    "emptyBots": 0,
+                }
             finally:
                 await browser.close()
 
@@ -4578,7 +4889,7 @@ async def test_approval_locks_composer_until_resolution(tmp_path: Path) -> None:
                 )
                 await expect(page.locator("#chat-input")).to_be_enabled()
                 await expect(page.locator("#chat-input")).to_have_attribute(
-                    "placeholder", "输入消息，@ 切换专家，/ 临时使用技能"
+                    "placeholder", "输入消息，@ 切换专家，/ 选择技能"
                 )
 
                 followup_attempts = {"value": 0}
@@ -4874,7 +5185,7 @@ async def test_frontend_uses_expert_terminology_and_has_no_skill_toggle_commands
 
 
 @pytest.mark.asyncio
-async def test_skills_command_selects_global_skills_and_sends_them_once(
+async def test_skills_command_selects_global_skills_and_keeps_them_resident(
     tmp_path: Path,
 ) -> None:
     async with _running_console(tmp_path) as environment:
@@ -4984,7 +5295,7 @@ async def test_skills_command_selects_global_skills_and_sends_them_once(
                     await asyncio.sleep(0.01)
                 assert len(prompt_payloads) == 1
                 assert prompt_payloads[0]["skill_ids"] == ["global.skills/review"]
-                await expect(page.locator("#selected-skills .selected-skill-chip")).to_have_count(0)
+                await expect(page.locator("#selected-skills .selected-skill-chip")).to_have_count(1)
                 await page.locator("#chat-input").fill("ordinary follow-up")
                 await page.locator("#send-btn").click()
                 for _ in range(200):
@@ -4992,13 +5303,24 @@ async def test_skills_command_selects_global_skills_and_sends_them_once(
                         break
                     await asyncio.sleep(0.01)
                 assert len(prompt_payloads) == 2
-                assert prompt_payloads[1]["skill_ids"] == []
+                assert prompt_payloads[1]["skill_ids"] == ["global.skills/review"]
+
+                await page.locator("#selected-skills .selected-skill-chip button").click()
+                await expect(page.locator("#selected-skills .selected-skill-chip")).to_have_count(0)
+                await page.locator("#chat-input").fill("after manual removal")
+                await page.locator("#send-btn").click()
+                for _ in range(200):
+                    if len(prompt_payloads) == 3:
+                        break
+                    await asyncio.sleep(0.01)
+                assert len(prompt_payloads) == 3
+                assert prompt_payloads[2]["skill_ids"] == []
             finally:
                 await browser.close()
 
 
 @pytest.mark.asyncio
-async def test_rejected_skills_prompt_preserves_the_temporary_selection(
+async def test_rejected_skills_prompt_preserves_the_resident_selection(
     tmp_path: Path,
 ) -> None:
     async with _running_console(tmp_path) as environment:
@@ -5543,6 +5865,7 @@ async def test_agent_editor_round_trips_mcp_wildcard(tmp_path: Path) -> None:
                     "model": {
                         "provider": "browser",
                         "name": "browser-contract",
+                        "effort": "low",
                     },
                     "tools": [],
                     "skills": [],
@@ -5597,7 +5920,7 @@ async def test_agent_editor_round_trips_mcp_wildcard(tmp_path: Path) -> None:
 
                 await page.route("**/api/v1/agents", agents_collection)
                 await page.route("**/api/v1/agents/default", update_agent)
-                await page.route("**/api/v1/mcp-servers", mcp_catalog)
+                await page.route("**/api/v1/mcp-servers**", mcp_catalog)
                 await page.route(
                     "**/api/v1/mcp-health-checks",
                     lambda route: route.fulfill(
@@ -6151,14 +6474,15 @@ async def test_deleting_last_session_starts_default_new_chat(
 async def test_composer_warns_but_still_uploads_an_image_no_model_can_read(
     tmp_path: Path,
 ) -> None:
-    """Attaching never blocks: the console only warns when vision is missing.
+    """Attaching never blocks: the console only warns on a declared negative.
 
-    The Runtime answers `GET .../vision` for the Expert's model, so the console
-    can tell the user the model cannot read images, but the bytes still land in
-    the workspace for a Tool or a later model to use.
+    The Runtime answers `GET .../vision` for the Expert's model.  Only an
+    explicit `unsupported` declaration produces the warning; an undeclared
+    model is unknown and keeps the affordance without a claim either way.  The
+    bytes land in the workspace for a Tool or a later model even when warned.
     """
 
-    async with _running_console(tmp_path) as environment:
+    async with _running_console(tmp_path, model_name="deepseek-v4-pro") as environment:
         base_url, _ = environment
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=True)
@@ -6203,6 +6527,118 @@ async def test_composer_warns_but_still_uploads_an_image_no_model_can_read(
                 await expect(
                     page.locator("#attachment-preview .att-thumb")
                 ).to_have_count(1)
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_composer_says_nothing_about_an_undeclared_model(
+    tmp_path: Path,
+) -> None:
+    """Unknown is not a negative, so the console must not warn.
+
+    `deepseek-flash` reads images without saying so in its name, and an
+    unreviewed alias is exactly as undeclared.  Warning here was the reported
+    bug: a working model was labelled unsupported before it was ever asked.
+    """
+
+    async with _running_console(tmp_path, model_name="unreviewed-vision") as environment:
+        base_url, _ = environment
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            try:
+                page = await browser.new_page()
+                created = await _create_session(page, base_url)
+                session_id = str(created["id"])
+                await page.goto(f"{base_url}/chat", wait_until="domcontentloaded")
+                await page.evaluate(
+                    "sid => localStorage.setItem('bianbu_session_id', sid)",
+                    session_id,
+                )
+                await page.reload(wait_until="domcontentloaded")
+                await page.wait_for_function(
+                    "sid => sessionId === sid", arg=session_id
+                )
+
+                await page.locator("#attach-btn").click()
+                await page.set_input_files(
+                    "#composer-file-input",
+                    {
+                        "name": "a.png",
+                        "mimeType": "image/png",
+                        "buffer": b"\x89PNG\r\n\x1a\n" + b"0" * 32,
+                    },
+                )
+                await expect(
+                    page.locator("#attachment-preview .att-thumb")
+                ).to_have_count(1)
+                await expect(page.locator("#composer-notice")).to_be_hidden()
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_attaching_in_a_new_chat_materializes_the_draft_first(
+    tmp_path: Path,
+) -> None:
+    """A local draft has no Session id, but an upload needs one.
+
+    Attaching before the first prompt used to POST to
+    ``/api/v1/sessions/null/attachments`` and fail with 404, so no image could
+    be added to a brand-new chat.  The console must create the draft's Session
+    before uploading, and the first prompt must reuse that record instead of
+    creating another one.
+    """
+
+    async with _running_console(tmp_path) as environment:
+        base_url, _ = environment
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            try:
+                page = await browser.new_page()
+                await page.goto(f"{base_url}/chat", wait_until="domcontentloaded")
+                await page.wait_for_function(
+                    "() => isNewChatDraft() && sessionId === null"
+                )
+
+                uploads: list[str] = []
+
+                async def record_upload(route) -> None:
+                    uploads.append(urlparse(route.request.url).path)
+                    await route.continue_()
+
+                await page.route(
+                    "**/api/v1/sessions/*/attachments", record_upload
+                )
+                await page.locator("#attach-btn").click()
+                await page.set_input_files(
+                    "#composer-file-input",
+                    {
+                        "name": "fresh.png",
+                        "mimeType": "image/png",
+                        "buffer": b"\x89PNG\r\n\x1a\n" + b"0" * 32,
+                    },
+                )
+                await expect(
+                    page.locator("#attachment-preview .att-thumb")
+                ).to_have_count(1)
+
+                created_id = await page.evaluate(
+                    "() => newChatDraft?.sessionId"
+                )
+                assert created_id
+                assert uploads == [
+                    f"/api/v1/sessions/{created_id}/attachments"
+                ]
+                records = await _list_sessions(page, base_url)
+                assert [item["id"] for item in records] == [created_id]
+
+                await page.locator("#chat-input").fill("describe it")
+                await page.locator("#send-btn").click()
+                await page.wait_for_function("() => !isNewChatDraft()")
+                assert await page.evaluate("() => sessionId") == created_id
+                records = await _list_sessions(page, base_url)
+                assert [item["id"] for item in records] == [created_id]
             finally:
                 await browser.close()
 
@@ -6922,7 +7358,7 @@ async def test_first_draft_keeps_authoritative_input_when_prompt_response_fails(
                 }]
                 assert result["draft"] is False
                 assert result["input"] == ""
-                assert await page.evaluate("selectedSkills.size") == 0
+                assert await page.evaluate("selectedSkills.size") == 1
                 assert [message["role"] for message in result["messages"]] == ["user"]
                 assert result["messages"][0]["content"] == "accepted once"
             finally:
@@ -7361,13 +7797,47 @@ async def test_agent_model_save_ignores_pending_catalogs_and_updates_card(tmp_pa
                 await page.route('**/api/v1/agents', pending_catalog)
                 async with page.expect_request(lambda request: request.method == 'PATCH' and '/agents/default' in request.url) as saving:
                     await page.locator('#agent-editor-save').click()
-                assert (await saving.value).post_data_json == {'model': {'provider': 'browser', 'name': 'updated-model'}}
+                assert (await saving.value).post_data_json == {'model': {'provider': 'browser', 'name': 'updated-model', 'effort': 'low'}}
                 await expect(page.locator('#agent-editor-overlay')).to_be_hidden()
                 await expect(page.locator('.agent-card', has_text='Default')).to_contain_text('updated-model')
                 saved = AgentManifest.from_path(home.agents_dir / 'default' / 'agent.yaml').spec
                 assert saved.permissions == {}
             finally:
                 release.set()
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_editor_selects_and_persists_reasoning_effort(tmp_path: Path) -> None:
+    """The Expert editor owns effort beside provider and model."""
+
+    async with _running_console(tmp_path) as (base_url, home):
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            try:
+                page = await browser.new_page()
+                await page.goto(f"{base_url}/chat", wait_until="domcontentloaded")
+                await page.locator('[data-view="agents"]').click()
+                await expect(page.locator('.agent-card', has_text='Default')).to_be_visible()
+                await page.locator('.agent-card', has_text='Default').click()
+                await expect(page.locator('#agent-form-effort')).to_be_visible()
+
+                await page.locator('#agent-form-effort .cfg-dropdown-selected').click()
+                await page.locator(
+                    '#agent-form-effort .cfg-dropdown-item[data-value="max"]'
+                ).click()
+                async with page.expect_request(
+                    lambda request: request.method == 'PATCH' and '/agents/default' in request.url
+                ) as saving:
+                    await page.locator('#agent-editor-save').click()
+
+                payload = (await saving.value).post_data_json
+                assert payload['model']['effort'] == 'max'
+                await expect(page.locator('#agent-editor-overlay')).to_be_hidden()
+                await expect(page.locator('.agent-card', has_text='Default')).to_contain_text('max')
+                saved = AgentManifest.from_path(home.agents_dir / 'default' / 'agent.yaml').spec
+                assert saved.model.effort == 'max'
+            finally:
                 await browser.close()
 
 
@@ -7400,7 +7870,7 @@ async def test_agent_editor_preserves_selection_order_and_guards_slow_operations
                 await page.locator('#agent-form-model-name').fill('new-model')
                 await page.locator('#agent-editor-save').click()
                 payload, finish_patch = await asyncio.wait_for(patches.get(), 5)
-                assert payload == {'model': {'provider': 'browser', 'name': 'new-model'}}
+                assert payload == {'model': {'provider': 'browser', 'name': 'new-model', 'effort': 'low'}}
                 await page.evaluate("() => { closeAgentEditor(); openAgentEditor({id:'other', name:'Other'}); }")
                 assert await page.evaluate('editingAgentId') == 'default'
                 first = {**original, **payload}
@@ -7687,7 +8157,7 @@ async def test_agent_editor_capability_labels_follow_the_console_language(
 
 
 @pytest.mark.asyncio
-async def test_temporary_skills_hide_what_the_expert_already_runs(tmp_path: Path) -> None:
+async def test_skill_picker_hides_what_the_expert_already_runs(tmp_path: Path) -> None:
     """The Expert already runs its own Skills and every Skill of its Plugins."""
 
     async with _running_console(tmp_path) as environment:
@@ -7700,7 +8170,7 @@ async def test_temporary_skills_hide_what_the_expert_already_runs(tmp_path: Path
                 skills = [
                     {"id": "spacemit-power/markdown-maker", "plugin_id": "spacemit-power"},
                     {"id": "spacemit-power/k3-media-pipeline", "plugin_id": "spacemit-power"},
-                    {"id": "bianbu.audit/audit-guide", "plugin_id": "bianbu.audit"},
+                    {"id": "example.plugin/example-guide", "plugin_id": "example.plugin"},
                     {"id": "standalone-skill", "description": "Kept, nothing else runs it"},
                     {"id": "named-elsewhere"},
                 ]
@@ -7710,7 +8180,7 @@ async def test_temporary_skills_hide_what_the_expert_already_runs(tmp_path: Path
                     {
                         "id": "com.bianbu.test",
                         "skills": ["named-elsewhere"],
-                        "plugins": ["bianbu.audit"],
+                        "plugins": ["example.plugin"],
                     },
                 )
                 await page.evaluate("() => { skillPickerSearch.value = ''; renderSkillPickerItems(); }")
@@ -7726,7 +8196,7 @@ async def test_temporary_skills_hide_what_the_expert_already_runs(tmp_path: Path
                 )
                 await page.evaluate("() => { skillPickerSearch.value = ''; renderSkillPickerItems(); }")
                 assert await page.locator(".skill-picker-item-name").all_text_contents() == [
-                    "bianbu.audit/audit-guide", "standalone-skill", "named-elsewhere",
+                    "example.plugin/example-guide", "standalone-skill", "named-elsewhere",
                 ]
                 # 斜杠菜单与面板共用同一份候选，并且都不再显示技能描述。
                 # 背景刷新会重画输入区，所以渲染和读取放在同一次求值里做。
@@ -7742,7 +8212,7 @@ async def test_temporary_skills_hide_what_the_expert_already_runs(tmp_path: Path
                     }"""
                 )
                 assert slash_menu == [
-                    ["bianbu.audit/audit-guide", ""],
+                    ["example.plugin/example-guide", ""],
                     ["standalone-skill", ""],
                     ["named-elsewhere", ""],
                 ]
@@ -7826,5 +8296,72 @@ async def test_console_has_no_retired_knowledge_view_or_memory_console_requests(
                 assert not any('bianbu.memory' in url and ('console' in url or 'describe' in url) for url in requested)
                 await page.evaluate("navigateTo('knowledge')")
                 await expect(page.locator('#view-chat')).to_be_visible()
+            finally:
+                await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_slash_menu_refreshes_the_skill_catalog_on_every_opening(
+    tmp_path: Path,
+) -> None:
+    """A Skill installed while the console is open must show up on the next `/`.
+
+    The catalog used to be fetched only when the cached list was empty, so a
+    long-lived page kept showing whatever it had loaded on first use.  Users
+    read that as "my new Skill is not available" even though the API already
+    returned it.
+    """
+
+    async with _running_console(tmp_path) as environment:
+        base_url, _ = environment
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            try:
+                page = await browser.new_page()
+                calls: list[str] = []
+                served = 0
+                installed = False
+
+                async def catalog(route) -> None:
+                    nonlocal served
+                    calls.append(route.request.url)
+                    body = [
+                        {
+                            "id": "gguf-download-bench",
+                            "name": "gguf-download-bench",
+                            "display_name": "GGUF Download and Benchmark",
+                            "enabled": True,
+                        }
+                    ] if installed else []
+                    await route.fulfill(
+                        status=200,
+                        content_type="application/json",
+                        body=json.dumps({"data": body}),
+                    )
+                    served += 1
+
+                await page.route("**/api/v1/capabilities/skill", catalog)
+                await page.goto(f"{base_url}/chat", wait_until="domcontentloaded")
+                await page.evaluate("createSessionForAgent('default'); closeChatAgentMenu()")
+                field = page.locator("#chat-input")
+
+                await field.fill("/")
+                await expect(page.locator("#slash-menu")).to_be_hidden()
+                # Let the first, deliberately empty response land before the
+                # Skill is "installed"; otherwise the slow first fetch would
+                # satisfy the assertion by itself.
+                for _ in range(50):
+                    if served:
+                        break
+                    await page.wait_for_timeout(20)
+                assert served == 1
+
+                installed = True
+                await field.fill("")
+                await field.fill("/")
+                await expect(
+                    page.locator("#slash-menu", has_text="GGUF Download and Benchmark")
+                ).to_be_visible()
+                assert len(calls) >= 2
             finally:
                 await browser.close()

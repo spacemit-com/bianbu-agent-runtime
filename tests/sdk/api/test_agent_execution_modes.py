@@ -1,7 +1,7 @@
-"""专家编辑不再携带执行模式：host / sandbox 由 securityd 按安全设置推导。
+"""专家编辑不再携带执行模式：执行边界由 security Plugin 的选择决定。
 
 这些用例覆盖 Agent CRUD 与 Worker 生命周期的交互：哪些编辑只改展示、哪些编辑
-需要重建 Worker，以及请求里出现 ``requested_mode`` 时必须被拒绝。
+需要重建 Worker（包括切换安全插件），以及请求里出现 ``requested_mode`` 时必须被拒绝。
 """
 from types import SimpleNamespace
 
@@ -57,6 +57,30 @@ async def test_agent_edit_never_restarts_worker_for_execution_mode(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_security_plugin_change_rebuilds_the_worker(tmp_path):
+    """Selecting or dropping bianbu.security changes the process boundary."""
+    async with _api(tmp_path) as (client, runtime):
+        pool = AgentWorkerPool(runtime.config)
+        worker = Worker()
+        pool._supervisors["writer"] = worker
+        runtime.worker_supervisor = pool
+
+        selected = await client.patch(
+            "/api/v1/agents/writer", json={"plugins": ["*"]}
+        )
+        assert selected.status_code == 200, selected.text
+        assert worker.stops == 1
+        assert worker.requested_mode == "auto"
+        assert worker.security_enabled is True
+
+        dropped = await client.patch("/api/v1/agents/writer", json={"plugins": []})
+        assert dropped.status_code == 200, dropped.text
+        assert worker.stops == 2
+        assert worker.requested_mode == "host"
+        assert worker.security_enabled is False
+
+
+@pytest.mark.asyncio
 async def test_agent_declaration_cannot_request_an_execution_mode(tmp_path):
     """Agent 声明不能指定边界：securityd 才是唯一写入方。"""
     async with _api(tmp_path) as (client, _runtime):
@@ -105,7 +129,9 @@ async def test_create_persists_agent_without_starting_worker(tmp_path, monkeypat
         assert data['execution']['state'] == 'stopped'
         assert data['execution'].get('effective_mode') is None
         stored = await runtime.agents.get(data['id'])
-        assert runtime._requested_execution_mode(stored) == 'auto'
+        # Without the security Plugin the Agent is explicitly normal mode:
+        # yolo + host, never sandbox.
+        assert runtime._requested_execution_mode(stored) == 'host'
         from bianbu_agent.security.runtime_process.supervisor import ControlRunManager
         manager = ControlRunManager(runtime._run_store, pool)
         handle = await manager.run('first-use', 'hello', agent_id=data['id'])
@@ -151,7 +177,7 @@ async def test_delete_waits_for_an_in_flight_registration(tmp_path):
         runtime.worker_supervisor = pool
         registering, release = asyncio.Event(), asyncio.Event()
 
-        async def register(spec):
+        async def register(spec, **_kwargs):
             registering.set()
             await release.wait()
 
@@ -180,7 +206,7 @@ async def test_edit_idle_expert_keeps_it_stopped(tmp_path, monkeypatch):
         response = await client.patch('/api/v1/agents/writer', json={'name': 'Renamed'})
         assert response.status_code == 200, response.text
         assert response.json()['data']['execution']['state'] == 'stopped'
-        assert runtime.worker_supervisor.for_agent('writer').requested_mode == 'auto'
+        assert runtime.worker_supervisor.for_agent('writer').requested_mode == 'host'
 
 
 @pytest.mark.asyncio

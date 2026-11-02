@@ -53,6 +53,40 @@ def _load_hook(tmp_path, pipeline):
 
 
 @pytest.mark.asyncio
+async def test_service_hook_forwards_private_time_confirmation(tmp_path, monkeypatch):
+    ticket = {"kind": "disable_ntp_and_set_time", "id": "backend-id", "token": "private-token",
+              "datetime": "14:30:00", "description": "Confirm disabling NTP"}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            assert self.path == "/v1/runs"
+            self.rfile.read(int(self.headers["Content-Length"]))
+            body = json.dumps({"handled": True, "reply": "Confirm disabling NTP", "route": "rule",
+                               "reason": "", "metadata": {"tool": "set_system_time"}, "confirmation": ticket}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("BIBIT_INTENT_BASE_URL", f"http://127.0.0.1:{server.server_port}")
+    try:
+        patch = await _load_hook(tmp_path, None).handler(RunContext("run", "session", "agent", "设置系统时间为14:30"))
+        assert patch.approval == ticket and patch.direct_reply == "Confirm disabling NTP"
+        assert "private-token" not in repr(patch.metadata) and not patch.context_sections
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+@pytest.mark.asyncio
 async def test_service_hook_runs_without_importing_external_package(
     tmp_path, monkeypatch: pytest.MonkeyPatch,
 ):
@@ -148,7 +182,7 @@ async def test_service_hook_falls_back_when_local_service_is_unavailable(
     assert patch.metadata == {
         "route": "cloud",
         "reason": "edge_error",
-        "edge_error_type": "ConnectError",
+        "edge_error_type": "ConnectionRefusedError",
     }
 
 

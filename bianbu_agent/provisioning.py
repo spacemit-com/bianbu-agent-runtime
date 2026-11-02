@@ -70,12 +70,13 @@ def publish_system_starter(data_dir: Path, template: Path, agent_id: str) -> str
     document = yaml.safe_load(Path(template).read_text(encoding="utf-8"))
     if not isinstance(document, dict) or not isinstance(document.get("agent"), dict):
         raise ValueError("starter Agent template must contain an agent mapping")
-    if document["agent"].get("name") != "BibitEdgeAssistant":
-        raise ValueError("system starter must be BibitEdgeAssistant")
+    name = document["agent"].get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("system starter must declare a non-empty name")
     document["agent"]["id"] = agent_id
-    document["agent"].setdefault("metadata", {}).setdefault("execution", {})["requested_mode"] = "host"
     payload = yaml.safe_dump(document, allow_unicode=True, sort_keys=False).encode()
     AgentManifest.from_yaml(payload.decode())
+    template_root = Path(template).resolve().parent
     directory = system_agent_directory(data_dir)
     base = SYSTEM_PROFILE_ROOT
     if base.resolve() != base.absolute():
@@ -126,11 +127,42 @@ def publish_system_starter(data_dir: Path, template: Path, agent_id: str) -> str
         # happens to reconcile it.
         os.chmod(package_directory, 0o755)
         _atomic_private_bytes(manifest_path, payload, mode=0o644)
+        _publish_private_trees(template_root, package_directory)
         _atomic_private_bytes(directory.parent / STARTER_ID_FILE, (agent_id + "\n").encode(), mode=0o644)
         _atomic_private_bytes(digest_path, (digest + "\n").encode(), mode=0o644)
     finally:
         os.close(descriptor)
     return agent_id
+
+
+def _publish_private_trees(template_root: Path, package_directory: Path) -> None:
+    """Copy the template's private capability trees into the system profile.
+
+    ``agent.yaml`` alone is not the Expert: its ``skills/``, ``mcps/`` and
+    ``plugins/`` trees are part of the package.  They are copied
+    deterministically so a device gets the exact bytes the template declares.
+    """
+
+    for name in ("skills", "mcps", "plugins"):
+        source = template_root / name
+        target = package_directory / name
+        if target.exists() or target.is_symlink():
+            _discard_system_package(target)
+        if not source.exists():
+            continue
+        if source.is_symlink() or not source.is_dir():
+            raise ValueError(f"Agent private {name} must be a regular directory")
+        for path in source.rglob("*"):
+            if path.is_symlink():
+                raise ValueError(
+                    f"Agent private {name} must not contain symbolic links: {path}"
+                )
+        shutil.copytree(source, target)
+        for path in (target, *target.rglob("*")):
+            if path.is_dir():
+                os.chmod(path, 0o755)
+            elif path.is_file():
+                os.chmod(path, 0o644)
 
 
 def _discard_system_package(path: Path) -> None:

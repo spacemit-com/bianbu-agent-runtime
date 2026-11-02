@@ -30,6 +30,9 @@ from bianbu_agent.sessions.events import (
     session_event_for_run_event,
     session_event_for_run_result,
     session_event_for_run_start,
+    session_event_for_title,
+    session_event_for_title_request,
+    session_event_for_title_route,
     session_event_to_dict,
 )
 from bianbu_agent.sessions.inbox import (
@@ -155,12 +158,19 @@ class _ListProjection:
     ``user/message`` itself, so that is what clears ``blank``.  Console
     operations (title generation) are Runs the conversation view hides, so
     their messages never count as user activity.
+
+    The folded title rides in the same row so a listing never has to open a
+    transcript just to show a Session's name.
     """
 
     blank: bool = True
     last_prompt_at: float | None = None
+    title: str = ""
 
     def observe(self, event: SessionEvent) -> None:
+        if event.type == "session/title":
+            self.title = str(event.data.get("title") or "")
+            return
         if event.type != "user/message" or event.data.get("console_operation"):
             return
         self.blank = False
@@ -168,7 +178,11 @@ class _ListProjection:
             self.last_prompt_at = event.time
 
     def state(self) -> dict[str, object]:
-        return {"blank": self.blank, "last_prompt_at": self.last_prompt_at}
+        return {
+            "blank": self.blank,
+            "last_prompt_at": self.last_prompt_at,
+            "title": self.title,
+        }
 
     @classmethod
     def from_state(cls, raw: object) -> "_ListProjection | None":
@@ -180,9 +194,11 @@ class _ListProjection:
         last_prompt_at = raw.get("last_prompt_at")
         if last_prompt_at is not None and not isinstance(last_prompt_at, (int, float)):
             return None
+        title = raw.get("title")
         return cls(
             blank=blank,
             last_prompt_at=None if last_prompt_at is None else float(last_prompt_at),
+            title="" if title is None else str(title),
         )
 
 
@@ -433,6 +449,25 @@ class _WriteBehind:
         self._closed = True
         await self.flush()
 
+    async def discard(self) -> None:
+        """丢弃待写事件，不再落盘：这个 Session 正在被删除。
+
+        删除路径上写盘没有意义——这批事件随目录一起作废；而目录归 Session 自己
+        保管，删它的时候可能已经先被清掉，此时落盘既会去 stat 一个不存在的
+        transcript，又会把刚删掉的目录重新建出来。
+        """
+
+        self._closed = True
+        timer, self._timer = self._timer, None
+        if timer is not None:
+            timer.cancel()
+            await asyncio.gather(timer, return_exceptions=True)
+        self._pending.clear()
+        barrier, self._barrier = self._barrier, None
+        if barrier is not None:
+            # 已经在飞的这一批等它收尾再删目录；它失败也只是这一批作废。
+            await asyncio.gather(barrier, return_exceptions=True)
+
 
 class SessionLogStore:
     """Single-source Run facade over Harness-style Session transcripts."""
@@ -459,6 +494,10 @@ class SessionLogStore:
         self._runs: dict[str, _RunProjection] = {}
         self._lists: dict[str, _ListProjection] = {}
         self._inboxes: dict[str, SessionInboxProjection] = {}
+        # Latest folded ``session/title`` event per Session.  Titles are
+        # log-only state, so the resident map is the read model for the latest
+        # revision and the transcript is the authority after a restart.
+        self._titles: dict[str, SessionEvent] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         # 折叠过的会话：这些会话的内存投影就是日志本身折出来的，别的会话只有
         # 缓存行喂出来的列表视图，真正的读写会先把它们折一遍。
@@ -597,6 +636,7 @@ class SessionLogStore:
         self._durable_counts.pop(session_id, None)
         self._lists.pop(session_id, None)
         self._inboxes.pop(session_id, None)
+        self._titles.pop(session_id, None)
         hydrated = self._hydrated.pop(session_id, None)
         if hydrated is not None:
             self._hydrated_events -= len(hydrated)
@@ -1017,6 +1057,169 @@ class SessionLogStore:
                 owner, SessionInboxProjection()
             ).claimed_run(message_id)
 
+    async def append_title(
+        self,
+        session_id: str,
+        title: str,
+        *,
+        message_seqs: tuple[int, ...] = (),
+        source_kind: str = "provider",
+        durable: bool = False,
+        request_id: str = "",
+    ) -> SessionEvent:
+        """Append one log-only title revision and make it the folded title.
+
+        A title belongs to no Run: it must never create a turn, claim a
+        concurrency slot, or trigger Hooks.  The latest accepted revision wins.
+        """
+
+        self._required_open()
+        owner = _session_id(session_id)
+        await self._ensure_indexed(owner)
+        async with self._lock(owner):
+            event = session_event_for_title(
+                owner,
+                title,
+                message_seqs=message_seqs,
+                source_kind=source_kind,
+                seq=self._counts.get(owner, 0),
+                event_time=time.time(),
+                request_id=request_id,
+            )
+            if durable:
+                await self._accept_durable(owner, event)
+            else:
+                await self._accept(owner, event)
+            self._titles[owner] = event
+            return event
+
+    async def append_title_with_request(
+        self,
+        session_id: str,
+        title: str,
+        *,
+        request: Mapping[str, object],
+        message_seqs: tuple[int, ...] = (),
+        source_kind: str = "fallback",
+        request_id: str,
+    ) -> tuple[SessionEvent, SessionEvent]:
+        """Persist the fallback title and its model request as one unit.
+
+        Both events describe the same auxiliary request and are written before
+        the model is dispatched.  Keeping them in one durable batch means the
+        trajectory never shows a gap between "the fallback exists" and "the
+        request exists" that is really just the session log waiting behind an
+        unrelated Run.
+        """
+
+        self._required_open()
+        owner = _session_id(session_id)
+        await self._ensure_indexed(owner)
+        async with self._lock(owner):
+            now = time.time()
+            seq = self._counts.get(owner, 0)
+            fallback_event = session_event_for_title(
+                owner,
+                title,
+                message_seqs=message_seqs,
+                source_kind=source_kind,
+                seq=seq,
+                event_time=now,
+                request_id=request_id,
+            )
+            request_event = session_event_for_title_request(
+                owner,
+                request,
+                message_seqs=message_seqs,
+                request_id=request_id,
+                seq=seq + 1,
+                event_time=now,
+            )
+            await self._accept_durable_batch(
+                owner, (fallback_event, request_event),
+            )
+            self._titles[owner] = fallback_event
+            return fallback_event, request_event
+
+    async def append_title_request(
+        self,
+        session_id: str,
+        request: Mapping[str, object],
+        *,
+        route: Mapping[str, object] | None = None,
+        message_seqs: tuple[int, ...] = (),
+        request_id: str,
+    ) -> SessionEvent:
+        """Record the exact auxiliary title request before it is dispatched.
+
+        Log-only and Run-free like the title itself, so a failed or abandoned
+        title still has a durable explanation in the trajectory.
+        """
+
+        self._required_open()
+        owner = _session_id(session_id)
+        await self._ensure_indexed(owner)
+        async with self._lock(owner):
+            event = session_event_for_title_request(
+                owner,
+                request,
+                route=route,
+                message_seqs=message_seqs,
+                request_id=request_id,
+                seq=self._counts.get(owner, 0),
+                event_time=time.time(),
+            )
+            await self._accept(owner, event)
+            return event
+
+    async def append_title_route(
+        self,
+        session_id: str,
+        route: Mapping[str, object],
+        *,
+        request_id: str,
+    ) -> SessionEvent | None:
+        """Append the resolved route as its own durable log event.
+
+        The route is known only after the Worker resolves the Agent's model,
+        which happens after the request is recorded.  A separate event keeps
+        the request row immutable and survives a restart.
+        """
+
+        if not route:
+            return None
+        self._required_open()
+        owner = _session_id(session_id)
+        await self._ensure_indexed(owner)
+        async with self._lock(owner):
+            event = session_event_for_title_route(
+                owner,
+                route,
+                request_id=request_id,
+                seq=self._counts.get(owner, 0),
+                event_time=time.time(),
+            )
+            await self._accept(owner, event)
+            return event
+
+    async def read_title(self, session_id: str) -> str | None:
+        """Latest accepted title, folding the transcript if necessary.
+
+        The title lives only in the Session log, so a freshly started Runtime
+        must read the transcript before it can answer a Session view.
+        """
+
+        owner = _session_id(session_id)
+        await self._ensure_indexed(owner)
+        event = self._titles.get(owner)
+        return None if event is None else str(event.data.get("title") or "")
+
+    def folded_title(self, session_id: str) -> str | None:
+        """Latest title already folded into memory, without touching disk."""
+
+        event = self._titles.get(str(session_id))
+        return None if event is None else str(event.data.get("title") or "")
+
     async def _accept(self, session_id: str, event: SessionEvent) -> None:
         expected = self._counts.get(session_id, 0)
         if event.seq != expected:
@@ -1149,6 +1352,7 @@ class SessionLogStore:
             return {
                 "blank": True if folded is None else folded.blank,
                 "last_prompt_at": None if folded is None else folded.last_prompt_at,
+                "title": "" if folded is None else folded.title,
                 "as_of_seq": self._counts.get(owner, 0) - 1,
             }
         if self._exact_count(owner) is not None:
@@ -1158,11 +1362,13 @@ class SessionLogStore:
                 return {
                     "blank": listed.blank,
                     "last_prompt_at": listed.last_prompt_at,
+                    "title": listed.title,
                     "as_of_seq": None if row is None else row.get("seq"),
                 }
         return {
             "blank": not self._transcript_path(owner).is_file(),
             "last_prompt_at": None,
+            "title": "",
             "as_of_seq": None,
         }
 
@@ -1268,7 +1474,12 @@ class SessionLogStore:
 
     async def delete_session(self, session_id: str) -> int:
         selected = _session_id(session_id)
-        await self.flush_session(selected)
+        # 删除不落盘：待写事件与目录一起作废。目录归 Session 自己保管，删它的时候
+        # 可能已经被先清掉了，落盘只会去 stat 一个不存在的 transcript（曾经的
+        # DELETE 500），还会把刚删掉的目录重新建出来。
+        writer = self._writers.pop(selected, None)
+        if writer is not None:
+            await writer.discard()
         run_ids = [
             run_id for run_id, run in self._runs.items()
             if run.session_id == selected
@@ -1285,7 +1496,6 @@ class SessionLogStore:
         self._inboxes.pop(selected, None)
         self._durable_counts.pop(selected, None)
         self._write_errors.pop(selected, None)
-        self._writers.pop(selected, None)
         self._indexed.discard(selected)
         self._index_locks.pop(selected, None)
         self._pending_rows.discard(selected)
@@ -1486,6 +1696,8 @@ class SessionLogStore:
             listed = _ListProjection()
             self._lists[session_id] = listed
         listed.observe(event)
+        if event.type == "session/title":
+            self._titles[session_id] = event
         hydrated = self._hydrated.get(session_id)
         if hydrated is not None:
             hydrated.append(event)
@@ -1640,17 +1852,21 @@ class SessionLogStore:
         listed = _ListProjection()
         tail: deque[SessionEvent] = deque(maxlen=_TAIL_EVENTS)
         count = 0
+        titles: dict[str, SessionEvent] = {}
         for event in events:
             count += 1
             tail.append(event)
             listed.observe(event)
             self._project_inbox_event(inbox, session_id, event)
             self._project_run_event(session_id, event)
+            if event.type == "session/title":
+                titles[session_id] = event
         self._sessions[session_id] = tail
         self._counts[session_id] = count
         self._durable_counts[session_id] = count
         self._lists[session_id] = listed
         self._inboxes[session_id] = inbox
+        self._titles.update(titles)
 
     def _open_transcript(
         self,

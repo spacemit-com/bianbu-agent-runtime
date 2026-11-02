@@ -1,0 +1,13 @@
+[Unit]
+Description=Keep the Bianbu Agent Runtime running
+Documentation=file:/usr/share/doc/bianbu-agent-runtime/README.Debian
+# The Runtime is the device's only control plane. A manual stop, a package
+# upgrade or a crash must not leave it down until somebody notices: this tick
+# starts it again, and systemd treats a start of an already active unit as a
+# no-op.
+After=bianbu-securityd.service
+Requires=bianbu-securityd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl start --no-block bianbu-agent-runtime.service

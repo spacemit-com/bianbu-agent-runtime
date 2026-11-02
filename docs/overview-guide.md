@@ -34,7 +34,7 @@ Web 控制台和 CLI，向内通过插件宿主承载扩展能力。
 | 无外部数据库 | Agent/Session/Run/Checkpoint 全部文件化（JSON/JSONL/SQLite），开箱即用 |
 | 端侧优先 | 模型调用优先本地/端侧（Bibit、SpacemiT 推理），不可用时按云端降级 |
 | 国产平台适配 | 针对 riscv64 提供免编译 wheel 源与依赖锁定 |
-| 安全默认收敛 | 能力校验、文件支撑校验、审批、DLP、沙箱、网络策略、审计均为默认开启项 |
+| 安全按 Plugin 启用 | 专家选择 `bianbu.security` 后才注册 securityd 并启用校验、审批、DLP、沙箱、网络策略与审计；未选择时完全不注册 securityd，并以 `yolo + host` 启动。只有首次安装会以 `yolo + host` 初始化包内自带的专家；重装/升级保留控制台里的安全模式 |
 
 ## 3. 总体架构
 
@@ -183,7 +183,7 @@ CLI serve
       └─ create_runtime()  → BianbuAgentRuntime（role=control）
           ├─ AgentHome(data_dir).prepare()：建立 agents/models/sessions/skills/mcps/plugins/workspace/logs
           ├─ 资源发现与清单校验（系统 → 配置 → 管理目录）
-          ├─ 装载内置插件与预设 Expert（resources/default-profile）
+          ├─ 装载内置插件与预设 Expert（resources）
           ├─ SecurityRuntimeClient 绑定身份（可失败 → security_pending）
           ├─ 内置 Bibit 预热（探测 127.0.0.1:8765/healthz，未就绪不阻塞）
           └─ create_app(runtime) → FastAPI（/api/v1 + Console + /metrics）
@@ -298,7 +298,7 @@ Memory 插件与外部 `agent-memory` 服务是**上述存储的补充**，不�
 
 ### 8.3 仓库内置扩展
 
-- 插件：`bianbu.audit`、`bianbu.bibit.intent`、`bianbu.memory`、`bianbu.security`。
+- 插件：`bianbu.bibit.intent`、`bianbu.memory`、`bianbu.security`。
 - Skill：`appcli-router`、`cli-anything-libreoffice`、`drawio`、`expert-creator`、
   `frontend-design`、`k3-dependency-doctor`、`k3-smart-office`、`riscv-software-delivery`、
   `using-apm`。
@@ -320,7 +320,7 @@ Memory 插件与外部 `agent-memory` 服务是**上述存储的补充**，不�
 | 数据保护 | DLP（含 Skill DLP）、凭据文件 `0600`、沙箱内不挂载 `/opt/bibit-intent` |
 | 网络策略 | 签名网络策略显式声明 `localhost`，仅为 Worker 放行 Bibit 回环服务 |
 | 审批 | 元数据审批 + `terminal` 的 `rm` 动态审批 |
-| 审计 | syscall 采集/审计、per-Agent syscall 策略、audit 插件 |
+| 审计 | syscall 采集/审计、per-Agent syscall 策略 |
 | 资源约束 | cgroup 内存记账（Worker OOM 可归因） |
 | 降级策略 | 开发态 securityd 缺失 → `security_pending` + unmanaged fallback；生产态 `BIANBU_RUNTIME_SECURITY=required` fail-closed |
 
@@ -372,7 +372,7 @@ plugin_stop_timeout_seconds: 5.0
 presets: { tools: [...], skills: [using-apm] }
 security: { required: false, securityd_uds: /run/bianbu/securityd.sock, client_dir: ... }
 runtime:
-  control: { startup_timeout_seconds: 10, heartbeat_interval_seconds: 5, restart_policy: {...} }
+  control: { handshake_timeout_seconds: 10, heartbeat_interval_seconds: 5, restart_policy: {...} }
   worker:  { max_concurrent_runs: 4, entrypoint: [.venv/bin/bianbu-agent, --role, agent-worker, ...] }
 ```
 
@@ -386,11 +386,12 @@ Agent 保存的 provider + name 解析，**不存在全局默认服务商或默�
 
 - Debian 源码包 `bianbu-agent-runtime`，`debian/rules` 负责构建与打包；安装时携带锁定好的
   Python 环境，安装过程不需要联网下载依赖。
-- 安装后由 `provision-user.py` 创建运行用户并渲染 starter Expert（`resources/default-profile/`），
-  由 `register-runtime-manifest` / `generate-security-manifest.py` 生成运行时清单。
+- 安装后由 `provision-user.py` 创建运行用户并渲染 starter Expert（`resources/`），
+  由 `prepare-runtime-device` 准备设备侧账户与 `/run` 状态。
 - systemd 单元：`bianbu-agent-runtime.service`（主服务）、`bianbu-agent-runtime-register.service`
-  （身份注册）、`bianbu-agent-network-learning.service`（网络学习采集）；配套 tmpfiles、polkit
-  与 wrapper 脚本。
+  （设备准备：securityd 组成员与 `/run` 状态）；配套 tmpfiles、polkit 与 wrapper 脚本。
+- 删除专家时，Runtime 先调用 securityd 的 `UnregisterAgent`，确认成功后才删除本地声明；
+  注销失败返回 `503` 并保留专家，避免安全控制台残留已删除的身份。
 - runtime 依赖 `securityd >= 0.1.18`、`agent-memory >= 0.1.7`、`bibit-intent >= 0.1.23`，
   以及 searxng、ai-gateway、llama.cpp-tools-spacemit、agent-browser、auditd、libfst26 等。
 

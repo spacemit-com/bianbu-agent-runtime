@@ -16,7 +16,7 @@ case "$action" in
     provision)
         exec /usr/lib/bianbu-agent-runtime/venv/bin/python \
             /usr/lib/bianbu-agent-runtime/provision-user.py \
-            --profile /usr/share/bianbu-agent-runtime/default-profile \
+            --resource-root /usr/share/bianbu-agent-runtime \
             --home "$home"
         ;;
     serve)

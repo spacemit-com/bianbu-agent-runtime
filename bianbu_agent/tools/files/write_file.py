@@ -5,18 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 from bianbu_agent.tools import tool
-
-
-def _resolve(workspace: Path, raw_path: str) -> Path:
-    if not raw_path:
-        raise ValueError("path must be a non-empty string")
-    candidate = Path(raw_path).expanduser()
-    if not candidate.is_absolute():
-        candidate = workspace / candidate
-    resolved = candidate.resolve()
-    if not resolved.is_relative_to(workspace.resolve()):
-        raise PermissionError("path is outside the Tool workspace")
-    return resolved
+from bianbu_agent.tools.files.paths import resolve_path
 
 
 def _atomic_write(path: Path, content: str) -> tuple[int, bool]:
@@ -42,14 +31,14 @@ def create_tool(context):
 
     @tool(parse_docstring=True)
     async def write_file(path: str, content: str) -> str:
-        """Atomically write UTF-8 text inside the current Tool workspace.
+        """Atomically write UTF-8 text to a file.
 
         Args:
-            path: Absolute or workspace-relative destination path.
+            path: Destination path; a relative path resolves against the workspace.
             content: Complete text content to write.
         """
         try:
-            resolved = _resolve(context.workspace_root, path)
+            resolved = resolve_path(context.workspace_root, path)
             bytes_written, dirs_created = await asyncio.to_thread(
                 _atomic_write, resolved, content
             )
@@ -58,12 +47,6 @@ def create_tool(context):
                 "dirs_created": dirs_created,
                 "resolved_path": str(resolved),
                 "files_modified": [str(resolved)],
-            }
-        except PermissionError as exc:
-            payload = {
-                "success": False,
-                "code": "path_outside_workspace",
-                "error": str(exc),
             }
         except (OSError, TypeError, ValueError) as exc:
             payload = {"success": False, "code": "invalid_request", "error": str(exc)}

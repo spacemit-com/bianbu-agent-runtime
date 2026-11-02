@@ -74,6 +74,39 @@ def test_agent_patch_distinguishes_clearing_model_from_omission() -> None:
     assert cleared.model is None
 
 
+def test_agent_model_effort_is_optional_and_validated() -> None:
+    """Omission is explicit so PATCH can preserve an existing effort."""
+
+    omitted = AgentCreateRequest.model_validate(
+        {"name": "Expert", "model": {"provider": "provider", "name": "model"}}
+    )
+    selected = AgentCreateRequest.model_validate(
+        {
+            "name": "Expert",
+            "model": {
+                "provider": "provider",
+                "name": "model",
+                "effort": "max",
+            },
+        }
+    )
+
+    assert omitted.model is not None and omitted.model.effort is None
+    assert selected.model is not None and selected.model.effort == "max"
+    for effort in ("medium", None):
+        with pytest.raises(ValueError):
+            AgentCreateRequest.model_validate(
+                {
+                    "name": "Expert",
+                    "model": {
+                        "provider": "provider",
+                        "name": "model",
+                        "effort": effort,
+                    },
+                }
+            )
+
+
 def test_runtime_settings_fields_accept_omission_and_explicit_null() -> None:
     """PATCH settings distinguishes omitted fields from an explicit null update."""
 

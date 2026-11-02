@@ -69,6 +69,17 @@ def test_manager_rejects_extra_files_and_symlinked_config(tmp_path: Path) -> Non
         manager.install(linked)
 
 
+def test_user_catalog_still_rejects_extra_files(tmp_path: Path) -> None:
+    """Only a package-owned system tree may carry files beyond mcp.json."""
+
+    home = AgentHome(tmp_path / "state").prepare()
+    package = _write_mcp(home.mcps_dir / "mcp.extra")
+    (package / "server.py").write_text("print('unexpected')\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="only contain mcp.json"):
+        MCPPackageManager(home).list()
+
+
 def test_install_rejects_config_inode_replacement_during_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

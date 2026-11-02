@@ -36,9 +36,6 @@ from .security_runtime import (
     SecurityRuntimeClient,
     current_cgroup_path,
 )
-from .network_learning_collector import NetworkLearningCollector
-from .network_learning_privileged import PrivilegedNetworkLearningClient
-_DEFAULT_NETWORK_LEARNING_COLLECTOR = NetworkLearningCollector
 from .syscall_collector import SyscallCollector
 
 logger = logging.getLogger(__name__)
@@ -48,9 +45,6 @@ DENY_SYSCALL_NAMES = (
     "init_module", "finit_module", "delete_module", "mount", "umount2",
     "pivot_root", "perf_event_open", "ptrace", "bpf", "userfaultfd",
 )
-NETWORK_OBSERVATION_SYSCALLS = ("connect", "sendto", "sendmsg")
-
-
 def _external_syscall_collector_available() -> bool:
     return SyscallCollector().enabled
 
@@ -69,8 +63,6 @@ def _strace_command(
     command: Sequence[str], request: "ExecutionRequest",
     decision: RuntimeStartDecision, *, optional_syscall_audit: bool = False,
 ) -> tuple[list[str], str]:
-    network = decision.policy.get("network") or {}
-    learning = str(network.get("mode", "")) == "learning" or network.get("observe") is True
     trace_dir = _trace_directory(request)
     strace_setting = os.environ.get("BIANBU_SYSCALL_STRACE", "")
     normalized_setting = str(strace_setting).strip().lower()
@@ -82,23 +74,13 @@ def _strace_command(
     # tracing.  Keep strace available only as an explicit opt-in for
     # diagnostics (BIANBU_SYSCALL_STRACE=1).
     syscall_audit = optional_syscall_audit and normalized_setting == "1"
-    # Network learning has a dedicated attach-only collector.  Do not wrap the
-    # Worker at launch (the ptrace parent can freeze the control channel).
-    # Launch-time tracing remains available as an explicit diagnostic opt-in.
-    launch_learning_trace = learning and os.environ.get(
-        "BIANBU_NETWORK_LEARNING_STRACE", ""
-    ).strip().lower() in {"1", "true", "yes"}
-    if not launch_learning_trace and not syscall_audit:
-        return list(command), trace_dir
-    if str(normalized_setting or "1") in {"0", "false", "no"} and not launch_learning_trace:
+    if not syscall_audit:
         return list(command), trace_dir
     executable = shutil.which("strace")
     if not executable or not trace_dir:
         return list(command), trace_dir
     Path(trace_dir).mkdir(parents=True, exist_ok=True)
     names = set(DENY_SYSCALL_NAMES)
-    if learning:
-        names.update(NETWORK_OBSERVATION_SYSCALLS)
     return ([
         executable, "-ff", "-qq", "-ttt", "-xx", "-s", "512",
         "-e", "trace=" + ",".join(sorted(names)),
@@ -288,7 +270,7 @@ _MEMORY_ENV_KEYS = (
 # CPUQuota is only a ceiling: a Worker scope that asks for no CPUWeight
 # inherits the default 100 and loses the scheduler to any saturating task on
 # the same board.  That starvation made Hook children run 8-20x slow and
-# tripped gate Hook timeouts (RUNTIME-HOOK-001), so Runtime applies a floor
+# tripped Hook timeouts (RUNTIME-HOOK-001), so Runtime applies a floor
 # whenever security policy does not carry its own ``cpu_weight``.  Weight
 # only redistributes contended CPU; an idle board is unaffected.
 _DEFAULT_WORKER_CPU_WEIGHT = 1000
@@ -401,15 +383,6 @@ def _with_runtime_worker_policy(
         host=memory_uds,
         target="/run/bianbu/agent-memoryd.sock",
     )
-    # Bind the dedicated directory, not the socket inode: collector restart
-    # recreates the socket and must remain visible to existing Workers.
-    learning_directory = Path("/run/bianbu/network-learning")
-    if learning_directory.is_dir():
-        _append_mount(
-            readonly,
-            host=learning_directory,
-            target=str(learning_directory),
-        )
     _append_mount(
         readonly,
         host=bibit_intent_root,
@@ -484,6 +457,24 @@ def _policy_mount_covering(policy: Mapping[str, Any], name: str, path: Path) -> 
         return None
     _, host, target = max(candidates, key=lambda item: item[0])
     return host, target
+
+
+def _range_override_paths(policy: Mapping[str, Any], name: str) -> list[str]:
+    """读取可读/可写范围的「排除项」绝对路径（去重、保序）。
+
+    securityd 把 include + exclude 编译成绑定表之后，还会把排除项单独列在
+    ``inaccessible_overrides`` / ``read_only_overrides`` 里。排除是最后的边界
+    覆盖层，必须由真正创建命名空间的后端落实，否则「包含父目录、排除子目录」
+    的声明会静默失效。
+    """
+    out: list[str] = []
+    for item in policy.get(name) or ():
+        value = str(item or "").strip()
+        if not value.startswith("/") or ".." in Path(value).parts:
+            continue
+        if value not in out:
+            out.append(value)
+    return out
 
 
 def _host_to_target(policy: Mapping[str, Any], value: str) -> str:
@@ -565,26 +556,34 @@ def _unit_name(agent_id: str, instance_id: str, *, unit_type: str | None = None)
     return f"bianbu-agent-{safe}-{instance_id[-12:]}.{selected}"
 
 
-# ``securityd`` publishes the Worker sandbox policy with a 2 GiB ``MemoryMax``
-# and a one-core ``CPUQuota`` by default (FR-SBX-02).  A single-board
-# deployment has no other tenant to protect, and both caps only reflect those
-# policy defaults: the memory cap OOM kills long Sessions, and the one-core
-# quota makes the Worker's Hook children, engine build and tool calls take
-# turns on a single core.  The Runtime therefore accepts an explicit override
-# per limit instead of editing the Security side.  Unset means "keep enforcing
-# the policy value"; the development launchers and the packaged system unit
-# both default to ``off``, so only an explicitly configured value
-# (``BIANBU_WORKER_MEMORY_MAX=2G``, ``BIANBU_WORKER_CPU_QUOTA=200%``) brings a
-# cap back.
+# ``securityd`` publishes the Worker sandbox policy with a 2 GiB ``MemoryMax``,
+# a one-core ``CPUQuota`` and a 256 ``TasksMax`` by default (FR-SBX-02).  A
+# single-board deployment has no other tenant to protect, and all three caps
+# only reflect those policy defaults: the memory cap OOM kills long Sessions,
+# the one-core quota makes the Worker's Hook children, engine build and tool
+# calls take turns on a single core, and 256 tasks (processes *and* threads)
+# are spent by a handful of concurrent Sessions on top of the always-on MCP
+# servers a Worker keeps resident.  The Runtime therefore accepts an explicit
+# override per limit instead of editing the Security side.  Unset means "keep
+# enforcing the policy value"; the development launchers and the packaged
+# system unit both default to ``off``, so only an explicitly configured value
+# (``BIANBU_WORKER_MEMORY_MAX=2G``, ``BIANBU_WORKER_CPU_QUOTA=200%``,
+# ``BIANBU_WORKER_TASKS_MAX=256``) brings a cap back.
 _NO_LIMIT = object()
 _LIMIT_OFF = frozenset({"0", "off", "no", "none", "unlimited", "false"})
+
+#: ``off`` usually means "omit the property and let systemd use its own
+#: default".  For these keys that default is *not* unlimited: an omitted
+#: ``TasksMax`` falls back to ``DefaultTasksMax`` (a share of
+#: ``kernel.pid_max``), so the uncapped case must be spelled ``infinity``.
+_OFF_MEANS_INFINITY = frozenset({"TasksMax"})
 
 #: policy key -> systemd property -> override environment variable (or None)
 _WORKER_LIMIT_PROPERTIES = (
     ("memory_max", "MemoryMax", "BIANBU_WORKER_MEMORY_MAX"),
     ("cpu_quota", "CPUQuota", "BIANBU_WORKER_CPU_QUOTA"),
     ("cpu_weight", "CPUWeight", None),
-    ("tasks_max", "TasksMax", None),
+    ("tasks_max", "TasksMax", "BIANBU_WORKER_TASKS_MAX"),
     ("io_weight", "IOWeight", None),
 )
 
@@ -608,6 +607,8 @@ def _resource_properties(policy: Mapping[str, Any]) -> list[str]:
         if env_name is not None:
             override = _limit_override(env_name)
             if override is _NO_LIMIT:
+                if systemd_key in _OFF_MEANS_INFINITY:
+                    props.append(f"{systemd_key}=infinity")
                 continue
             value = override or value
         if value not in (None, ""):
@@ -620,9 +621,9 @@ def _resource_properties(policy: Mapping[str, Any]) -> list[str]:
 def _network_properties(policy: Mapping[str, Any]) -> list[str]:
     network = policy.get("network") or {}
     mode = str(network.get("mode", "deny_all"))
-    if mode not in {"whitelist", "deny_all", "allow_all", "learning"}:
+    if mode not in {"whitelist", "deny_all", "allow_all"}:
         raise RuntimeExecutionError(f"不支持的网络策略模式：{mode}")
-    if mode in {"allow_all", "learning"}:
+    if mode == "allow_all":
         return []
     domains = [str(value).strip() for value in network.get("domains") or () if str(value).strip()]
     if mode == "deny_all" or not domains:
@@ -699,10 +700,18 @@ def _resource_command(
         for item in policy.get("readonly_bind_mounts") or ():
             if isinstance(item, Mapping) and str(item.get("host", "")).strip():
                 props.append(f"ReadOnlyPaths={Path(str(item['host'])).expanduser().resolve()}")
+        # Range exclusions are the final boundary layer and must not be
+        # silently dropped in host mode either: a write exclusion keeps the
+        # path readable but drops write access, and a read exclusion hides it.
+        for value in _range_override_paths(policy, "read_only_overrides"):
+            if value not in set(_range_override_paths(policy, "inaccessible_overrides")):
+                props.append(f"ReadOnlyPaths={value}")
         for item in policy.get("deny_paths") or ():
             value = str(item).strip()
             if value.startswith("/"):
                 props.append(f"InaccessiblePaths={value}")
+        for value in _range_override_paths(policy, "inaccessible_overrides"):
+            props.append(f"InaccessiblePaths={value}")
     requires_unit = bool(props) or bool(constraints.get("resource_cgroup_required"))
     if not requires_unit:
         return list(command), ""
@@ -1147,11 +1156,6 @@ class HostProcessBackend:
             "LD_LIBRARY_PATH", "PYTHONPATH", "HTTP_PROXY", "HTTPS_PROXY",
             "ALL_PROXY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
         }}
-        preload = str(request.env.get("LD_PRELOAD", ""))
-        if preload.endswith("/libbianbu-network-learning.so") and Path(preload).is_file():
-            clean_env.update({"LD_PRELOAD": preload,
-                              "BIANBU_NETWORK_LEARNING_SOCKET": "/run/bianbu/network-learning/collector.sock",
-                              "BIANBU_NETWORK_LEARNING_INSTANCE_ID": request.instance})
         if _system_service_mode():
             # Direct-child mode cannot rely on systemd-run to supply the
             # service manager's baseline environment. Preserve only harmless
@@ -1260,6 +1264,31 @@ class BwrapBackend:
             args += ["--bind", str(host), target]
         return args
 
+    @staticmethod
+    def _override_args(policy: Mapping[str, Any]) -> list[str]:
+        """把范围排除项编译成最后应用的覆盖绑定。
+
+        排除在 include 之后写入，后写入的绑定覆盖先写入的，所以「允许父目录、
+        排除某个子目录」无论声明顺序都能生效。可读排除＝完全不可见（目录用空
+        tmpfs 覆盖内容，文件用 ``/dev/null``）；可写排除＝保留可读、去掉写权限。
+        同一个路径同时出现在两组里时不可见优先，不会被只读绑定重新打开。
+        """
+        inaccessible = set(_range_override_paths(policy, "inaccessible_overrides"))
+        args: list[str] = []
+        for path in _range_override_paths(policy, "read_only_overrides"):
+            if path in inaccessible:
+                continue
+            args += (["--ro-bind", path, path] if Path(path).exists()
+                     else ["--ro-bind", "/dev/null", path])
+        for path in _range_override_paths(policy, "inaccessible_overrides"):
+            if Path(path).is_dir():
+                args += ["--tmpfs", path]
+            else:
+                # 文件、符号链接或不存在的路径都用一个不可用的空文件覆盖，
+                # 保证排除是 fail-closed 的，而不是悄悄把 include 又放开。
+                args += ["--ro-bind", "/dev/null", path]
+        return args
+
     def _argv(self, request: ExecutionRequest, decision: RuntimeStartDecision) -> list[str]:
         if not self.bwrap_path:
             raise RuntimeExecutionError("sandbox 策略要求 bwrap，但系统未安装")
@@ -1267,9 +1296,9 @@ class BwrapBackend:
         network = policy.get("network") or {}
         domains = list(network.get("domains") or ())
         network_mode = str(network.get("mode", "deny_all"))
-        if network_mode not in {"whitelist", "deny_all", "allow_all", "learning"}:
+        if network_mode not in {"whitelist", "deny_all", "allow_all"}:
             raise RuntimeExecutionError(f"不支持的网络策略模式：{network_mode}")
-        network_enabled = network_mode in {"allow_all", "learning"} or (
+        network_enabled = network_mode == "allow_all" or (
             network_mode == "whitelist" and bool(domains)
         )
         args = [
@@ -1312,8 +1341,7 @@ class BwrapBackend:
             for directory in reversed(parents):
                 args += ["--dir", str(directory)]
             args += ["--ro-bind", str(resolv_conf), str(resolv_conf)]
-        # Blocking policies use cgroup IP filters or an offline namespace;
-        # learning keeps the network available, including with no domains.
+        # Blocking policies use cgroup IP filters or an offline namespace.
         if not network_enabled:
             args.insert(args.index("--cap-drop"), "--unshare-net")
         for top in ("bin", "sbin", "lib", "lib32", "lib64", "libx32"):
@@ -1323,6 +1351,7 @@ class BwrapBackend:
             elif path.exists():
                 args += ["--ro-bind", str(path), f"/{top}"]
         args += self._mount_args(policy)
+        args += self._override_args(policy)
         # The control-plane/Worker RPC socket is a security boundary, not a
         # generic data directory.  The policy must bind the host directory to
         # the same absolute target visible to the Worker; otherwise a sandbox
@@ -1387,15 +1416,6 @@ class BwrapBackend:
             elif key == "BIANBU_SECURITYD_HOME":
                 value = "/opt/bianbu-securityd"
             args += ["--setenv", key, value]
-        preload = str(request.env.get("LD_PRELOAD", ""))
-        if preload.endswith("/libbianbu-network-learning.so"):
-            args += [
-                "--setenv", "LD_PRELOAD", preload,
-                "--setenv", "BIANBU_NETWORK_LEARNING_SOCKET",
-                "/run/bianbu/network-learning/collector.sock",
-                "--setenv", "BIANBU_NETWORK_LEARNING_INSTANCE_ID",
-                request.instance,
-            ]
         sandbox_cwd = str((policy.get("host_constraints") or {}).get(
             "sandbox_working_directory", "/home/agent"))
         # The worker config uses the conventional ``~/.bianbu-agent`` path.
@@ -1485,11 +1505,6 @@ class BwrapBackend:
             standard_input_path=seccomp_input_path,
         )
         env = _safe_env(decision.policy, request)
-        preload = str(request.env.get("LD_PRELOAD", ""))
-        if preload.endswith("/libbianbu-network-learning.so") and Path(preload).is_file():
-            env.update({"LD_PRELOAD": preload,
-                        "BIANBU_NETWORK_LEARNING_SOCKET": "/run/bianbu/network-learning/collector.sock",
-                        "BIANBU_NETWORK_LEARNING_INSTANCE_ID": request.instance})
         if self._popen is subprocess.Popen:
             # ``_resource_command`` uses the absolute systemd-run path when
             # available.  Check the executable basename so the policy-built
@@ -1578,155 +1593,11 @@ class ExecutionCoordinator:
         # Optional observer; seccomp remains the enforcement mechanism. It is
         # disabled unless BIANBU_SYSCALL_COLLECTOR_CMD is explicitly set.
         self._collectors: dict[str, SyscallCollector] = {}
-        self._network_collectors: dict[str, Any] = {}
         self._records: dict[str, ExecutionRecord] = self._load()
         self.backends: dict[str, ExecutionBackend] = dict(backends or {
             "host-process": HostProcessBackend(),
             "bwrap": BwrapBackend(),
         })
-
-    def _network_learning_client(self, record: ExecutionRecord, policy_version: int) -> PrivilegedNetworkLearningClient:
-        loop = asyncio.get_running_loop()
-        # Preserve injectable legacy doubles used by development diagnostics;
-        # production always uses the privileged socket client below.
-        if NetworkLearningCollector is not _DEFAULT_NETWORK_LEARNING_COLLECTOR:
-            return NetworkLearningCollector(
-                event_callback=lambda event: loop.call_soon_threadsafe(self._forward_network_event, record, policy_version, event),
-                status_callback=lambda state, reason: loop.call_soon_threadsafe(self._forward_network_status, record, state, reason),
-            )
-        loop = asyncio.get_running_loop()
-        def status(state: str, reason: str) -> None:
-            async def forward() -> None:
-                try:
-                    await self.security_client.report_network_learning_collector(
-                        record.agent_id, record.instance_id, record.lease_id,
-                        record.pid, state, reason)
-                except Exception:
-                    logger.warning("network learning status forwarding failed", exc_info=True)
-            loop.call_soon_threadsafe(lambda: asyncio.create_task(forward()))
-        def event(value: Mapping[str, Any]) -> None:
-            try:
-                clean = {"event_id": str(value.get("event_id", "")).strip()
-                         or f"preload-{record.instance_id}-{uuid.uuid4().hex}",
-                         "observed_at": float(value.get("observed_at", 0)),
-                         "event_type": str(value.get("event_type", "connect")),
-                         "protocol": str(value.get("protocol", "tcp")),
-                         "domain": str(value.get("domain", "")),
-                         "remote_ip": str(value.get("remote_ip", "")),
-                         "remote_port": int(value.get("remote_port", 0) or 0),
-                         "dns_qtype": str(value.get("dns_qtype", "")),
-                         "outcome": str(value.get("outcome", "success")),
-                         "errno": str(value.get("errno", "")),
-                         "backend": str(value.get("backend", "preload")), "policy_version": int(policy_version)}
-            except (TypeError, ValueError):
-                return
-            async def forward() -> None:
-                try:
-                    await self.security_client.record_network_learning_event(
-                        record.agent_id, record.instance_id, record.lease_id,
-                        record.pid, clean)
-                except Exception:
-                    logger.warning("network learning event forwarding failed", exc_info=True)
-            loop.call_soon_threadsafe(lambda: asyncio.create_task(forward()))
-        return PrivilegedNetworkLearningClient(event_callback=event, status_callback=status)
-
-    def _forward_network_status(self, record: ExecutionRecord, state: str, reason: str) -> None:
-        try:
-            loop = asyncio.get_event_loop()
-            loop.create_task(self.security_client.report_network_learning_collector(
-                record.agent_id, record.instance_id, record.lease_id, record.pid, state, reason))
-        except Exception:
-            logger.warning("network learning status forwarding failed", exc_info=True)
-
-    def _forward_network_event(self, record: ExecutionRecord, policy_version: int, value: Mapping[str, Any]) -> None:
-        try:
-            loop = asyncio.get_event_loop()
-            clean = {"event_id": str(value.get("event_id", "")).strip(),
-                     "observed_at": float(value.get("observed_at", 0)),
-                     "event_type": str(value.get("event_type", "")).strip(),
-                     "protocol": str(value.get("protocol", "")).strip(),
-                     "domain": str(value.get("domain", "")).strip(),
-                     "remote_ip": str(value.get("remote_ip", "")).strip(),
-                     "remote_port": int(value.get("remote_port", 0) or 0),
-                     "dns_qtype": str(value.get("dns_qtype", "")).strip(),
-                     "outcome": str(value.get("outcome", "")).strip(),
-                     "errno": str(value.get("errno", "")).strip(),
-                     "backend": "strace", "policy_version": policy_version}
-            loop.create_task(self.security_client.record_network_learning_event(
-                record.agent_id, record.instance_id, record.lease_id, record.pid, clean))
-        except Exception:
-            logger.warning("network learning event forwarding failed", exc_info=True)
-    async def _start_hot_network_collector(
-        self, record: ExecutionRecord, handle: BackendHandle, policy_version: int,
-    ) -> bool:
-        collector = self._network_learning_client(record, policy_version)
-        if isinstance(collector, PrivilegedNetworkLearningClient):
-            started = await asyncio.to_thread(collector.register, instance_id=record.instance_id,
-                                               cgroup_path=handle.cgroup_path,
-                                               agent_id=record.agent_id, lease_id=record.lease_id,
-                                               pid=handle.pid)
-        else:
-            started = bool(getattr(collector, "enabled", False)) and await asyncio.to_thread(collector.start, trace_dir=handle.trace_dir, attach_pid=handle.pid)
-        if started or isinstance(collector, PrivilegedNetworkLearningClient):
-            self._network_collectors[record.instance_id] = collector
-            return True
-        try:
-            await self.security_client.report_network_learning_collector(
-                record.agent_id, record.instance_id, record.lease_id, record.pid,
-                "degraded", "network learning collector unavailable",
-            )
-        except Exception:
-            logger.warning("network learning degraded status failed", exc_info=True)
-        return False
-
-    async def apply_network_learning_policy(
-        self, agent_id: str, mode: str, policy_version: int,
-    ) -> dict[str, int]:
-        """Synchronize learning observation with an already-updated host policy."""
-        selected_mode = str(mode).strip().lower()
-        if selected_mode not in {"whitelist", "deny_all", "allow_all", "learning"}:
-            raise ValueError("invalid network mode")
-        with self._lock:
-            active = [
-                (record, self._handles.get(instance_id))
-                for instance_id, record in self._records.items()
-                if record.agent_id == str(agent_id)
-                and record.state == ExecutionState.RUNNING
-                and self._handles.get(instance_id) is not None
-            ]
-        result = {"active_instances": len(active), "collectors_started": 0,
-                  "collectors_stopped": 0, "degraded_instances": 0}
-        for record, handle in active:
-            assert handle is not None
-            if selected_mode == "learning":
-                if record.instance_id in self._network_collectors:
-                    continue
-                if handle.backend != "host-process":
-                    result["degraded_instances"] += 1
-                    continue
-                if await self._start_hot_network_collector(
-                    record, handle, int(policy_version),
-                ):
-                    result["collectors_started"] += 1
-                else:
-                    result["degraded_instances"] += 1
-                continue
-            collector = self._network_collectors.pop(record.instance_id, None)
-            if collector is None:
-                continue
-            if hasattr(collector, "unregister"):
-                await asyncio.to_thread(collector.unregister)
-            else:
-                await asyncio.to_thread(collector.stop, self.stop_timeout)
-            try:
-                await self.security_client.report_network_learning_collector(
-                    record.agent_id, record.instance_id, record.lease_id, record.pid,
-                    "inactive", f"network policy changed to {selected_mode}",
-                )
-            except Exception:
-                logger.warning("network learning inactive status failed", exc_info=True)
-            result["collectors_stopped"] += 1
-        return result
 
     def _load(self) -> dict[str, ExecutionRecord]:
         try:
@@ -1943,16 +1814,6 @@ class ExecutionCoordinator:
             },
             request.cwd, instance,
             request.target_port, request.listen_port)
-        observation = decision.policy.get("network") or {}
-        if str(observation.get("mode", "")).lower() == "learning" or observation.get("observe") is True:
-            preload = os.environ.get("BIANBU_NETWORK_LEARNING_PRELOAD", "/usr/lib/bianbu-agent-runtime/libbianbu-network-learning.so")
-            if Path(preload).is_file():
-                request = ExecutionRequest(
-                    request.agent_id, request.command, request.requested_mode,
-                    {**dict(request.env), "LD_PRELOAD": preload,
-                     "BIANBU_NETWORK_LEARNING_SOCKET": "/run/bianbu/network-learning/collector.sock",
-                     "BIANBU_NETWORK_LEARNING_INSTANCE_ID": instance},
-                    request.cwd, instance, request.target_port, request.listen_port)
         backend = self.backends[decision.backend]
         with self._lock:
             if instance in self._handles:
@@ -2039,59 +1900,6 @@ class ExecutionCoordinator:
                     trace_dir=trace_dir,
                 )
                 self._collectors[instance] = collector
-            network_policy = decision.policy.get("network") or {}
-            if str(network_policy.get("mode", "")) == "learning" or network_policy.get("observe") is True:
-                network_collector = None
-                try:
-                    policy_version = int(
-                        network_policy.get("version")
-                        or decision.policy.get("version")
-                        or decision.policy.get("policy_version", 0)
-                        or 0
-                    )
-                    network_collector = self._network_learning_client(record, policy_version)
-                    if isinstance(network_collector, PrivilegedNetworkLearningClient):
-                        started = await asyncio.to_thread(
-                            network_collector.register,
-                            instance_id=instance, cgroup_path=cgroup,
-                            agent_id=request.agent_id, lease_id=decision.lease_id,
-                            pid=handle.pid)
-                    else:
-                        started = bool(getattr(network_collector, "enabled", False)) and await asyncio.to_thread(
-                            network_collector.start, trace_dir=_trace_directory(request),
-                            attach_pid=handle.pid)
-                    if started or isinstance(network_collector, PrivilegedNetworkLearningClient):
-                        self._network_collectors[instance] = network_collector
-                    else:
-                        try:
-                            await self.security_client.report_network_learning_collector(
-                                request.agent_id, instance, decision.lease_id, handle.pid,
-                                "degraded", "network learning collector unavailable")
-                        except Exception:
-                            logger.warning(
-                                "network learning degraded status failed",
-                                exc_info=True,
-                            )
-                except Exception:
-                    if network_policy.get("observe") is not True:
-                        raise
-                    # Passive YOLO observation must never stop an otherwise
-                    # committed Worker, including constructor/registration errors.
-                    logger.warning("YOLO network observation unavailable", exc_info=True)
-                    if network_collector is not None:
-                        try:
-                            if hasattr(network_collector, "unregister"):
-                                await asyncio.to_thread(network_collector.unregister)
-                            elif hasattr(network_collector, "stop"):
-                                await asyncio.to_thread(network_collector.stop, self.stop_timeout)
-                        except Exception:
-                            logger.warning("network observation cleanup failed", exc_info=True)
-                    try:
-                        await self.security_client.report_network_learning_collector(
-                            request.agent_id, instance, decision.lease_id, handle.pid,
-                            "degraded", "YOLO network observation unavailable")
-                    except Exception:
-                        logger.warning("network observation degraded status failed", exc_info=True)
             if request.listen_port is not None:
                 try:
                     proxy = _LoopbackProxy(request.target_port, request.listen_port)
@@ -2109,12 +1917,6 @@ class ExecutionCoordinator:
                 self._save()
             return record
         except Exception as exc:
-            network_collector = self._network_collectors.pop(instance, None)
-            if network_collector is not None:
-                if hasattr(network_collector, "unregister"):
-                    await asyncio.to_thread(network_collector.unregister)
-                else:
-                    await asyncio.to_thread(network_collector.stop, 1.0)
             collector = self._collectors.pop(instance, None)
             if collector is not None:
                 await asyncio.to_thread(collector.stop, 1.0)
@@ -2147,18 +1949,6 @@ class ExecutionCoordinator:
         record.state = ExecutionState.STOPPING
         with self._lock:
             self._save()
-        network_collector = self._network_collectors.pop(instance_id, None)
-        if network_collector is not None:
-            try:
-                await self.security_client.report_network_learning_collector(
-                    record.agent_id, record.instance_id, record.lease_id,
-                    record.pid, "inactive", reason)
-            except Exception:
-                logger.warning("network learning inactive status failed", exc_info=True)
-            if hasattr(network_collector, "unregister"):
-                await asyncio.to_thread(network_collector.unregister)
-            else:
-                await asyncio.to_thread(network_collector.stop, self.stop_timeout)
         if handle is not None:
             backend = self.backends.get(handle.backend)
             if backend is not None:

@@ -50,6 +50,15 @@ def load_environment() -> dict[str, str]:
     values.update(read_env())
     values.setdefault("RUNTIME_PYTHON", sys.executable)
     values.setdefault("RUNTIME_PYTHON_BIN_DIR", str(Path(sys.executable).parent))
+    from bianbu_agent.system_resources import system_resource_dir
+
+    # System MCP declarations point at scripts shipped next to them.  The
+    # package installs that tree under /usr/share; development runs point the
+    # same variable at the source tree.
+    values.setdefault(
+        "BIANBU_SYSTEM_RESOURCE_ROOT",
+        str(system_resource_dir("mcps").parent),
+    )
     return values
 
 

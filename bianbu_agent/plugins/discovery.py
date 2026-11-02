@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from bianbu_agent.mcp.plugin import MCPAuthorizer
+from bianbu_agent.mcp.authorization import MCPAuthorizer
 from bianbu_agent._internal.filesystem import UnsafeFilesystemEntry
 
 from bianbu_agent.inventory.models import CapabilityKind, InventorySnapshot

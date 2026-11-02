@@ -80,7 +80,11 @@ async def agent_command(
             AgentSpec(
                 id=new_agent_id(),
                 name=args.name,
-                model=AgentModel(provider=args.provider, name=args.model),
+                model=AgentModel(
+                    provider=args.provider,
+                    name=args.model,
+                    effort=args.effort,
+                ),
                 tools=tuple(args.tool),
                 skills=tuple(args.skill),
                 mcps=tuple(args.mcp),
@@ -94,6 +98,17 @@ async def agent_command(
         elif args.action == "verify":
             value = {"valid": manager.verify(agent_id)}
         else:
+            # Deleting an expert is a two-registry operation: securityd owns
+            # the identity the Security console lists, and the local package
+            # must survive a failed or unconfirmed unregister.  Import the
+            # security boundary only here so read-only resource commands keep
+            # working without an execution client.
+            from bianbu_agent.security.agent_deletion import (
+                unregister_agent_before_delete,
+            )
+
+            spec = await store.get(agent_id)
+            await unregister_agent_before_delete(agent_id, plugins=spec.plugins)
             value = {"deleted": await store.delete(agent_id)}
     emit(_agent_output(value))
     return 0

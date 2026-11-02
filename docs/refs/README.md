@@ -94,7 +94,6 @@
 - [bianbu_agent/tools/processes/process.py](../../bianbu_agent/tools/processes/process.py)（主要定义从第 15 行起）
 - [bianbu_agent/mcp/client.py](../../bianbu_agent/mcp/client.py)（主要定义从第 24 行起）
 - [resources/plugins/bianbu.memory/scripts/before_run.py](../../resources/plugins/bianbu.memory/scripts/before_run.py)（主要定义从第 22 行起）
-- [resources/plugins/bianbu.audit/scripts/after_run.py](../../resources/plugins/bianbu.audit/scripts/after_run.py)（主要定义从第 13 行起）
 - [bianbu_agent/sessions/log_store.py](../../bianbu_agent/sessions/log_store.py)（主要定义从第 59 行起）
 - [debian/rules](../../debian/rules)（主要定义从第 1 行起）
 - [scripts/provision-system-agent.py](../../scripts/provision-system-agent.py)（主要定义从第 14 行起）

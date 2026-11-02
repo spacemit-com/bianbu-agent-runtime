@@ -39,7 +39,6 @@ from bianbu_agent.plugins.manifest import (
     plugin_definition_path,
 )
 from bianbu_agent.config import RUNTIME_VERSION, RuntimeConfig
-from bianbu_agent.capture import ProviderCaptureCallback, ProviderCaptureStore
 from bianbu_agent.context import CompressionSettingsProvider
 from bianbu_agent.engines.default import build_default_engine
 from bianbu_agent.errors import AgentValidationError, RuntimeStartupError
@@ -83,6 +82,13 @@ from bianbu_agent.security.agent_registration import (
     agent_framework,
     logical_agent_capabilities,
 )
+from bianbu_agent.security.capability_declarations import (
+    DeclarationBaseline,
+)
+from bianbu_agent.security.enablement import (
+    security_agent_enabled,
+    security_plugin_selected,
+)
 from bianbu_agent.security.execution_runtime import (
     ExecutionCoordinator,
     ExecutionRecord,
@@ -97,6 +103,17 @@ from bianbu_agent.observability import RuntimeLogStore
 logger = logging.getLogger(__name__)
 
 PROVIDER_CAPTURE_MAINTENANCE_SECONDS = 15 * 60
+# ``debian/postinst`` writes this one-shot marker only on the first install,
+# when dpkg's previously-configured version is empty.  The Runtime consumes it
+# on the next control-plane start and puts the shipped system Agents back to
+# their ``yolo``/host default.  Reinstalls and upgrades write no marker, so an
+# operator's Security-console mode survives them.
+PACKAGE_FIRST_INSTALL_MARKER = Path(
+    os.environ.get(
+        "BIANBU_RUNTIME_FIRST_INSTALL_MARKER",
+        "/run/agent-runtime/package-first-install",
+    )
+)
 
 
 def _is_unmanaged_worker_fallback() -> bool:
@@ -194,15 +211,11 @@ class BianbuAgentRuntime:
         self.role = role
         self._control_plugin_runtime = None
         self.home = AgentHome(config.data_dir).prepare()
-        self.provider_capture_store = ProviderCaptureStore(
-            self.home.logs_dir / "provider-capture"
-        )
+        self._provider_capture_store: object | None = None
         self.runtime_log_store = RuntimeLogStore(
             self.home.logs_dir / "operational" / "runtime.jsonl"
         )
-        self.provider_capture_callback = ProviderCaptureCallback(
-            self.provider_capture_store
-        )
+        self._provider_capture_callback: object | None = None
         self.skills = SkillPackageManager(self.home)
         # Package installation is separate from the executable Plugin manager.
         # This manager owns the installed package lifecycle.
@@ -286,12 +299,14 @@ class BianbuAgentRuntime:
         if plugin_manager is None:
             async def authorize_mcp(agent_id: str, mcp_id: str) -> bool:
                 from bianbu_agent.agents.selection import task_agent
+                selected_agent = None
                 leased_agent = task_agent.get()
                 if leased_agent is not None:
                     if leased_agent.id != agent_id or not selects_mcp(
                         leased_agent.mcps, mcp_id
                     ):
                         return False
+                    selected_agent = leased_agent
                 else:
                     manager = getattr(self, "agents", None)
                     if manager is None:
@@ -302,6 +317,14 @@ class BianbuAgentRuntime:
                         return False
                     if not _agent_selects_mcp(agent, mcp_id):
                         return False
+                    selected_agent = agent
+                # An Agent that did not select bianbu.security has no security
+                # boundary to enforce, so do not ask securityd about its MCP
+                # servers at all.
+                if selected_agent is None or not security_plugin_selected(
+                    selected_agent.plugins
+                ):
+                    return True
                 # bianbu-security 层 1：整台 MCP server 授权（INT-RT-08）。
                 # 层 2（单工具粒度 + DLP 扫参数）在 before_tool hook 里做。
                 return await _securityd_allows_mcp(agent_id, mcp_id)
@@ -309,7 +332,10 @@ class BianbuAgentRuntime:
             self._plugin_manager = PluginManager(
                 snapshot_provider=self._execution_inventory_snapshot,
                 skill_snapshot_provider=lambda: _inventory_snapshot(
-                    config, skills_only=True, strict_skills=True
+                    config,
+                    skills_only=True,
+                    strict_skills=True,
+                    private=self._private_resources(),
                 ),
                 workspace_root=config.data_dir / "workspace",
                 plugin_data_root=config.data_dir / "workspace" / "plugin-data",
@@ -365,6 +391,7 @@ class BianbuAgentRuntime:
         self._security_runtime_client: SecurityRuntimeClient | None = None
         self._security_runtime_decision = None
         self._security_runtime_instance_id = ""
+        self._security_identity_bound = False
         self._memory_registration_path: Path | None = None
         self._memory_registration: MemoryRegistration | None = None
         self._memory_maintenance_stop = asyncio.Event()
@@ -373,8 +400,20 @@ class BianbuAgentRuntime:
         self.sessions: SessionManager
         self.runs: RunManager
 
+    def _private_resources(self, agent_id: str | None = None) -> object | None:
+        """Read the capability trees that belong to this Worker's Agent."""
+
+        if self.role != "worker" or self._worker_agent_id is None:
+            return None
+        package = self.agent_packages.inspect(agent_id or self._worker_agent_id)
+        if package is None:
+            return None
+        from bianbu_agent.agents.private_resources import discover_private_resources
+
+        return discover_private_resources(package.root, package.id)
+
     async def _execution_inventory_snapshot(self) -> InventorySnapshot:
-        snapshot = _inventory_snapshot(self.config)
+        snapshot = _inventory_snapshot(self.config, private=self._private_resources())
         if self.role != "worker" or self._worker_agent_id is None:
             return snapshot
         agent = await self._agent_store.get(self._worker_agent_id)
@@ -382,6 +421,11 @@ class BianbuAgentRuntime:
             raise KeyError(self._worker_agent_id)
         def enabled(item):
             source = item.source
+            if source.metadata.get("agent_private"):
+                # A capability inside one Agent package belongs to that Agent
+                # only, and is always on for it.  Another Expert must not see
+                # or select it.
+                return str(source.metadata.get("owner_agent_id") or "") == self._worker_agent_id
             if source.kind is CapabilityKind.PLUGIN:
                 return "*" in agent.plugins or source.capability_id in agent.plugins
             if source.kind is CapabilityKind.MCP:
@@ -419,6 +463,35 @@ class BianbuAgentRuntime:
                 self._control_plugin_runtime = ControlPluginFacade()
             return self._control_plugin_runtime
         return self._plugin_manager
+
+    @property
+    def provider_capture_store(self):
+        """Create the diagnostic capture store on first use.
+
+        ``bianbu_agent.capture`` pulls the LangChain callback and message type
+        hierarchy; a Worker only needs it once a run builds an engine, so keep
+        it out of the startup import graph.
+        """
+
+        store = self._provider_capture_store
+        if store is None:
+            from bianbu_agent.capture import ProviderCaptureStore
+
+            store = ProviderCaptureStore(
+                self.home.logs_dir / "provider-capture"
+            )
+            self._provider_capture_store = store
+        return store
+
+    @property
+    def provider_capture_callback(self):
+        callback = self._provider_capture_callback
+        if callback is None:
+            from bianbu_agent.capture import ProviderCaptureCallback
+
+            callback = ProviderCaptureCallback(self.provider_capture_store)
+            self._provider_capture_callback = callback
+        return callback
 
     @property
     def has_default_model(self) -> bool:
@@ -489,29 +562,6 @@ class BianbuAgentRuntime:
             self.cleanup_retired_packages()
         self.runtime_log_store.install()
         try:
-            # 第一阶段商用入口固定让控制面运行在 host。将 control
-            # requested_mode 配成 sandbox 不能被静默忽略；该路径需要
-            # socket activation/host proxy，未实现前必须在启动时明确拒绝。
-            if (
-                self.role == "control"
-                and self.config.runtime.control.execution.requested_mode != "host"
-            ):
-                raise RuntimeStartupError(
-                    "控制面 sandbox 尚未实现：请将 "
-                    "runtime.control.execution.requested_mode 设置为 host"
-                )
-            # securityd 以 D-Bus sender 的 UID/executable/cgroup 识别调用方。
-            # 必须由 Runtime 进程自身在启动阶段绑定，测试进程或配置台
-            # 代绑都会形成错误身份，严格 caller 校验下随后必然被拒绝。
-            # The control plane must bind the stable Security Agent identity
-            # because it is the caller of Prepare/Commit/Revoke.  A managed
-            # Worker uses the lease-bound UDS path and never replaces this
-            # process-level binding.
-            if self.role == "control" or (
-                self.role == "worker" and
-                os.environ.get("BIANBU_WORKER_MANAGED") != "1"
-            ):
-                await _bind_security_identity()
             # The control plane never constructs a LangGraph engine or opens
             # the Worker's checkpoint database. It only owns API/session/run
             # metadata and forwards execution through Worker RPC.
@@ -571,13 +621,14 @@ class BianbuAgentRuntime:
                 )
             if (
                 self.role == "worker"
+                and security_agent_enabled()
                 and os.environ.get("BIANBU_WORKER_MANAGED") != "1"
                 and not _is_unmanaged_worker_fallback()
             ):
                 await self._prepare_security_runtime()
             if self._security_runtime_client is not None:
                 self.execution_coordinator.security_client = self._security_runtime_client
-            elif (
+            elif security_agent_enabled() and (
                 os.environ.get("BIANBU_SECURITY", "0") == "1"
                 or str(os.environ.get("BIANBU_RUNTIME_MODE", "development")).lower() == "production"
                 or (
@@ -600,7 +651,26 @@ class BianbuAgentRuntime:
             # Register all logical Agents with securityd independently from
             # the Runtime process lease.  In development this is best-effort;
             # production deployments may require the registration client.
-            for logical_agent in await self.agents.list():
+            # A Worker owns exactly one logical Agent.  Registering every
+            # declaration in the shared data directory would make a plain host
+            # Worker depend on securityd just because another Expert on the
+            # same device selected the Plugin.
+            registration_scope = await self.agents.list()
+            if self.role == "worker":
+                registration_scope = [
+                    item for item in registration_scope
+                    if item.id == self._worker_agent_id
+                ]
+            if any(
+                security_plugin_selected(getattr(item, "plugins", ()))
+                for item in registration_scope
+            ):
+                # Binding is only needed when at least one Agent opted into the
+                # Plugin.  An installation whose Agents are all normal-mode
+                # must not touch securityd at startup.
+                await self._ensure_security_identity()
+            first_install_token = self._package_first_install_token()
+            for logical_agent in registration_scope:
                 try:
                     await self.register_logical_agent(logical_agent)
                 except Exception as exc:
@@ -608,7 +678,10 @@ class BianbuAgentRuntime:
                     if self.security_registration_required:
                         raise
                     logger.warning("logical Agent security registration unavailable: %s", exc)
-            if self.role == "worker":
+            if first_install_token is not None:
+                await self._reset_packaged_agent_security_modes(registration_scope)
+                self._record_package_first_install(first_install_token)
+            if self.role == "worker" and security_agent_enabled():
                 await self.execution_coordinator.reap_orphans()
             self.runs = RunManager(
                 plugin_manager=self._plugin_manager,
@@ -643,6 +716,9 @@ class BianbuAgentRuntime:
                     self.worker_supervisor.for_agent(
                         logical_agent.id,
                         requested_mode=self._requested_execution_mode(logical_agent),
+                        security_enabled=security_plugin_selected(
+                            logical_agent.plugins
+                        ),
                     )
                     if logical_agent.id == bibit_id:
                         self.worker_supervisor.warm_agent(logical_agent.id)
@@ -650,6 +726,7 @@ class BianbuAgentRuntime:
                 store=self._session_store,
                 plugin_manager=self._plugin_manager,
                 run_factory=self.runs.run,
+                title_store=self._run_store,
             )
             if self.role == "control":
                 # SessionHandle captures this factory at construction time;
@@ -658,6 +735,7 @@ class BianbuAgentRuntime:
                     store=self._session_store,
                     plugin_manager=self._plugin_manager,
                     run_factory=self.runs.run,
+                    title_store=self._run_store,
                 )
             self._started = True
             self._closing = False
@@ -768,6 +846,117 @@ class BianbuAgentRuntime:
         elif self._memory_registration_path is not None:
             unregister_memory_runtime(self._memory_registration_path)
         self._memory_registration_path = None
+
+    async def terminate_session(
+        self,
+        session_id: str,
+        *,
+        agent_id: str,
+        reason: str,
+    ) -> bool:
+        """Drop the Session's private DLP state inside this Worker.
+
+        Called over the same authenticated RPC the control plane uses for
+        Runs.  The mapping is private hook state, so it is not part of the
+        Session transcript and cannot be removed by deleting those files.
+        """
+
+        session_id = str(session_id).strip()
+        agent_id = str(agent_id).strip()
+        reason = str(reason).strip()
+        if not session_id or not agent_id or not reason:
+            raise ValueError("session_id, agent_id and reason are required")
+        try:
+            from bianbu_agent.security.security_dlp import _REFERENCES
+
+            _REFERENCES.clear(session_id)
+        except Exception:  # noqa: BLE001 - local cleanup is best effort
+            logger.warning("Unable to clear local DLP references", exc_info=True)
+        try:
+            from bianbu_agent.plugins import HookPoint, RunContext
+
+            async with self.plugin_runtime.lease() as generation:
+                runner = getattr(generation, "run_hooks", None)
+                if callable(runner):
+                    await runner(
+                        HookPoint.ON_ERROR,
+                        RunContext(
+                            run_id=f"session-terminate:{session_id}",
+                            session_id=session_id,
+                            agent_id=agent_id,
+                            request="",
+                            status="cancelled",
+                            exit_reason=reason,
+                        ),
+                    )
+        except Exception:  # noqa: BLE001 - Session is already gone
+            logger.debug("Session DLP cleanup hook failed", exc_info=True)
+        return True
+
+    async def generate_session_title(
+        self,
+        prompt: str,
+        *,
+        agent_id: str,
+    ) -> dict[str, object]:
+        """Produce one auxiliary title without creating a Run.
+
+        The Worker owns the model and its credentials, so the control plane
+        forwards the request over the same authenticated RPC as every other
+        Worker operation.  Worker-local callers generate in process.  Either
+        way no Run, lease, concurrency slot, or Hook is involved.
+        """
+
+        text = str(prompt or "")
+        if not text:
+            raise ValueError("title generation requires a prompt")
+        selected_agent = str(agent_id or "").strip()
+        if not selected_agent:
+            raise ValueError("title generation requires an agent_id")
+        from bianbu_agent.sessions.titles import TITLE_TIMEOUT_SECONDS
+
+        supervisor = getattr(self, "worker_supervisor", None)
+        if self.role == "control" and supervisor is not None:
+            worker = supervisor.for_agent(selected_agent)
+            if not getattr(worker, "ready", False):
+                await worker.start()
+            client = getattr(worker, "client", None)
+            if client is None:
+                raise RuntimeError("Worker RPC client is unavailable")
+            # Bound the whole RPC.  The Worker enforces its own model
+            # deadline; this deadline keeps a wedged Worker or a dead socket
+            # from leaving the detached title task pending forever.
+            message = await asyncio.wait_for(
+                client.request(
+                    "title.generate", prompt=text, agent_id=selected_agent,
+                ),
+                timeout=TITLE_TIMEOUT_SECONDS + 5.0,
+            )
+            return {
+                "title": str(message.get("title") or ""),
+                "agent_id": selected_agent,
+                "request": dict(message.get("request") or {}),
+                "route": dict(message.get("route") or {}),
+            }
+        from bianbu_agent.sessions.titles import (
+            prepare_title_request,
+            run_title_request,
+            title_route,
+        )
+        agent = await self.agents.get(selected_agent)
+        model = self._models.resolve(agent.model or None)
+        request = await prepare_title_request(text, agent_id=selected_agent)
+        title = await run_title_request(
+            model,
+            request,
+            timeout_seconds=TITLE_TIMEOUT_SECONDS,
+        )
+        return {
+            "title": title,
+            "agent_id": agent.id,
+            "request": dict(request),
+            "route": title_route(model),
+        }
 
     async def _maintain_provider_capture(self) -> None:
         try:
@@ -937,12 +1126,15 @@ class BianbuAgentRuntime:
     def _requested_execution_mode(self, agent) -> str:
         """Report the mode one Agent runs in.
 
-        Whether an Agent needs a sandbox follows from the security settings it
-        declares in the console, and securityd is the authority that decides
-        it. The Runtime therefore only reports a hint: ``auto`` asks
-        security.runtime to apply its own decision instead of naming a side.
+        An Agent that selects ``bianbu.security`` lets securityd decide, so
+        the Runtime reports ``auto``.  An Agent without the Plugin never talks
+        to securityd and runs in normal mode: ``yolo`` + ``host``.
         """
-        return "auto"
+        return (
+            "auto"
+            if security_plugin_selected(getattr(agent, "plugins", ()))
+            else "host"
+        )
 
     async def _prepare_security_runtime(self) -> None:
         """Preflight and commit the Runtime process against security.runtime.
@@ -952,6 +1144,8 @@ class BianbuAgentRuntime:
         securityd.  Full per-Agent child backends can reuse this coordinator
         once they own process creation.
         """
+        if not security_agent_enabled():
+            return
         import os
         production = str(os.environ.get("BIANBU_RUNTIME_MODE", "development")).lower() == "production"
         if os.environ.get("BIANBU_SECURITY", "1") == "0":
@@ -960,17 +1154,30 @@ class BianbuAgentRuntime:
             return
         if not os.environ.get("BIANBU_SECURITYD_HOME", "").strip() and not production:
             return
-        self._security_runtime_client = SecurityRuntimeClient()
         # Securityd's stable agent key is intentionally a separate namespace
-        # from Runtime's local ``AgentSpec.id``. The signed manifest owns the
-        # fixed entrypoint; Runtime only submits the namespace and mode request.
+        # from Runtime's local ``AgentSpec.id``. securityd owns the fixed
+        # entrypoint; Runtime only submits the namespace and mode request.
         agent_id = os.environ.get("BIANBU_AGENT_ID", "com.bianbu.agent").strip()
         logical_agent_id = (
             os.environ.get("COM_BIANBU_AGENT_ID")
             or os.environ.get("BIANBU_WORKER_AGENT_ID")
             or ""
         ).strip()
-        agent = await self.agents.get(logical_agent_id)
+        agent = None
+        if logical_agent_id:
+            try:
+                agent = await self.agents.get(logical_agent_id)
+            except Exception:
+                agent = None
+        if agent is not None and not security_plugin_selected(agent.plugins):
+            # The process lease is part of the same opt-in boundary as the
+            # Agent registration.  A host-mode Agent without the Plugin must
+            # not depend on security.runtime being present.
+            return
+        await self._ensure_security_identity()
+        self._security_runtime_client = SecurityRuntimeClient()
+        if agent is None:
+            agent = await self.agents.get(logical_agent_id)
         request = RuntimeStartRequest(
             agent_id=agent_id,
             requested_mode=self._requested_execution_mode(agent),
@@ -1068,16 +1275,6 @@ class BianbuAgentRuntime:
     def executions(self) -> ExecutionCoordinator:
         """受安全策略约束的 Agent 实例协调器。"""
         return self.execution_coordinator
-
-    async def apply_network_learning_policy(
-        self, agent_id: str, mode: str, version: int,
-    ) -> dict[str, int]:
-        pool = getattr(self, "worker_supervisor", None)
-        if self.role == "control" and pool is not None:
-            return await pool.apply_network_learning_policy(agent_id, mode, version)
-        return await self.execution_coordinator.apply_network_learning_policy(
-            agent_id, mode, version,
-        )
 
     async def start_execution(self, request: ExecutionRequest) -> ExecutionRecord:
         """启动一个由 security.runtime 授权的 host/sandbox Agent 实例。"""
@@ -1182,6 +1379,8 @@ class BianbuAgentRuntime:
         return bool(self._security_runtime_client.required)
 
     def _security_registration_enabled(self) -> bool:
+        if not security_agent_enabled():
+            return False
         if self.role == "worker" and os.environ.get("BIANBU_WORKER_MANAGED") == "1":
             return False
         if self._security_runtime_client is None:
@@ -1193,17 +1392,195 @@ class BianbuAgentRuntime:
             return True
         return bool(os.environ.get("BIANBU_SECURITYD_HOME") or os.environ.get("BIANBU_SECURITY_CLIENT_DIR")) or os.environ.get("BIANBU_SECURITY") == "1"
 
-    async def register_logical_agent(self, spec) -> object | None:
+    async def _ensure_security_identity(self) -> bool:
+        """Bind this process to its securityd identity on first real use.
+
+        securityd identifies its caller by the D-Bus sender's UID, executable
+        and cgroup, so the Runtime process must bind the stable identity
+        itself.  Binding lazily keeps Agents that did not select the Plugin
+        completely independent from securityd: an installation with no
+        security Agent never performs D-Bus work at startup.  A managed Worker
+        is attested through its lease-bound UDS and must not replace that
+        process-level binding.
+        """
+
+        if self._security_identity_bound:
+            return True
+        if not security_agent_enabled():
+            return False
+        if os.environ.get("BIANBU_WORKER_MANAGED") == "1":
+            return False
+        bound = await _bind_security_identity()
+        self._security_identity_bound = bool(bound)
+        return bool(bound)
+
+    def _package_first_install_token(self) -> str | None:
+        """Return the pending first-install token, if this start owns it.
+
+        ``debian/postinst`` writes the marker before restarting the service so
+        the package transaction itself needs no D-Bus access.  A consumed copy
+        in the data directory makes the reset at-most-once even when the
+        Runtime user cannot unlink the marker.
+        """
+
+        if self.role != "control":
+            return None
+        marker = Path(
+            os.environ.get(
+                "BIANBU_RUNTIME_FIRST_INSTALL_MARKER",
+                str(PACKAGE_FIRST_INSTALL_MARKER),
+            )
+        )
+        try:
+            token = marker.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        if not token:
+            return None
+        consumed = self._package_first_install_state_path()
+        try:
+            if consumed.read_text(encoding="utf-8").strip() == token:
+                try:
+                    marker.unlink()
+                except OSError:
+                    pass
+                return None
+        except OSError:
+            pass
+        return token
+
+    def _package_first_install_state_path(self) -> Path:
+        return Path(self.config.data_dir) / "security" / "package-first-install"
+
+    def _record_package_first_install(self, token: str) -> None:
+        path = self._package_first_install_state_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(token + "\n", encoding="utf-8")
+        except OSError as exc:
+            logger.warning("cannot record package first install: %s", exc)
+        marker = Path(
+            os.environ.get(
+                "BIANBU_RUNTIME_FIRST_INSTALL_MARKER",
+                str(PACKAGE_FIRST_INSTALL_MARKER),
+            )
+        )
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+
+    async def _reset_packaged_agent_security_modes(self, specs) -> None:
+        """Put packaged Agents that opted into security back to ``yolo``/host.
+
+        Only the first install of the Runtime package runs this.  Reinstalls
+        and upgrades write no marker, so an operator's Security-console choice
+        survives them exactly as it does for a user-created Agent.  Agents
+        without ``bianbu.security`` are not registered at all and are already
+        fixed to ``host``.
+        """
+
+        if not self._security_registration_enabled():
+            return
+        registration = SecurityAgentRegistration(self._security_runtime_client)
+        for spec in specs:
+            if not security_plugin_selected(getattr(spec, "plugins", ())):
+                continue
+            if not self._is_packaged_agent(spec.id):
+                continue
+            try:
+                result = await registration.initialize_builtin_yolo(
+                    spec.id, force=True
+                )
+            except Exception as exc:  # noqa: BLE001 - optional startup reset
+                logger.warning(
+                    "packaged Agent security default unavailable: agent=%s error=%s",
+                    spec.id,
+                    exc,
+                )
+                continue
+            if result is None:
+                self._security_pending[spec.id] = "securityd mode unavailable"
+            else:
+                self._security_pending.pop(spec.id, None)
+
+    def _is_packaged_agent(self, agent_id: str) -> bool:
+        """Whether the declaration ships with the Runtime package.
+
+        ``AgentPackageManager.is_system`` deliberately reports False when a
+        user copy shadows a packaged Agent: the user copy is the effective
+        declaration.  The first-install default, however, belongs to the
+        shipped ID too, so look at both package roots directly instead of the
+        effective-store classification.
+        """
+
+        from bianbu_agent.agents.system_paths import system_agent_directory
+        from bianbu_agent.system_resources import system_resource_dir
+
+        for root in (
+            system_resource_dir("agents"),
+            system_agent_directory(self.config.data_dir),
+        ):
+            try:
+                if (Path(root) / agent_id / "agent.yaml").is_file():
+                    return True
+            except OSError:
+                continue
+        return False
+
+    async def register_logical_agent(
+        self, spec, *, previous_plugins: object = None
+    ) -> object | None:
         """Register and replace-sync one logical Agent declaration.
 
         This is the single lifecycle entry point used by startup and API CRUD.
         ``None`` means no security client was configured; failures are raised
         for the caller to classify as pending (development) or fatal.
         """
+        if not security_agent_enabled():
+            # The process itself was launched for an Agent without the Plugin.
+            # It must not register any declaration, including another Expert's
+            # security identity from the same data directory.
+            self._security_pending.pop(str(spec.id), None)
+            return None
+        if not security_plugin_selected(getattr(spec, "plugins", ())):
+            # The Plugin selection is the only switch.  Remove any rows written
+            # by an earlier declaration so the Security console, the DLP policy
+            # matrix and the execution-mode lookup all stop seeing this Agent.
+            self._security_pending.pop(str(spec.id), None)
+            baseline = DeclarationBaseline.in_data_dir(self.config.data_dir)
+            # A plain Agent that never selected the Plugin has no securityd
+            # identity.  Only an Agent this Runtime registered before (its
+            # declaration baseline exists) can need a stale row removed, so
+            # startup never touches securityd for the normal-mode majority.
+            if (
+                (
+                    baseline.declared_for(spec.id) is not None
+                    or security_plugin_selected(previous_plugins)
+                )
+                and self._security_registration_enabled()
+            ):
+                try:
+                    removed = await SecurityAgentRegistration(
+                        self._security_runtime_client
+                    ).unregister(spec.id)
+                    if removed is not None:
+                        baseline.forget(spec.id)
+                except Exception as exc:  # noqa: BLE001 - optional cleanup
+                    logger.warning(
+                        "logical Agent security unregistration unavailable: %s",
+                        exc,
+                    )
+            return None
         if not self._security_registration_enabled():
             if self.security_registration_required:
                 raise SecurityRuntimeUnavailable("生产模式未配置 Security Agent 注册客户端")
             return None
+        if self._started:
+            # Startup has already bound the process when any Agent opted in;
+            # a security Agent created later needs the binding before its
+            # first registration call.
+            await self._ensure_security_identity()
         registration = SecurityAgentRegistration(self._security_runtime_client)
         result = await registration.register(spec.id, {
             "name": spec.name,
@@ -1212,12 +1589,13 @@ class BianbuAgentRuntime:
             # belong to the Agent's framework (runtime vs hermes).
             "framework": agent_framework(spec),
         })
-        # Only add tool rows securityd has not seen yet. Tool policies, DLP
-        # rows, filesystem scopes and the execution boundary are all owned by
-        # the security console; a re-registration must never roll back an
-        # operator's tightening.
+        # Replay the declaration over the rows nobody changed. Tool policies
+        # live in the security console too, so the Runtime only rewrites rows
+        # that still hold what it declared last time; an operator's own edit is
+        # never rolled back (see security.capability_declarations).
         synced = await registration.ensure_capabilities(
-            spec.id, logical_agent_capabilities(spec))
+            spec.id, logical_agent_capabilities(spec),
+            baseline=DeclarationBaseline.in_data_dir(self.config.data_dir))
         if result is None or synced is None:
             # SecurityRuntimeClient deliberately returns None in optional mode
             # when the helper/D-Bus endpoint is unavailable. Preserve this as
@@ -1233,11 +1611,66 @@ class BianbuAgentRuntime:
         self._security_pending.pop(spec.id, None)
         return result
 
-    async def unregister_logical_agent(self, agent_id: str) -> object | None:
+    async def ensure_logical_agent_registered(self, agent_id: str) -> object | None:
+        """Restore the securityd identity of a surviving declaration.
+
+        The console unregisters an Agent by deleting its securityd identity
+        while the declaration stays in the Agent store.  Registration otherwise
+        only runs at startup, so the next prompt would fail inside the DLP Hook
+        with "agent ... 未注册" until the service restarts.  Probe the identity
+        on prompt admission and replay the declaration when it is gone.
+        """
         if not self._security_registration_enabled():
             return None
+        client = self._security_runtime_client
+        try:
+            info = await client._call("get_agent_info", str(agent_id))
+        except Exception as exc:  # noqa: BLE001 - prompt still fails closed
+            logger.warning("securityd registration probe failed: %s", exc)
+            return None
+        if not isinstance(info, Mapping) or info.get("registered") is not False:
+            return None
+        try:
+            spec = await self.agents.get(str(agent_id))
+        except KeyError:
+            return None
+        return await self.register_logical_agent(spec)
+
+    async def security_enabled_for_agent(self, agent_id: str) -> bool:
+        """Whether deleting this Agent must also revoke a securityd identity."""
+        if not self._security_registration_enabled():
+            return False
+        manager = getattr(self, "agents", None)
+        if manager is None:
+            return False
+        try:
+            spec = await manager.get(str(agent_id))
+        except Exception:
+            # A signed system package may exist without a store declaration.
+            # Its manifest still carries the Plugin selection.
+            packages = getattr(self, "agent_packages", None)
+            inspector = getattr(packages, "inspect", None)
+            try:
+                package = inspector(str(agent_id)) if callable(inspector) else None
+            except Exception:
+                package = None
+            if package is None:
+                return False
+            spec = getattr(getattr(package, "manifest", None), "spec", None)
+            if spec is None:
+                return False
+        return security_plugin_selected(getattr(spec, "plugins", ()))
+
+    async def unregister_logical_agent(self, agent_id: str) -> object | None:
+        if not await self.security_enabled_for_agent(agent_id):
+            self._security_pending.pop(str(agent_id), None)
+            return None
+        if self._started:
+            await self._ensure_security_identity()
         result = await SecurityAgentRegistration(self._security_runtime_client).unregister(agent_id)
         self._security_pending.pop(str(agent_id), None)
+        if result is not None:
+            DeclarationBaseline.in_data_dir(self.config.data_dir).forget(agent_id)
         return result
 
     def runtime_status(self) -> dict[str, object]:
@@ -1348,8 +1781,9 @@ async def _securityd_allows_mcp(agent_id: str, mcp_id: str) -> bool:
 
     三种情形：
       工具未注册    → 自动登记 ask + 拦截 + 日志给出授权指引
+      ask           → 拦截（待授权不等于已授权，配置台把它改成 allow 后重试）
+      allow         → 放行
       deny          → 拦截（用户明确拒绝过，不重新登记）
-      allow/ask     → 放行。ask 留给层 2 的工具粒度审批，此处不阻塞。
 
     securityd 不可达时放行 —— 层 2 的 before_tool hook 仍会按 fail 分档拦高危，
     不让 securityd 单点故障使全部 MCP 不可用。
@@ -1376,12 +1810,15 @@ async def _securityd_allows_mcp(agent_id: str, mcp_id: str) -> bool:
                 return True
         except Exception:
             pass
-        # 0=ALLOW 1=ASK 2=DENY
+        # 层 1 管的是「整台 server 是否获批」。判权结果可能是 ALLOW、ASK 或
+        # DENY：未映射工具默认 ask，因此不能把 ask 一律当成已授权 —— 那会让
+        # 新装 MCP 在层 1 直接放行，自动登记也就永远不会发生。只有显式
+        # allow 才算获准；ask 代表待授权，仍要拦截并登记。
         decision = int(sc.check_permission(agent_id, capability))
-        if decision != 2:
+        if decision == 0:
             return True
 
-        # DENY —— 区分「未注册」与「已撤销」，两者处置不同
+        # 区分「未注册」「待授权」「已撤销」，三者处置不同
         try:
             rows = sc.get_capabilities(agent_id) or []
         except Exception as e:  # noqa: BLE001 — 查不到就按未注册处理
@@ -1484,7 +1921,11 @@ _INVENTORY_TABLES = ("inventory_metadata", "installed_capabilities")
 
 
 def _inventory_snapshot(
-    config: RuntimeConfig, *, skills_only: bool = False, strict_skills: bool = False
+    config: RuntimeConfig,
+    *,
+    skills_only: bool = False,
+    strict_skills: bool = False,
+    private: object | None = None,
 ) -> InventorySnapshot:
     path = config.data_dir / "inventory.sqlite3"
     stored_items: list[InstalledCapability] = []
@@ -1550,9 +1991,14 @@ def _inventory_snapshot(
         and item.source.origin is not CapabilityOrigin.PLUGIN
         and not item.source.metadata.get("system_managed")
     }
-    from bianbu_agent.mcp.system import system_mcp_root
+    from bianbu_agent.mcp.system import system_mcp_roots
     from bianbu_agent.system_resources import system_resource_dir, is_system_resource
     from bianbu_agent._internal.filesystem import UnsafeFilesystemEntry
+
+    private_items = (
+        tuple(getattr(private, "items", ())) if private is not None else ()
+    )
+    mcp_system_roots = frozenset(system_mcp_roots())
 
     def package_roots(configured: tuple[Path, ...], managed: Path) -> tuple[Path, ...]:
         # Explicit discovery roots extend, rather than hide, the package roots
@@ -1564,7 +2010,7 @@ def _inventory_snapshot(
             (system_resource_dir("plugins"), *config.plugin_dirs), config.data_dir / "plugins"
         ),
         CapabilityKind.MCP: package_roots(
-            (system_mcp_root(), *config.mcp_dirs), config.data_dir / "mcps"),
+            (*system_mcp_roots(), *config.mcp_dirs), config.data_dir / "mcps"),
         CapabilityKind.SKILL: package_roots(
             (*config.skill_dirs, Path(os.environ.get("BIANBU_USER_SKILLS_DIR")
                                      or Path.home() / ".bianbu-agent" / "skills")),
@@ -1620,7 +2066,7 @@ def _inventory_snapshot(
                     continue
                 if kind in {CapabilityKind.MCP, CapabilityKind.PLUGIN, CapabilityKind.SKILL} and (
                     is_system_resource(child, kind.value + "s")
-                    or (kind is CapabilityKind.MCP and root == system_mcp_root())
+                    or (kind is CapabilityKind.MCP and root in mcp_system_roots)
                 ):
                     discovered = replace(discovered, source=replace(
                         discovered.source, metadata={**discovered.source.metadata,
@@ -1668,6 +2114,61 @@ def _inventory_snapshot(
                                 ),
                             )
                             items[(CapabilityKind.MCP, public_id)] = nested
+    if private_items:
+        # An Agent's own skills/mcps/plugins live next to its agent.yaml.  They
+        # shadow any device-wide package with the same ID: naming a private
+        # entry is an explicit per-Agent decision, so it wins over the global
+        # one.  Their nested Plugin members are enumerated exactly like a
+        # managed Plugin's.
+        for item in private_items:
+            key = (item.source.kind, item.source.capability_id)
+            items.pop(key, None)
+            if item.source.kind is CapabilityKind.PLUGIN:
+                for stale in [
+                    item_key for item_key, existing in items.items()
+                    if existing.source.origin is CapabilityOrigin.PLUGIN
+                    and existing.source.plugin_id == item.source.capability_id
+                ]:
+                    del items[stale]
+            elif item.source.kind is CapabilityKind.MCP:
+                # A private standalone server replaces the device-wide one with
+                # the same ID.  Drop any Plugin-owned members that derived
+                # from the shadowed server as well.
+                for stale in [
+                    item_key for item_key, existing in items.items()
+                    if existing.source.kind is CapabilityKind.MCP
+                    and existing.source.origin is CapabilityOrigin.PLUGIN
+                    and existing.source.capability_id == item.source.capability_id
+                ]:
+                    del items[stale]
+            items[key] = item
+        for item in private_items:
+            if item.source.kind is not CapabilityKind.PLUGIN:
+                continue
+            plugin_manifest = load_installed_plugin_manifest(item.source.root)
+            mcps_root = item.source.root / "mcps"
+            for mcp_name in plugin_manifest.contributions.mcps:
+                if mcps_root.is_symlink() or not mcps_root.is_dir():
+                    raise ValueError("Plugin mcps must be a regular directory")
+                mcp_root = mcps_root / mcp_name
+                if mcp_root.is_symlink() or not mcp_root.is_dir():
+                    raise ValueError("Plugin mcps members must be regular directories")
+                nested = _file_capability(CapabilityKind.MCP, mcp_root)
+                public_id = f"{item.source.capability_id}/{mcp_root.name}"
+                nested = replace(
+                    nested,
+                    source=replace(
+                        nested.source,
+                        capability_id=public_id,
+                        origin=CapabilityOrigin.PLUGIN,
+                        plugin_id=item.source.capability_id,
+                        metadata={
+                            **dict(nested.source.metadata),
+                            **dict(item.source.metadata),
+                        },
+                    ),
+                )
+                items[(CapabilityKind.MCP, public_id)] = nested
     return InventorySnapshot(revision=revision, items=tuple(items.values()))
 
 

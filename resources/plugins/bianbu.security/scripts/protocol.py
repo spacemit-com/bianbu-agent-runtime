@@ -40,12 +40,15 @@ def hook_memory_registration():
         yield
 
 
-def main(handler):
-    request = json.load(sys.stdin)
+def _parse(line):
+    request = json.loads(line)
     if not isinstance(request, dict) or request.get("schema_version") != 1:
         raise ValueError("expected Hook JSON protocol version 1")
     request.setdefault("metadata", {})
+    return request
 
+
+def _dispatch(handler, request):
     async def dispatch():
         task = asyncio.current_task()
         loop = asyncio.get_running_loop()
@@ -61,14 +64,21 @@ def main(handler):
         bridge.restore_session_state(request.get("state", {}), request["session_id"])
         try:
             response = await handler(request) or {}
-            terminal = handler.__name__ == "after_run" or (
-                handler.__name__ == "on_error"
-                and request.get("status") in {"failed", "cancelled", "interrupted"}
-            )
-            response["state"] = {} if terminal else (
-                bridge.session_state(request["session_id"]) if bridge.available
-                else request.get("state", {})
-            )
+            # A Run ends on every user turn, so its terminal state must keep
+            # the Session's stand-in map.  Only an explicit Session
+            # termination drops private state.
+            terminated = request.get("exit_reason") in {
+                "session_closed", "session_deleted", "agent_removed",
+            }
+            if terminated:
+                if bridge.available:
+                    bridge.clear_session_state(request["session_id"])
+                response["state"] = {}
+            else:
+                response["state"] = (
+                    bridge.session_state(request["session_id"])
+                    if bridge.available else request.get("state", {})
+                )
             return response
         except PermissionError as exc:
             error = exc.to_metadata() if hasattr(exc, "to_metadata") else {}
@@ -76,7 +86,51 @@ def main(handler):
         finally:
             loop.remove_signal_handler(signal.SIGTERM)
 
+    return asyncio.run(dispatch())
+
+
+def _write(response, stream):
+    # ``redirect_stdout`` sends stray prints to stderr, so the transport keeps
+    # a reference to the real stdout captured before entering it.
+    json.dump(response, stream, ensure_ascii=False)
+    stream.write("\n")
+    stream.flush()
+
+
+def _warm(warmup):
+    """Run plugin-owned start-up imports without changing a Run.
+
+    The Runtime spawns resident Hooks while the Worker is still starting.
+    Paying the plugin's import cost there keeps the first user request as fast
+    as the second one.  Failure stays best effort: the first real request will
+    retry the import and report its own error through the normal path.
+    """
+
+    if warmup is None:
+        return
+    try:
+        warmup()
+    except Exception:  # noqa: BLE001 - warm-up must never break the transport
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+
+
+def main(handler, *, warmup=None):
+    """Serve one frame per process, or one per line while resident.
+
+    ``BIANBU_HOOK_RESIDENT=1`` keeps the bridge, its policy cache and this
+    plugin's imports alive across invocations.  The wire format is unchanged:
+    one JSON request line in, one JSON response line out.
+    """
+
+    resident = os.environ.get("BIANBU_HOOK_RESIDENT") == "1"
+    out, source = sys.stdout, sys.stdin
     with hook_memory_registration(), redirect_stdout(sys.stderr):
-        response = asyncio.run(dispatch())
-    json.dump(response, sys.stdout, ensure_ascii=False)
-    sys.stdout.write("\n")
+        if not resident:
+            _write(_dispatch(handler, _parse(source.read())), out)
+            return
+        _warm(warmup)
+        for line in source:
+            if not line.strip():
+                continue
+            _write(_dispatch(handler, _parse(line)), out)

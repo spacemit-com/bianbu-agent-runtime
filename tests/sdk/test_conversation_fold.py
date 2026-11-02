@@ -190,5 +190,93 @@ def test_bookkeeping_events_never_become_messages() -> None:
     assert [type(message) for message in folded] == [HumanMessage]
 
 
+def test_a_folded_assistant_turn_keeps_its_reasoning() -> None:
+    """DeepSeek rejects a tool-enabled history whose assistant turn lost it.
+
+    The transcript records reasoning as its own event stream, so a fold that
+    treated it as bookkeeping silently dropped it.  A continuation then sent an
+    assistant tool call without the reasoning the provider requires and the Run
+    was lost to HTTP 400 "The `reasoning_content` in the thinking mode must be
+    passed back to the API".
+    """
+
+    folded = fold_messages(
+        [
+            _event(0, "user/message", {"content": "list files", "message_id": "m-1"}),
+            _event(1, "assistant/reasoning.delta", {"text": "I will run ls."}),
+            _event(2, "tool/call.started", {
+                "call_id": "c1", "name": "terminal", "arguments": {"command": "ls"},
+            }),
+            _event(3, "tool/call.completed", {
+                "call_id": "c1", "name": "terminal", "result": "file1",
+                "status": "success",
+            }),
+        ],
+        input_id_for_run=_input_id,
+    )
+
+    assistant = next(m for m in folded if type(m).__name__ == "AIMessage")
+    assert assistant.additional_kwargs["reasoning_content"] == "I will run ls."
+    assert assistant.tool_calls[0]["id"] == "c1"
+
+
+def test_a_turn_that_is_only_reasoning_stays_out_of_the_history() -> None:
+    """Reasoning is not a message: it is attached to the turn it explains."""
+
+    folded = fold_messages(
+        [
+            _event(0, "user/message", {"content": "hi", "message_id": "m-1"}),
+            _event(1, "assistant/reasoning.delta", {"text": "hmm"}),
+            _event(2, "run/completed", {"status": "completed"}),
+        ],
+        input_id_for_run=_input_id,
+    )
+
+    assert [type(message) for message in folded] == [HumanMessage]
+
+
 def test_an_empty_transcript_folds_to_nothing() -> None:
     assert fold_messages([], input_id_for_run=_input_id) == []
+
+
+def test_tool_call_names_fold_back_to_the_provider_safe_form() -> None:
+    """A replayed call must use the name the provider accepts, not the SDK id.
+
+    The transcript records the canonical SDK tool id so the console can show
+    it.  LangChain rejects any call whose name does not match a bound tool, and
+    OpenAI-compatible providers reject characters outside [A-Za-z0-9_-], so the
+    fold has to encode the name exactly as the bound tool was declared.
+    """
+
+    folded = fold_messages(
+        [
+            _event(0, "user/message", {"content": "query", "message_id": "m-1"}),
+            _event(1, "assistant/message.end", {"has_tool_calls": True}),
+            _event(
+                2,
+                "tool/call.started",
+                {
+                    "call_id": "c-1",
+                    "name": "spacemit-knowledge/spacemit_knowledge_search",
+                    "arguments": {"query": "K3"},
+                },
+            ),
+            _event(
+                3,
+                "tool/call.completed",
+                {
+                    "call_id": "c-1",
+                    "name": "spacemit-knowledge/spacemit_knowledge_search",
+                    "result": "body",
+                },
+            ),
+        ],
+        input_id_for_run=_input_id,
+    )
+
+    assert isinstance(folded[1], AIMessage)
+    assert folded[1].tool_calls[0]["name"] == (
+        "spacemit-knowledge__spacemit_knowledge_search"
+    )
+    assert isinstance(folded[2], ToolMessage)
+    assert folded[2].name == "spacemit-knowledge__spacemit_knowledge_search"

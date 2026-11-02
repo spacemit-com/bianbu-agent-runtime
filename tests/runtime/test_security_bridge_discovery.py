@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib
+import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -41,6 +43,33 @@ def test_security_bridge_declares_installed_securityd_location() -> None:
     bridge = _bridge_module()
 
     assert "/usr/lib/bianbu-securityd" in bridge._DEFAULT_HOMES
+
+
+def test_large_hook_payload_audit_keeps_only_a_fingerprint() -> None:
+    bridge = _bridge_module()
+    instance = bridge.SecurityBridge.__new__(bridge.SecurityBridge)
+    captured = {}
+
+    class Transport:
+        def call(self, request):
+            captured.update(request)
+            return {"audit_seq": 7}
+
+    instance._uds_transport = Transport()
+    result = SimpleNamespace(decision=SimpleNamespace(value="ALLOW"),
+                             message="", metadata={})
+    data = {"thinking": "secret-thought " * 200,
+            "content": "secret-answer " * 200}
+    instance._audit_large_payload("input", "agent.demo", data, result, {})
+
+    entry = captured["entries"][0]
+    payload = json.loads(entry["payload"])
+    assert payload["kind"] == "content_fingerprint"
+    assert payload["bytes"] > 1024
+    assert len(payload["sha256"]) == 64
+    assert payload["fields"] == ["content", "thinking"]
+    assert "secret" not in entry["payload"]
+    assert result.metadata["audit_payload_transport"] == "uds"
 
 
 def test_security_bridge_uses_helper_when_native_client_unavailable(monkeypatch) -> None:

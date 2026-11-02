@@ -11,7 +11,12 @@ from typing import cast
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 
-from bianbu_agent.agents import AgentModel, AgentSpec, agent_model_data
+from bianbu_agent.agents import (
+    DEFAULT_MODEL_REASONING_EFFORT,
+    AgentModel,
+    AgentSpec,
+    agent_model_data,
+)
 from bianbu_agent.agents.manager import is_mcp_tool
 from bianbu_agent.mcp import resolve_mcp_selectors
 from bianbu_agent.api.contracts import (
@@ -24,6 +29,7 @@ from bianbu_agent.api.contracts import (
 from bianbu_agent.api.capabilities import control_catalog_snapshot
 from bianbu_agent.errors import ResourceNotFoundError
 from bianbu_agent.provisioning import new_agent_id
+from bianbu_agent.security.enablement import security_plugin_selected
 
 
 router = APIRouter(prefix="/agents")
@@ -184,11 +190,13 @@ async def _providers(runtime) -> dict[str, object]:
     return providers
 
 
-async def _validation_generation(runtime) -> object | None:
+async def _validation_generation(
+    runtime, agent_id: str | None = None
+) -> object | None:
     if getattr(runtime, "role", "worker") != "control":
         return runtime.plugin_runtime.current_generation
 
-    snapshot = control_catalog_snapshot(runtime)
+    snapshot = control_catalog_snapshot(runtime, agent_id)
 
     capabilities = snapshot["capabilities"]
 
@@ -259,15 +267,29 @@ def _process_metadata(spec) -> dict[str, object]:
 
 
 def _requires_worker_restart(runtime, current, updated) -> bool:
-    return _process_metadata(current) != _process_metadata(updated)
+    if _process_metadata(current) != _process_metadata(updated):
+        return True
+    # Plugin selection is the security switch.  Adding or removing
+    # ``bianbu.security`` changes the Worker from host to sandbox (or back) and
+    # installs or removes the security middleware, so the old process cannot
+    # keep running.
+    return tuple(getattr(current, "plugins", ()) or ()) != tuple(
+        getattr(updated, "plugins", ()) or ()
+    )
 
 
 async def _start_agent_worker(runtime, spec, *, restart=False):
     pool = getattr(runtime, "worker_supervisor", None)
     if pool is None:
         return
-    # 不指定模式：securityd 根据该 Agent 的安全设置推导 host / sandbox。
-    worker = pool.for_agent(spec.id, requested_mode="auto")
+    security_enabled = security_plugin_selected(spec.plugins)
+    # With the Plugin, securityd owns the host/sandbox decision.  Without it
+    # the Agent is normal mode: yolo + host.
+    worker = pool.for_agent(
+        spec.id,
+        requested_mode="auto" if security_enabled else "host",
+        security_enabled=security_enabled,
+    )
     if restart:
         await worker.stop(reason="Agent configuration changed", strict=True)
     identity = await worker.start()
@@ -277,13 +299,12 @@ async def _start_agent_worker(runtime, spec, *, restart=False):
 async def list_agents(request: Request) -> AgentCollectionEnvelope:
     runtime = request.app.state.runtime
     providers = await _providers(runtime)
-    generation = await _validation_generation(runtime)
     return AgentCollectionEnvelope(
         data=[
             agent_view(
                 item,
                 providers=providers,
-                generation=generation,
+                generation=await _validation_generation(runtime, item.id),
                 avatar_url=_avatar_url(runtime, item.id),
                 system=runtime.agent_packages.is_system(item.id),
                 execution=_execution_view(runtime, item),
@@ -296,7 +317,7 @@ async def list_agents(request: Request) -> AgentCollectionEnvelope:
 @router.get("/{agent_id}", response_model=AgentEnvelope)
 async def get_agent(agent_id: str, request: Request) -> AgentEnvelope:
     runtime = request.app.state.runtime
-    generation = await _validation_generation(runtime)
+    generation = await _validation_generation(runtime, agent_id)
     return AgentEnvelope(
         data=agent_view(
             await runtime.agents.get(agent_id),
@@ -335,7 +356,11 @@ async def create_agent(payload: AgentCreateRequest, request: Request) -> AgentEn
         description_zh=payload.description_zh,
         soul=payload.soul,
         model=(
-            AgentModel(payload.model.provider, payload.model.name)
+            AgentModel(
+                payload.model.provider,
+                payload.model.name,
+                payload.model.effort or DEFAULT_MODEL_REASONING_EFFORT,
+            )
             if payload.model is not None
             else None
         ),
@@ -350,16 +375,25 @@ async def create_agent(payload: AgentCreateRequest, request: Request) -> AgentEn
         async with runtime.catalog_mutation_lock:
             stored = await runtime.agents.create(
                 spec,
-                generation=await _validation_generation(runtime),
+                generation=await _validation_generation(runtime, spec.id),
                 allow_model_repair=True,
             )
         try:
             registration = await runtime.register_logical_agent(stored)
-            if registration is None and runtime._security_registration_enabled():
+            if (
+                registration is None
+                and security_plugin_selected(stored.plugins)
+                and runtime._security_registration_enabled()
+            ):
                 runtime._security_pending[stored.id] = "securityd unavailable"
             pool = getattr(runtime, "worker_supervisor", None)
             if pool is not None:
-                pool.activate_agent(stored.id, requested_mode="auto")
+                security_enabled = security_plugin_selected(stored.plugins)
+                pool.activate_agent(
+                    stored.id,
+                    requested_mode="auto" if security_enabled else "host",
+                    security_enabled=security_enabled,
+                )
                 # ControlRunManager starts the Worker on first use. Creating
                 # a definition must not wait for process/sandbox initialization.
         except Exception as exc:
@@ -388,7 +422,7 @@ async def create_agent(payload: AgentCreateRequest, request: Request) -> AgentEn
                 stored,
                 execution=_execution_view(runtime, stored),
                 providers=await _providers(runtime),
-                generation=await _validation_generation(runtime),
+                generation=await _validation_generation(runtime, stored.id),
             ),
         )
 
@@ -432,11 +466,17 @@ async def update_agent(
                 } and value is None:
                     value = ""
                 elif field == "model":
-                    value = (
-                        AgentModel(value.provider, value.name)
-                        if value is not None
-                        else None
-                    )
+                    if value is None:
+                        value = None
+                    else:
+                        effort = value.effort
+                        if effort is None:
+                            effort = (
+                                current.model.effort
+                                if isinstance(current.model, AgentModel)
+                                else DEFAULT_MODEL_REASONING_EFFORT
+                            )
+                        value = AgentModel(value.provider, value.name, effort)
                 elif field in {"tools", "skills", "mcps", "plugins"} and value is None:
                     value = ()
                 elif field == "permissions" and value is None:
@@ -455,31 +495,47 @@ async def update_agent(
                     "code": "agent_busy",
                     "message": "专家正在执行任务，请等待完成或停止任务后再修改权限、能力或运行模式。",
                 })
-            generation = await _validation_generation(runtime)
+            generation = await _validation_generation(runtime, agent_id)
             stored = await runtime.agents.update(
                 updated,
                 # Keeping a selector that was valid before its package was
                 # removed must stay possible, but only for this write: the
                 # projection below still reports the gap so Control and the
                 # expert can close it through APM.
-                generation=_with_retained_agent_references(generation, current),
+                generation=_with_retained_agent_references(
+                    generation, current
+                ),
                 allow_model_repair=True,
             )
             previous_worker = getattr(pool, "_supervisors", {}).get(agent_id)
             previous_mode = getattr(previous_worker, "requested_mode", None)
+            previous_security_enabled = getattr(
+                previous_worker, "security_enabled", None
+            )
             previous_ready = bool(previous_worker and previous_worker.ready)
             worker_changed = False
             try:
                 if register:
-                    registration = await runtime.register_logical_agent(stored)
-                    if registration is None and runtime._security_registration_enabled():
+                    registration = await runtime.register_logical_agent(
+                        stored, previous_plugins=current.plugins
+                    )
+                    if (
+                        registration is None
+                        and security_plugin_selected(stored.plugins)
+                        and runtime._security_registration_enabled()
+                    ):
                         runtime._security_pending[stored.id] = "securityd unavailable"
                 if pool is not None:
                     if previous_ready and restart:
                         worker_changed = True
                         await _start_agent_worker(runtime, stored, restart=True)
                     elif not previous_ready:
-                        pool.for_agent(stored.id, requested_mode="auto")
+                        security_enabled = security_plugin_selected(stored.plugins)
+                        pool.for_agent(
+                            stored.id,
+                            requested_mode="auto" if security_enabled else "host",
+                            security_enabled=security_enabled,
+                        )
             except Exception as exc:
                 rollback_errors = []
                 await runtime.agents.update(current, allow_model_repair=True)
@@ -493,6 +549,8 @@ async def update_agent(
                     try:
                         await worker.stop(reason="Agent update rollback", strict=True)
                         worker.requested_mode = previous_mode or "auto"
+                        if previous_security_enabled is not None:
+                            worker.security_enabled = previous_security_enabled
                         if previous_ready:
                             await worker.start()
                     except Exception as rollback_exc:
@@ -524,15 +582,17 @@ async def delete_agent(agent_id: str, request: Request) -> Response:
         activate_worker = getattr(worker_pool, "activate_agent", None)
         if callable(remove_worker):
             await remove_worker(agent_id)
-        security_enabled = runtime._security_registration_enabled()
-        try:
-            unregistered = await runtime.unregister_logical_agent(agent_id)
-        except Exception:
-            if runtime.security_registration_required:
-                if callable(activate_worker):
-                    activate_worker(agent_id)
-                raise
-            unregistered = None
+        security_enabled = await runtime.security_enabled_for_agent(agent_id)
+        unregistered = None
+        if security_enabled:
+            try:
+                unregistered = await runtime.unregister_logical_agent(agent_id)
+            except Exception:
+                if runtime.security_registration_required:
+                    if callable(activate_worker):
+                        activate_worker(agent_id)
+                    raise
+                unregistered = None
         # Optional/development security clients return None when securityd cannot
         # be reached.  Do not remove the local declaration in that case: doing so
         # would leave a stale Agent in the Security console and make the two

@@ -36,6 +36,7 @@ TERMINAL_EVENTS = ("run/completed", "run/failed", "run/cancelled")
 FIRST_TOKEN_EVENTS = (
     "assistant/text.delta",
     "assistant/reasoning.delta",
+    "text-chunks",
     "tool/call.started",
 )
 POLL_SECONDS = 0.2
@@ -50,7 +51,8 @@ def request(base: str, method: str, path: str, payload: object = None) -> object
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(http_request, timeout=120) as response:
-        return json.load(response)
+        body = response.read()
+    return None if not body else json.loads(body)
 
 
 def read_events(path: str) -> list[dict]:
@@ -66,6 +68,10 @@ def read_events(path: str) -> list[dict]:
             continue
         if record.get("type") == "event":
             events.append(record["event"])
+        elif record.get("type") == "text-chunks":
+            # The session store compacts token deltas into top-level chunk
+            # batches instead of wrapping every token in an "event" record.
+            events.append(record)
     return events
 
 
@@ -92,6 +98,20 @@ def newest_user_seq(path: str) -> int:
     return max((int(event.get("seq") or 0) for event in users), default=0)
 
 
+def event_time(event: dict) -> float:
+    """Return the event's wall-clock time.
+
+    Compact ``text-chunks`` records carry the start of the first chunk in
+    ``time0`` and the end of the batch in ``time``.  TTFT must use ``time0``;
+    the older delta shape has only ``time``.
+    """
+
+    value = event.get("time0") if event.get("type") == "text-chunks" else event.get("time")
+    if value is None:
+        value = event.get("time")
+    return float(value)
+
+
 def turn_events(events: list[dict], after_seq: int) -> list[dict]:
     """只看 ``after_seq`` 之后那一条 user/message 所属的那一轮。"""
 
@@ -111,6 +131,8 @@ def turn_record(*, turn: int, session_id: str, started: float, api_ms: float,
     first_hook = next((event for event in events if event.get("type") == "hook/invoked"), None)
     first_token = next(
         (event for event in events if event.get("type") in FIRST_TOKEN_EVENTS), None)
+    user_time = None if user is None else event_time(user)
+    first_token_time = None if first_token is None else event_time(first_token)
     hooks = []
     for event in events:
         if event.get("type") != "hook/result":
@@ -129,14 +151,14 @@ def turn_record(*, turn: int, session_id: str, started: float, api_ms: float,
     return {
         "session": session_id,
         "turn": turn,
-        "user_epoch": None if user is None else round(float(user["time"]), 3),
+        "user_epoch": None if user_time is None else round(user_time, 3),
         "api_ms": round(api_ms, 1),
-        "gap_ms": None if not (user and first_hook)
-        else round((first_hook["time"] - user["time"]) * 1000, 1),
-        "ttft_s": None if not (user and first_token)
-        else round(first_token["time"] - user["time"], 3),
-        "click_s": None if first_token is None
-        else round(first_token["time"] - started, 3),
+        "gap_ms": None if not (user_time is not None and first_hook)
+        else round((float(first_hook["time"]) - user_time) * 1000, 1),
+        "ttft_s": None if not (user_time is not None and first_token_time is not None)
+        else round(first_token_time - user_time, 3),
+        "click_s": None if first_token_time is None
+        else round(first_token_time - started, 3),
         "hooks": hooks[: args.hooks],
         "term": next((event["type"] for event in events
                       if event.get("type") in TERMINAL_EVENTS), None),

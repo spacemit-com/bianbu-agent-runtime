@@ -48,7 +48,7 @@ import runpy
 import sys
 class BlockExecution(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {'langchain', 'langchain_core', 'langgraph', 'fastapi', 'uvicorn', 'mcp', 'bianbu_security_client', 'jsonschema'} or fullname.startswith(('bianbu_agent.server', 'bianbu_agent.security.runtime_process', 'bianbu_agent.security.execution_runtime', 'bianbu_agent.security.security_runtime', 'bianbu_agent.security.security_codesign')):
+        if fullname.split('.')[0] in {'langchain', 'langchain_core', 'langgraph', 'fastapi', 'uvicorn', 'mcp', 'bianbu_security_client', 'jsonschema'} or fullname.startswith(('bianbu_agent.server', 'bianbu_agent.security.runtime_process', 'bianbu_agent.security.execution_runtime', 'bianbu_agent.security.security_runtime', 'bianbu_agent.security.security_codesign', 'bianbu_agent.security.agent_registration')):
             raise AssertionError('file command loaded execution dependency: ' + fullname)
 def audit(event, args):
     if event in {'socket.connect', 'socket.getaddrinfo', 'subprocess.Popen', 'os.system', 'os.fork', 'os.posix_spawn'}:

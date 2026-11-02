@@ -2,23 +2,33 @@
 
 DeepSeek Harness decides from ``LlmModelInfo.inputModalities``: a prompt that
 carries an image is rejected with ``MODEL_DOES_NOT_SUPPORT_IMAGES`` only when
-the model declares its modalities and ``image`` is not among them.  A Runtime
-provider record has no modality field, so the same decision is made from two
-sources instead, cheapest first:
+the model declares its modalities and ``image`` is not among them.  An absent
+field means *unknown*, which is not the same claim as an explicit negative.
 
-1. an explicit ``capability-vision`` model record -- the operator's declaration
-   of "this is the model that reads images for this device";
-2. the model name, using the same narrow family list CowAgent keeps in code for
-   providers whose OpenAI-compatible endpoint accepts image input.
+Runtime records the same decision in a declaration, never in a model name.  A
+name is not evidence: ``deepseek-flash`` accepts images while its name says
+nothing about them, and ``deepseek-v4-pro`` reads like a stronger sibling while
+being text-only.  Guessing from names therefore fails in both directions.
 
-Order matters: the explicit record wins, so a device that pinned a dedicated
-vision model keeps using it even after the chat model changes.
+Three declaration sources, strongest first:
+
+1. an explicit ``capability-vision`` binding -- the operator's declaration of
+   "this is the model that reads images for this device", and the only way to
+   override a catalog entry;
+2. the installed model catalog, an exact-alias table of reviewed capabilities;
+3. nothing -- ``UNKNOWN``, which callers decide how to treat.
+
+``UNKNOWN`` is deliberately not folded into ``UNSUPPORTED``.  Refusing an image
+the endpoint actually accepts hides a working feature with no way for the user
+to recover; attempting one the endpoint rejects costs a single failed request
+and an accurate error message.  The read path therefore attempts on unknown and
+reports what actually happened.
 """
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
+from enum import Enum
 from pathlib import PurePosixPath
 from types import MappingProxyType
 
@@ -34,6 +44,30 @@ IMAGE_UNSUPPORTED_MESSAGE = "当前模型不支持图片,请切换支持图片�
 IMAGE_UNSUPPORTED_MESSAGE_EN = (
     "The current model does not support images. Switch to a model that accepts images."
 )
+
+
+class ImageSupport(Enum):
+    """What is known about one model's image input, not merely a yes/no.
+
+    ``UNKNOWN`` exists so a missing declaration never acquires the meaning of a
+    negative one.  Callers that must decide keep the distinction; callers that
+    only warn can treat unknown as "try it".
+    """
+
+    SUPPORTED = "supported"
+    UNSUPPORTED = "unsupported"
+    UNKNOWN = "unknown"
+
+    @property
+    def is_known(self) -> bool:
+        return self is not ImageSupport.UNKNOWN
+
+    @property
+    def allows_attempt(self) -> bool:
+        """Whether an image may be sent without contradicting a declaration."""
+
+        return self is not ImageSupport.UNSUPPORTED
+
 
 #: Media types accepted for an uploaded image, keyed by lowercased suffix.
 #: The set matches the Harness image admission list (png/jpeg/webp/gif).
@@ -55,36 +89,48 @@ IMAGE_SUFFIXES: Mapping[str, str] = MappingProxyType(
 #: One uploaded image may be this large before it is refused outright.
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
-#: Model-name families whose endpoint accepts image input.  A name is the only
-#: signal an OpenAI-compatible ``/models`` response reliably carries.  A false
-#: positive stays visible (the provider rejects the request and the tool
-#: reports it); a false negative would silently hide the attach affordance, so
-#: the table lists whole families rather than one flagship name each.
-_IMAGE_MODEL_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
-    re.compile(pattern)
-    for pattern in (
-        r"(?:^|[-_./])vl(?:[-_./]|$|\d)",
-        r"internvl|llava|minicpm[-_.]?v|mllama|pixtral|smolvlm|molmo|ovis|idefics",
-        r"vision",
-        r"multimodal|omni",
-        r"gpt-4o|gpt-4\.1|gpt-5|chatgpt-4o",
-        r"claude-(?:3|4|5|sonnet|opus|haiku)",
-        r"gemini",
-        r"glm-\d+(?:\.\d+)?v",
-        r"grok-(?:2|3|4)|^o[34](?:-|$)",
-        r"ernie-[\d.]+-vl|hunyuan.*vision|doubao.*vision",
-        r"mimo",
-    )
+#: Model identities whose endpoint accepts image input, keyed by exact alias.
+#: Membership is a reviewed declaration, never a name pattern: an alias that
+#: is absent stays unknown instead of being guessed either way.
+_DECLARED_IMAGE_MODELS: Mapping[str, ImageSupport] = MappingProxyType(
+    {
+        # DeepSeek's current OpenAI-compatible endpoint, verified against
+        # api.deepseek.com on 2026-10-28 by comparing prompt tokens with and
+        # without an image. `deepseek-v4-pro` is the explicit negative: it
+        # accepts an image block, silently discards it, and answers as if none
+        # was sent, so no error surfaces to correct a guess.
+        "deepseek-flash": ImageSupport.SUPPORTED,
+        "deepseek-v4-flash": ImageSupport.SUPPORTED,
+        "deepseek-v4-flash-vision-exp": ImageSupport.SUPPORTED,
+        "deepseek-chat": ImageSupport.SUPPORTED,
+        "deepseek-reasoner": ImageSupport.SUPPORTED,
+        "deepseek-v4-pro": ImageSupport.UNSUPPORTED,
+    }
 )
 
 
-def supports_image_input(model_name: object) -> bool:
-    """Whether a model name is a known image-accepting family."""
+def declared_image_support(model_name: object) -> ImageSupport:
+    """Return the reviewed declaration for one exact model alias.
 
-    name = str(model_name or "").strip().lower()
+    Exact alias only.  A version, quantization or deployment suffix the catalog
+    did not review is ``UNKNOWN``, because the reviewed entry says nothing
+    about it.
+    """
+
+    name = str(model_name or "").strip().casefold()
     if not name:
-        return False
-    return any(pattern.search(name) for pattern in _IMAGE_MODEL_PATTERNS)
+        return ImageSupport.UNKNOWN
+    return _DECLARED_IMAGE_MODELS.get(name, ImageSupport.UNKNOWN)
+
+
+def image_support(model_name: object) -> ImageSupport:
+    """Return what is known about image input without binding a model.
+
+    Used by callers that only warn, such as the console attachment picker, and
+    by the read path before it resolves the exact model.
+    """
+
+    return declared_image_support(model_name)
 
 
 def sniff_image_media_type(payload: bytes) -> str | None:
@@ -112,10 +158,15 @@ def resolve_image_model(
     provider: str = "",
     model: str = "",
 ) -> object | None:
-    """Return the model that should read an image, or ``None`` when unset.
+    """Return the model that should read an image, or ``None`` when it cannot.
 
     ``resolver`` is a ``YAMLModelResolver``-shaped object: ``resolve_capability``
     for the explicit binding and ``resolve_agent_model`` for the chat model.
+
+    The explicit binding wins outright.  Otherwise the chat model is used only
+    when its declaration permits an attempt: supported, or unknown.  An unknown
+    model is returned rather than refused so the failure, if any, is the
+    endpoint's own and names the real reason.
     """
 
     resolve_capability = getattr(resolver, "resolve_capability", None)
@@ -123,7 +174,7 @@ def resolve_image_model(
         bound = resolve_capability(VISION_CAPABILITY)
         if bound is not None:
             return bound
-    if not supports_image_input(model):
+    if not image_support(model).allows_attempt:
         return None
     resolve_agent_model = getattr(resolver, "resolve_agent_model", None)
     if not callable(resolve_agent_model) or not provider or not model:
@@ -180,9 +231,11 @@ __all__ = [
     "MAX_IMAGE_BYTES",
     "MODEL_DOES_NOT_SUPPORT_IMAGES",
     "VISION_CAPABILITY",
+    "ImageSupport",
     "attachment_note",
+    "declared_image_support",
     "image_input_available",
+    "image_support",
     "resolve_image_model",
     "sniff_image_media_type",
-    "supports_image_input",
 ]

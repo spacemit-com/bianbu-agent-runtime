@@ -38,6 +38,8 @@ from bianbu_agent.sessions.inbox import (
     SessionInboxSnapshot,
     inbox_message_from_dict,
 )
+
+logger = logging.getLogger(__name__)
 def create_runtime(config: RuntimeConfig, **kwargs: Any):
     """Lazy runtime factory; plugin imports must not delay Worker Hello."""
     from bianbu_agent.server.factory import create_runtime as factory
@@ -467,6 +469,46 @@ class AgentWorker:
                     self._active.pop(run_id, None)
             asyncio.create_task(remove_when_done(), name=f"worker-cleanup-{run_id}")
             return handle
+        if kind == "title.generate":
+            if not self._activated:
+                raise RuntimeError("Worker is not activated")
+            assert self.runtime is not None
+            prompt = str(message.get("prompt") or "")
+            agent_id = str(
+                message.get("agent_id")
+                or os.environ.get("BIANBU_WORKER_AGENT_ID")
+                or ""
+            ).strip()
+            if not prompt:
+                raise ValueError("title.generate requires prompt")
+            if not agent_id:
+                raise ValueError("title.generate requires agent_id")
+            # A title is a log-only auxiliary request: no Run, no lease, no
+            # Hooks.  It deliberately bypasses RunManager so it can never
+            # occupy a concurrency slot or trigger memory/security work.
+            result = await self.runtime.generate_session_title(
+                prompt,
+                agent_id=agent_id,
+            )
+            return dict(result)
+        if kind == "session.terminate":
+            if not self._activated:
+                raise RuntimeError("Worker is not activated")
+            assert self.runtime is not None
+            session_id = str(message.get("session_id") or "").strip()
+            agent_id = str(message.get("agent_id") or "").strip()
+            reason = str(message.get("reason") or "").strip()
+            if not session_id or not agent_id or not reason:
+                raise ValueError(
+                    "session.terminate requires session_id, agent_id and reason"
+                )
+            cleared = await self.runtime.terminate_session(
+                session_id, agent_id=agent_id, reason=reason,
+            )
+            return {
+                "session_id": session_id,
+                "cleared": bool(cleared),
+            }
         if kind in {"run.cancel", "run.step_input", "approval.result"}:
             run_id = str(message.get("run_id") or "")
             handle = self._active.get(run_id) or await self.runtime.runs.get(run_id)
@@ -539,12 +581,16 @@ class AgentWorker:
         """
         generation = self.runtime.plugin_runtime.current_generation
         catalog = generation.capability_catalog
+        private_owners = dict(
+            getattr(catalog, "private_owners", {}) or {}
+        ) if catalog is not None else {}
         result: dict[str, list[dict[str, Any]]] = {"tool": [], "skill": [], "hook": []}
 
         def add(kind: str, capability_id: str, *, display_name: str, description: str,
                 version: str, origin: str, plugin_id: str | None, enabled: bool = True,
                 assignable: bool = True, unavailable_reason: str = "",
                 name_zh: str = "", name_en: str = "", description_zh: str = "") -> None:
+            owner = private_owners.get((CapabilityKind(kind), capability_id))
             result[kind].append({
                 "id": capability_id, "name": capability_id,
                 "display_name": display_name, "description": description,
@@ -553,6 +599,8 @@ class AgentWorker:
                 "version": version, "origin": origin, "plugin_id": plugin_id,
                 "enabled": enabled, "assignable": assignable,
                 "unavailable_reason": unavailable_reason,
+                "private": owner is not None,
+                "owner_agent_id": owner,
             })
 
         for kind, contributions in (
@@ -637,6 +685,10 @@ class AgentWorker:
 
     async def _mcp_server_views(self, generation) -> list[dict[str, Any]]:
         preparation = getattr(self.runtime, "mcp_preparation", None)
+        catalog = getattr(generation, "capability_catalog", None)
+        private_owners = dict(
+            getattr(catalog, "private_owners", {}) or {}
+        ) if catalog is not None else {}
         views: list[dict[str, Any]] = []
         for mcp_id, server in generation.mcps.items():
             status = str(server.status)
@@ -660,8 +712,15 @@ class AgentWorker:
                 "tools": [dict(item) for item in server.tool_views],
                 "source_kind": str(server.source_kind),
                 "owner_plugin_id": server.owner_plugin_id,
-                "removable": server.owner_plugin_id is None,
+                "removable": (
+                    server.owner_plugin_id is None
+                    and (CapabilityKind.MCP, str(mcp_id)) not in private_owners
+                ),
                 "health_checked_at": None,
+                "private": (CapabilityKind.MCP, str(mcp_id)) in private_owners,
+                "owner_agent_id": private_owners.get(
+                    (CapabilityKind.MCP, str(mcp_id))
+                ),
             })
         return sorted(views, key=lambda item: item["id"])
 

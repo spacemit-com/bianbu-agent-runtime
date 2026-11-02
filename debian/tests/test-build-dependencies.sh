@@ -31,6 +31,11 @@ Status: install ok installed
 Architecture: riscv64
 Version: 3.14.0-1
 
+Package: python3-hatchling
+Status: install ok installed
+Architecture: all
+Version: 1.28.0-1
+
 Package: python3-pip
 Status: install ok installed
 Architecture: all

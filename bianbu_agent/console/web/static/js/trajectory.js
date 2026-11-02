@@ -49,6 +49,9 @@
         'agent/inbox/claimed': 'Inbox claimed',
         'agent/input.applied': 'Input applied',
         'run/event': 'Run event',
+        'session/title': 'Session title',
+        'session/title/request': 'Title request',
+        'session/title/route': 'Title route',
     };
 
     function sessionEventPreview(event, data) {
@@ -66,6 +69,31 @@
                 ? scalarFacts(data.payload, 3).join(' · ') || oneLine(data.payload, 80)
                 : oneLine(data.payload, 80);
             return [String(data.kind || ''), payload].filter(Boolean).join(' · ');
+        }
+        if (event.type === 'session/title/request') {
+            const route = data.route && typeof data.route === 'object'
+                ? [data.route.provider, data.route.model].filter(Boolean).join('/')
+                : '';
+            const system = oneLine(data.system, 60);
+            const input = oneLine(data.input, 80);
+            return [route, system, input].filter(Boolean).join(' · ');
+        }
+        if (event.type === 'session/title/route') {
+            const route = data.route && typeof data.route === 'object'
+                ? [data.route.provider, data.route.model].filter(Boolean).join('/')
+                : '';
+            return [route, data.request_seq == null ? '' : `request #${data.request_seq}`]
+                .filter(Boolean).join(' · ');
+        }
+        if (event.type === 'session/title') {
+            // The title event is log-only state: show the accepted revision and
+            // which source produced it, since there is no Run to attribute it to.
+            const source = data.source && typeof data.source === 'object'
+                ? String(data.source.kind || '') : String(data.source || '');
+            return [oneLine(data.title, 120), source].filter(Boolean).join(' · ');
+        }
+        if (event.type === 'assistant/message.end') {
+            return data.has_tool_calls ? 'Tool calls follow' : 'Assistant reply complete';
         }
         return oneLine(data.message ?? data.content ?? data.status ?? data.error, 160)
             || scalarFacts(data, 3).join(' · ');
@@ -100,6 +128,23 @@
         return text.includes('/') ? text.slice(text.lastIndexOf('/') + 1) : text;
     }
 
+    // Session-level title work.  It owns no Run, so the ledger treats it as a
+    // second input kind next to Runs instead of folding it into a question.
+    const TITLE_EVENT_TYPES = new Set([
+        'session/title',
+        'session/title/request',
+        'session/title/route',
+    ]);
+
+    function isTitleEvent(event) {
+        return Boolean(event) && TITLE_EVENT_TYPES.has(String(event.type || ''));
+    }
+
+    function sessionTitleOf(event) {
+        const data = event && event.data ? event.data : {};
+        return String(data.title || '');
+    }
+
     function numberOrNull(value) {
         const number = Number(value);
         return Number.isFinite(number) ? number : null;
@@ -109,9 +154,21 @@
         return start == null || end == null ? null : Math.max(0, end - start);
     }
 
+    // A folded history event stands for the chunk span it covers.  Showing only
+    // the first seq makes every folded chunk look like a missing event, so the
+    // ledger prints the whole span.
+    function foldedSeqRange(event) {
+        const span = event && event.data ? event.data.seq_range : null;
+        if (Array.isArray(span) && Number.isInteger(Number(span[0]))
+            && Number.isInteger(Number(span[1]))) {
+            return [Number(span[0]), Number(span[1])];
+        }
+        return null;
+    }
+
     function recordBase(event, turn, kind, title) {
         const time = numberOrNull(event.time);
-        return {
+        const record = {
             key: `${kind}:${Number(event.seq)}`,
             seq: Number(event.seq),
             end_seq: Number(event.seq),
@@ -128,6 +185,9 @@
             duration: null,
             data: {...(event.data || {})},
         };
+        const folded = foldedSeqRange(event);
+        if (folded) record.seq_range = folded;
+        return record;
     }
 
     // 轨迹要能对账：一轮的"耗时"是墙钟跨度，所以没有任何记录覆盖的时间必须自己
@@ -199,18 +259,38 @@
         if (turn.duration == null || turn.started_at == null || turn.ended_at == null) {
             return;
         }
+        // A title unit is a log-only exchange (fallback -> request ->
+        // provider answer).  Gaps between those steps are dispatch bookkeeping,
+        // not model waiting, so absorb them into the neighbouring row instead
+        // of drawing a fake "Startup"/"Idle" wait.
+        const titleUnit = turn.kind === 'title';
         const spans = turn.records
             .filter(record => record.started_at != null && record.ended_at != null
-                && record.ended_at > record.started_at)
+                && (record.ended_at > record.started_at
+                    || (titleUnit && record.ended_at === record.started_at)))
             .sort((left, right) => left.started_at - right.started_at
                 || left.seq - right.seq);
         const waits = [];
         let cursor = turn.started_at;
         let previousSpan = null;
         for (const span of spans) {
-            if (span.started_at > cursor && span.started_at - cursor < WAIT_MIN_SECONDS) {
-                span.started_at = cursor;
-                span.duration = duration(span.started_at, span.ended_at);
+            if (span.started_at > cursor) {
+                const gap = span.started_at - cursor;
+                if (gap < WAIT_MIN_SECONDS) {
+                    span.started_at = cursor;
+                    span.duration = duration(span.started_at, span.ended_at);
+                } else if (titleUnit) {
+                    if (previousSpan) {
+                        previousSpan.ended_at = span.started_at;
+                        previousSpan.duration = duration(
+                            previousSpan.started_at, previousSpan.ended_at,
+                        );
+                        cursor = span.started_at;
+                    } else {
+                        span.started_at = cursor;
+                        span.duration = duration(span.started_at, span.ended_at);
+                    }
+                }
             }
             if (span.started_at >= cursor) {
                 if (span.started_at - cursor >= WAIT_MIN_SECONDS) {
@@ -228,10 +308,13 @@
             cursor = Math.max(cursor, placeOverlappingSpan(span, cursor, previousSpan));
         }
         if (turn.ended_at > cursor) {
-            if (turn.ended_at - cursor < WAIT_MIN_SECONDS && previousSpan) {
-                // 收尾的亚毫秒空档并进最后一条记录，让合计与耗时完全相等。
+            if (previousSpan && (titleUnit || turn.ended_at - cursor < WAIT_MIN_SECONDS)) {
+                // 收尾空档并进最后一条记录，让合计与耗时完全相等；标题单元的
+                // 收尾空档同样不值得单独成行。
                 previousSpan.ended_at = turn.ended_at;
-                previousSpan.duration = duration(previousSpan.started_at, previousSpan.ended_at);
+                previousSpan.duration = duration(
+                    previousSpan.started_at, previousSpan.ended_at,
+                );
             } else {
                 waits.push({
                     before: null,
@@ -292,40 +375,117 @@
         // bookkeeping, not a Turn of their own.  Fold each one into the Run it
         // precedes — or, when nothing follows, the Run before it — so a single
         // question never renders as two 轮次.
+        // Two kinds of input share this stream: Run events (`run_id` set) and
+        // Session-level work that owns no Run (`run_id` null).  A null event
+        // joins the Run before/after it only when it is plain bookkeeping;
+        // `session/title*` is its own unit and must not be absorbed into a
+        // question, otherwise the title looks like part of the conversation.
         const runIds = sorted.map(event =>
             event?.run_id == null ? null : String(event.run_id));
+        const ownUnit = event => isTitleEvent(event);
         let following = null;
         for (let index = runIds.length - 1; index >= 0; index -= 1) {
-            if (runIds[index] === null) runIds[index] = following;
-            else following = runIds[index];
+            if (runIds[index] === null) {
+                runIds[index] = ownUnit(sorted[index]) ? null : following;
+            } else {
+                following = runIds[index];
+            }
         }
         let preceding = null;
         for (let index = 0; index < runIds.length; index += 1) {
-            if (runIds[index] === null) runIds[index] = preceding;
-            else preceding = runIds[index];
+            if (runIds[index] === null) {
+                if (!ownUnit(sorted[index])) runIds[index] = preceding;
+            } else {
+                preceding = runIds[index];
+            }
         }
         const events = sorted.map((event, index) => (
             event && typeof event === 'object' && event.run_id == null
+                && runIds[index] != null
                 ? {...event, run_id: runIds[index]}
                 : event
         ));
-        const hiddenRuns = new Set(events.flatMap(event =>
-            event?.type === 'user/message'
-                && event.data?.console_operation
-                && event.run_id != null
-                ? [String(event.run_id)] : []));
+        // One title request is one Turn.  Every event of a request carries the
+        // same ``request_id``, minted before the fallback is written.  That id
+        // is authoritative: a late provider answer stays in its own unit even
+        // when a newer request is already in flight.  Events written before
+        // ids existed fall back to seq-order grouping.
+        const titleUnitKeys = new Map();
+        let currentTitleKey = null;
+        const titleEvents = sorted.filter(isTitleEvent);
+        const forRequest = (id) => {
+            const text = id == null ? '' : String(id);
+            return text ? `title:request:${text}` : null;
+        };
+        for (let index = 0; index < titleEvents.length; index += 1) {
+            const event = titleEvents[index];
+            const data = event.data || {};
+            const seq = Number(event.seq);
+            const stamped = forRequest(data.request_id);
+            if (stamped) {
+                titleUnitKeys.set(seq, stamped);
+                if (event.type === 'session/title/request') {
+                    currentTitleKey = stamped;
+                } else if (event.type === 'session/title') {
+                    const source = data.source && typeof data.source === 'object'
+                        ? String(data.source.kind || '') : String(data.source || '');
+                    if (source === 'provider' && currentTitleKey === stamped) {
+                        currentTitleKey = null;
+                    }
+                }
+                continue;
+            }
+            // Legacy events have no id.  A request names itself by seq, a
+            // route names the request seq it resolved, and title revisions
+            // bind to the request before/after them positionally.
+            if (event.type === 'session/title/request') {
+                currentTitleKey = `title:seq:${seq}`;
+                titleUnitKeys.set(seq, currentTitleKey);
+                continue;
+            }
+            if (event.type === 'session/title/route') {
+                const requestSeq = Number(data.request_seq);
+                const key = Number.isInteger(requestSeq)
+                    ? `title:seq:${requestSeq}` : currentTitleKey;
+                if (key) titleUnitKeys.set(seq, key);
+                continue;
+            }
+            if (!currentTitleKey) {
+                let following = null;
+                for (let lookahead = index + 1;
+                    lookahead < titleEvents.length; lookahead += 1) {
+                    if (titleEvents[lookahead].type === 'session/title/request') {
+                        following = `title:seq:${Number(titleEvents[lookahead].seq)}`;
+                        break;
+                    }
+                }
+                currentTitleKey = following || `title:orphan:${seq}`;
+            }
+            titleUnitKeys.set(seq, currentTitleKey);
+            const source = data.source && typeof data.source === 'object'
+                ? String(data.source.kind || '') : String(data.source || '');
+            if (source === 'provider') currentTitleKey = null;
+        }
+
         const turns = [];
         const turnsByRun = new Map();
         const records = [];
 
         function ensureTurn(event) {
+            const title = isTitleEvent(event);
             const runId = event.run_id == null ? null : String(event.run_id);
-            const key = runId === null ? `event:${Number(event.seq)}` : `run:${runId}`;
+            // Title work is one Turn of its own so the ledger shows a
+            // "Title" section instead of pretending the request was a Run.
+            const key = title
+                ? (titleUnitKeys.get(Number(event.seq)) || `title:${Number(event.seq)}`)
+                : runId === null ? `event:${Number(event.seq)}` : `run:${runId}`;
             let turn = turnsByRun.get(key);
             if (turn) return turn;
             turn = {
                 key,
                 turn: turns.length + 1,
+                kind: title ? 'title' : 'run',
+                title: title ? sessionTitleOf(event) : '',
                 run_id: runId,
                 status: 'running',
                 started_at: numberOrNull(event.time),
@@ -335,6 +495,7 @@
                 openStream: null,
                 tools: new Map(),
                 hooks: new Map(),
+                requestRecord: null,
             };
             turnsByRun.set(key, turn);
             turns.push(turn);
@@ -357,7 +518,6 @@
 
         for (const event of events) {
             if (!event || !Number.isInteger(Number(event.seq))) continue;
-            if (event.run_id != null && hiddenRuns.has(String(event.run_id))) continue;
             const turn = ensureTurn(event);
             const data = event.data || {};
             const eventTime = numberOrNull(event.time);
@@ -382,9 +542,19 @@
                     turn.openStream = record;
                 }
                 const text = String(data.text || '');
+                const folded = foldedSeqRange(event);
                 record.output += text;
                 record.preview = record.output;
                 record.end_seq = Number(event.seq);
+                if (folded) {
+                    const current = record.seq_range || [
+                        Number(event.seq), Number(event.seq),
+                    ];
+                    record.seq_range = [
+                        Math.min(current[0], folded[0]),
+                        Math.max(current[1], folded[1]),
+                    ];
+                }
                 record.data = {};
                 continue;
             }
@@ -404,14 +574,65 @@
                 append(turn, record);
                 continue;
             }
-            if (event.type === 'assistant/message.end') continue;
+            if (event.type === 'assistant/message.end') {
+                // Chat closes its reasoning phase on this event; Trajectory
+                // must still account for it.  Skipping a persisted event here
+                // leaves a hole in the seq column that no row explains.
+                const record = recordBase(
+                    event, turn.turn, 'event', 'Assistant message ended',
+                );
+                record.preview = sessionEventPreview(event, data);
+                record.data = {};
+                append(turn, record);
+                continue;
+            }
+            if (event.type === 'session/title/request') {
+                const record = recordBase(
+                    event, turn.turn, 'context', 'Title request',
+                );
+                record.input = String(data.input || '');
+                record.output = String(data.system || '');
+                record.preview = sessionEventPreview(event, data);
+                record.status = 'sent';
+                record.ended_at = null;
+                record.request_seq = Number(event.seq);
+                turn.requestRecord = record;
+                append(turn, record);
+                continue;
+            }
+            if (event.type === 'session/title/route') {
+                // The route is resolved only after the Worker picks the
+                // Agent's model.  It annotates the request row that was
+                // already persisted, so the context and its destination stay
+                // one ledger entry while remaining separately auditable.
+                const route = data.route && typeof data.route === 'object'
+                    ? data.route : {};
+                const request = turn.requestRecord;
+                if (request) {
+                    request.data = {...request.data, route};
+                    request.preview = sessionEventPreview(
+                        {type: 'session/title/request'}, request.data,
+                    );
+                } else {
+                    const record = recordBase(
+                        event, turn.turn, 'event', 'Title route',
+                    );
+                    record.preview = sessionEventPreview(event, data);
+                    record.data = {route, request_seq: data.request_seq};
+                    append(turn, record);
+                }
+                continue;
+            }
             if (event.type === 'request/context') {
-                const record = recordBase(event, turn.turn, 'context', 'System prompt');
-                record.output = String(data.system_prompt || '');
+                // 这一行就是本轮真正发给模型的请求：系统提示词、工具声明与折叠后的
+                // 全部消息。引擎按 provider 看到的顺序渲染成纯文本，控制台只负责
+                // 原样显示，不再拿会话日志二次拼一份会漂移的视图。
+                const record = recordBase(event, turn.turn, 'context', 'Request');
+                record.output = String(data.text || '');
                 record.preview = record.output;
                 record.status = String(data.reason || 'current');
                 record.data = Object.fromEntries(Object.entries(data).filter(
-                    ([key, value]) => key !== 'system_prompt' && key !== 'reason'
+                    ([key, value]) => key !== 'text' && key !== 'reason'
                         && value != null && value !== '',
                 ));
                 append(turn, record);
@@ -485,11 +706,6 @@
                     ...(data.direct_reply ? {direct_reply: true} : {}),
                     ...(measured == null ? {} : {hook_elapsed_ms: Math.round(measured)}),
                 };
-                record.noise = record.status === 'completed'
-                    && sections.length === 0
-                    && metadata === null
-                    && !data.direct_reply
-                    && !data.error;
                 continue;
             }
             if (isToolEvent) {
@@ -536,6 +752,37 @@
                 continue;
             }
 
+            if (event.type === 'session/title') {
+                // The accepted revision is the unit's outcome; the request row
+                // above it already carries the exact model-visible context.
+                const source = data.source && typeof data.source === 'object'
+                    ? String(data.source.kind || '') : String(data.source || '');
+                turn.status = 'completed';
+                turn.ended_at = eventTime;
+                turn.duration = duration(turn.started_at, turn.ended_at);
+                turn.title = String(data.title || turn.title || '');
+                // The blocking auxiliary request spans from dispatch to this
+                // answer, so its row shows the model time instead of leaving a
+                // gap that would render as a fake "wait".
+                const request = turn.requestRecord;
+                if (request && source === 'provider') {
+                    request.end_seq = Number(event.seq);
+                    request.ended_at = eventTime;
+                    request.duration = duration(request.started_at, request.ended_at);
+                    request.status = 'completed';
+                }
+                const record = recordBase(event, turn.turn, 'title',
+                    String(data.title || 'Session title'));
+                record.output = String(data.title || '');
+                record.preview = [record.output, source].filter(Boolean).join(' · ');
+                record.status = source || 'completed';
+                record.ended_at = eventTime;
+                record.duration = duration(record.started_at, record.ended_at);
+                record.data = source ? {source} : {};
+                append(turn, record);
+                continue;
+            }
+
             if (['run/completed', 'run/failed', 'run/cancelled'].includes(event.type)) {
                 const status = event.type.slice('run/'.length);
                 turn.status = status;
@@ -572,13 +819,22 @@
         }
 
         turns.forEach(turn => {
-            turn.records = turn.records.filter(record => !record.noise);
-            turn.records.forEach(record => { delete record.noise; });
             if (turn.openStream) turn.openStream = null;
             if (turn.ended_at == null) {
                 const last = turn.records[turn.records.length - 1];
                 turn.ended_at = last?.ended_at ?? null;
-                turn.duration = null;
+                turn.duration = turn.kind === 'title'
+                    ? duration(turn.started_at, turn.ended_at) : null;
+            }
+            if (turn.kind === 'title') {
+                if (!turn.title) turn.title = 'Session title';
+                if (turn.status === 'running') turn.status = 'pending';
+                if (turn.requestRecord && turn.requestRecord.ended_at == null) {
+                    turn.requestRecord.ended_at = turn.ended_at;
+                    turn.requestRecord.duration = duration(
+                        turn.requestRecord.started_at, turn.requestRecord.ended_at,
+                    );
+                }
             }
             accountForWallClock(turn);
             delete turn.openStream;

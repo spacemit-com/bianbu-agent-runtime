@@ -1,3 +1,601 @@
+bianbu-agent-runtime (0.1.221) resolute-porting; urgency=medium
+
+  * Create a new chat's Session before the first attachment upload. An unsent
+    chat is a local draft with no Session id, so attaching an image posted to
+    `/api/v1/sessions/null/attachments` and failed with 404 on every brand-new
+    chat. The draft now creates its Session on the first upload, and the first
+    prompt reuses that record instead of creating a second one.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Fri, 30 Oct 2026 11:15:07 +0800
+
+bianbu-agent-runtime (0.1.220) resolute-porting; urgency=medium
+
+  * Show the security permission ranges each agent's framework actually
+    receives. Runtime keeps the Worker mount table; dsh renders its own
+    dsh-sandbox-local scope (whole host readable, session workspace and /tmp
+    writable); hermes renders the hermes_sandbox_launch table. Ranges
+    securityd cannot enforce are read-only in the console and their save
+    buttons are disabled.
+  * Reject network and syscall edits for frameworks whose own sandbox owns
+    that boundary, instead of storing a policy that never takes effect.
+  * Render the boundary from the adapter's report: no Runtime mount table and
+    no /home/agent mapping for dsh.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Fri, 30 Oct 2026 10:59:38 +0800
+
+bianbu-agent-runtime (0.1.219) resolute-porting; urgency=medium
+
+  * Let the file Tools reach paths outside the Tool workspace. A relative path
+    still resolves inside the workspace, but an absolute path is now used as
+    written, so `write_file` can save `/home/bianbu/Desktop/hello.txt` instead
+    of failing with `path_outside_workspace`.
+  * Apply the same rule to `read_file`, `patch`, `search_files` and
+    `read_image`. Search results under an absolute root are reported as
+    absolute paths.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Thu, 29 Oct 2026 11:45:00 +0800
+
+bianbu-agent-runtime (0.1.218) resolute-porting; urgency=medium
+
+  * Replace the model-name pattern table that decided image support with an
+    explicit declaration: an exact-alias catalog plus the existing
+    capability-vision binding, leaving an unreviewed model unknown rather than
+    text-only. `deepseek-flash` reads images again instead of being refused by
+    its name.
+  * Report what the endpoint actually did. `read_image` compares the returned
+    prompt tokens against a text-only bound, so a model that accepts an image
+    block and silently discards it is reported as unsupported instead of
+    returning a confident answer about an image it never saw.
+  * Let a remote vision provider receive image bytes. The loopback-only gate
+    is removed because the shipped Bibit provider is a cloud endpoint, which
+    made the tool unusable under the default security plugin. Only the
+    question text still goes through DLP.
+  * Expose the tri-state declaration from the Session vision endpoint as
+    `state` and `known`, so the console can tell an explicit refusal from an
+    unknown model.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 28 Oct 2026 15:00:00 +0800
+
+bianbu-agent-runtime (0.1.217) resolute-porting; urgency=medium
+
+  * Restore natural DLP stand-ins before publishing streamed tokens, so the
+    live view and transcript show the user's real values, never the
+    model-facing substitutes.
+  * Carry stand-in mappings privately across Hook points and Run steps,
+    including tool results, without exposing them in public metadata.
+  * Clear a Session's stand-in state through a Worker RPC when the Session is
+    deleted, instead of dropping it at the end of every Run.
+  * Scope reversible DLP state by the Run's own Session rather than a thread
+    that context clearing can rotate, and reuse an adopted stand-in when a
+    later turn mentions the real value.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Tue, 27 Oct 2026 11:20:00 +0800
+
+bianbu-agent-runtime (0.1.214) resolute-porting; urgency=medium
+
+  * Hide operator (admin:*) rows from the product audit list. They stay in
+    the securityd audit chain, but the "who acted" category is no longer
+    offered or shown in the Security console.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 26 Oct 2026 17:00:30 +0800
+
+bianbu-agent-runtime (0.1.213) resolute-porting; urgency=medium
+
+  * Re-register an Agent when a prompt arrives after the Security console
+    unregistered its securityd identity. The declaration stays in the Agent
+    store, but registration only ran at startup, so prompts kept failing
+    with "agent not registered" until the service restarted.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 26 Oct 2026 17:00:00 +0800
+
+bianbu-agent-runtime (0.1.212) resolute-porting; urgency=medium
+
+  * Record HITL approvals in the audit chain without a session_trust grant.
+    An approval now covers only the call the user confirmed, so the next
+    terminal call in the same session asks again instead of running
+    silently on the earlier approval.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 26 Oct 2026 16:24:00 +0800
+
+bianbu-agent-runtime (0.1.211) resolute-porting; urgency=medium
+
+  * Start independent MCP servers concurrently while keeping Plugin
+    dependency order. On K3 this cuts the four-server cold start from
+    10.9-11.2s to 4.0-4.2s, shortening Worker startup by about 6.7s.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 26 Oct 2026 16:06:11 +0800
+
+bianbu-agent-runtime (0.1.210) resolute-porting; urgency=medium
+
+  * Judge each tool call once through the bianbu.security BEFORE_TOOL Hook:
+    run the chain in after_model to drive the approval prompt and skip it
+    while the tool executes. The approval now reaches session_trust, so the
+    audit list shows an approval record and the next call in the same
+    session runs without another prompt.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 26 Oct 2026 16:02:04 +0800
+
+bianbu-agent-runtime (0.1.209) resolute-porting; urgency=medium
+
+  [ bianbu-ci ]
+  * Sync change from bianbu/0.1.209.
+    Remove network learning collection from the security runtime
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 26 Oct 2026 14:38:57 +0800
+
+bianbu-agent-runtime (0.1.208) resolute-porting; urgency=medium
+
+  * Scan every model-facing content block: mask provider-specific reasoning
+    blocks, and refuse images, audio, documents and inline data URLs instead
+    of forwarding bytes the text DLP scanner cannot inspect.
+  * Route auxiliary Session titles through DLP before dispatch so a raw user
+    message cannot reach a remote title model.
+  * Mask read_image questions and refuse image bytes for non-loopback vision
+    models, keeping unscannable media on the device.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 26 Oct 2026 15:00:00 +0800
+
+bianbu-agent-runtime (0.1.207) resolute-porting; urgency=medium
+
+  * Make the bianbu.security Plugin the only security switch: Agents that do
+    not select it skip securityd registration, leases, DLP and audit, and
+    always run as yolo host processes.
+  * Re-register packaged Agents and reset their security mode to yolo on every
+    package configure, so a reinstall always restarts the Runtime service.
+  * Fetch the bashlex build dependency from the internal Nexus index with
+    system CA certificates.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 26 Oct 2026 10:00:00 +0800
+
+bianbu-agent-runtime (0.1.206) resolute-porting; urgency=medium
+
+  * Answer rejected tool arguments inside the security middleware so the
+    restored plaintext never appears in ToolInvocationError or its traceback.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Fri, 23 Oct 2026 19:45:00 +0800
+
+bianbu-agent-runtime (0.1.205) resolute-porting; urgency=medium
+
+  * Drop the whole kwargs echo from tool argument errors once DLP restored a
+    value, including escaped values and the handle_tool_errors wrapper.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Fri, 23 Oct 2026 19:20:00 +0800
+
+bianbu-agent-runtime (0.1.204) resolute-porting; urgency=medium
+
+  * Keep restored DLP values out of tool error messages: when a tool rejects
+    its arguments, LangGraph no longer echoes the plaintext kwargs back to the
+    model.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Fri, 23 Oct 2026 20:10:00 +0800
+
+bianbu-agent-runtime (0.1.203) resolute-porting; urgency=medium
+
+  * Keep sensitive values out of the model context: masked spans become
+    session-stable handles such as [PII-phone-R0123456789ab], and the runtime
+    restores them inside the trusted tool boundary only.
+  * Add a private ContextPatch.tool_arguments channel so a Hook can rewrite
+    tool arguments without the plaintext entering run metadata.
+  * Keep AfterTool Hooks on the model-facing handles instead of the restored
+    plaintext, so plugin code and Hook failure logs never see the value.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Fri, 23 Oct 2026 18:20:00 +0800
+
+bianbu-agent-runtime (0.1.202) resolute-porting; urgency=medium
+
+  * Present the audit log as six user-facing categories with plain-language
+    titles, attention filtering and collapsible technical details.
+  * Add audit.view.v1 with cross-page category, outcome and attention filters
+    while preserving snapshot/cursor pagination.
+  * Stop writing prompt, reply and think text to audit; large hook payloads
+    now store only byte length, SHA-256 and top-level field names.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Fri, 23 Oct 2026 17:36:02 +0800
+
+bianbu-agent-runtime (0.1.201) resolute-porting; urgency=medium
+
+  * Keep selected Skills resident for the whole conversation until the user
+    removes them, and document that the API still accepts skill_ids per Run.
+  * Show concrete host paths and their sandbox mapping in the security
+    boundary panel instead of an abstract data-root label.
+  * Render model recovery as one status line so live snapshots no longer
+    accumulate empty assistant bubbles.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Fri, 23 Oct 2026 11:14:49 +0800
+
+bianbu-agent-runtime (0.1.200) resolute-porting; urgency=medium
+
+  * Show the sandbox boundary as the two native mount scopes: read-only and
+    read-write. The empty override and invisible columns no longer exist,
+    and system-blocked paths are summarised in one line instead.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Thu, 22 Oct 2026 16:45:14 +0800
+
+bianbu-agent-runtime (0.1.199) resolute-porting; urgency=medium
+
+  * Show filesystem permissions as the two native bind-mount scopes: a
+    read-only path list and a read-write path list. A writable bind already
+    grants read access, so the console no longer offers nested exclusions the
+    sandbox cannot enforce.
+  * Require the securityd release that stores these path lists, because the
+    previous daemon rejects the new payload shape.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Thu, 22 Oct 2026 16:14:26 +0800
+
+bianbu-agent-runtime (0.1.197) resolute-porting; urgency=medium
+
+  * Align the network policy error fixture with the shipped message that says
+    the next request restarts the Worker automatically.
+  * Check the English and Chinese README API guide links in the documentation
+    contract test.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 22 Oct 2026 12:35:00 +0800
+
+bianbu-agent-runtime (0.1.196) resolute-porting; urgency=medium
+
+  * Expose the saved network policy on the Runtime security client. The Worker
+    refresh looked the getter up with getattr, so a missing method made every
+    policy change a silent no-op and a saved whitelist never rebuilt the Worker.
+  * Cover the client forwarding path with a regression test that fails when the
+    method is absent.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 22 Oct 2026 12:10:00 +0800
+
+bianbu-agent-runtime (0.1.195) resolute-porting; urgency=medium
+
+  * Rebuild a running Worker before the next Run when its network policy
+    changed. The address filter is installed at launch, so a saved whitelist
+    left the Worker on the previous deny_all verdict and the model connection
+    kept failing with "this Agent blocks all outbound access".
+  * Tell users on the security page and in the failure message that saving a
+    network policy takes effect on the next request through that automatic
+    Worker restart.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Thu, 22 Oct 2026 12:55:00 +0800
+
+bianbu-agent-runtime (0.1.194) resolute-porting; urgency=medium
+
+  * Refresh the temporary Skill catalog every time the composer slash menu
+    opens. It used to load only when the cached list was empty, so a Skill
+    installed while the console stayed open never appeared until a reload.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Thu, 22 Oct 2026 12:10:00 +0800
+
+bianbu-agent-runtime (0.1.193) resolute-porting; urgency=medium
+
+  * Stop advertising the retired sessions/checkpoints mount in the sandbox
+    boundary preview. The control plane owns the transcript and the Runtime
+    drops every sessions/ mount before launch, so the console promised write
+    access the Worker never received.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Thu, 22 Oct 2026 11:40:00 +0800
+
+bianbu-agent-runtime (0.1.192) resolute-porting; urgency=medium
+
+  * Replay tool calls and tool results from a Session transcript under the
+    provider-safe encoded name instead of the canonical SDK tool ID. A raw ID
+    such as spacemit-knowledge/spacemit_knowledge_search made the next Run fail
+    with "is not a valid tool" until the model guessed the encoded form.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Thu, 22 Oct 2026 11:05:00 +0800
+
+bianbu-agent-runtime (0.1.191) resolute-porting; urgency=medium
+
+  * Expose the network access mode as explicit choices in the Security
+    Control Center instead of inferring it from the domain list, so saving no
+    longer rewrites deny_all or learning to allow_all.
+  * Show the whitelist domain editor only in whitelist mode, preview the
+    pending mode change, and reject empty or malformed whitelist entries.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Thu, 22 Oct 2026 09:40:56 +0800
+
+bianbu-agent-runtime (0.1.190) resolute-porting; urgency=medium
+
+  * Add English and Chinese project guides. The English README is the default
+    and links to the Chinese version; it documents the process and source
+    structure, sessions and events, build and Debian install steps, and how the
+    runtime registers hermes-agent and DeepSeek Harness agents with securityd.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 21 Oct 2026 18:30:00 +0800
+
+bianbu-agent-runtime (0.1.188) resolute-porting; urgency=medium
+
+  * Rebuild a running sandbox Worker before the next Run when its syscall
+    denylist changed, so saved seccomp filters take effect without a manual
+    restart.
+  * Tell users on the syscall page that the next request restarts the Worker
+    and applies the saved policy.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Tue, 21 Oct 2026 15:10:00 +0800
+
+bianbu-agent-runtime (0.1.187) resolute-porting; urgency=medium
+
+  * Let the Agent page switch an Agent between sandbox and YOLO host mode
+    again, while the capabilities page keeps showing the mode read-only.
+  * Give every Security Control Center page the same header, mode card,
+    action row, subpanel, table and button styling so the tabs no longer
+    drift apart.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Tue, 21 Oct 2026 14:20:00 +0800
+
+bianbu-agent-runtime (0.1.186) resolute-porting; urgency=medium
+
+  * Describe DLP behavior with the two actions the console exposes, mask and
+    allow, instead of listing the legacy ask and deny actions.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Tue, 21 Oct 2026 12:40:00 +0800
+
+bianbu-agent-runtime (0.1.185) resolute-porting; urgency=medium
+
+  * Make the Security Control Center read-only for Agent execution mode. The
+    mode stays owned by securityd; the console no longer exposes a switch for
+    capabilities and renders each Agent's mode as a badge.
+  * Explain the behavior of sandbox and YOLO host mode on every Security
+    Control Center page so the difference is visible where each policy is
+    edited or audited.
+  * Reduce the DLP policy action to mask and allow, where allow means the
+    content passes through without masking.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Tue, 21 Oct 2026 12:20:00 +0800
+
+bianbu-agent-runtime (0.1.184) resolute-porting; urgency=medium
+
+  * Serve the avatar an APM-installed Expert declares in agent.metadata.avatar,
+    including assets/avatar.png, instead of exposing the raw relative path.
+  * Load APM Expert sub-resources in their installed layout: plugins/<name>/
+    apc-plugin.json and mcp/<name>.json. Resolve MCP selectors against a
+    unique case-insensitive match so a packaged "filesystem" server satisfies
+    a declaration written as "fileSystem".
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Tue, 21 Oct 2026 10:40:00 +0800
+
+bianbu-agent-runtime (0.1.183) resolute-porting; urgency=medium
+
+  * Run command Hooks in resident processes. A hook.json handler can declare
+    "mode": "resident"; the Worker then keeps one process per Hook command and
+    sends one JSON request line per invocation instead of starting a new
+    interpreter each time. Interpreter start-up and module imports are paid
+    once per Plugin generation. On K3 the third "open terminal" request drops
+    from 1.95s to 0.94s end to end; cold start still pays the first launch.
+  * Bind resident processes to their Plugin generation and content digest, so
+    editing a Hook always retires the old processes instead of serving stale
+    code. A process that exits, times out or overflows 1 MiB is discarded and
+    the next call starts a fresh one; idle processes expire after ten minutes
+    and are stopped on Plugin stop without waiting for the next Run.
+  * Ship all builtin command Hooks in resident mode and make the Hook protocol
+    loop over request lines. The wire format is unchanged for one-shot Hooks.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 21 Oct 2026 10:00:00 +0800
+
+bianbu-agent-runtime (0.1.179) resolute-porting; urgency=medium
+
+  * Add Agent-private capabilities: skills, mcps and plugins shipped inside an
+    Expert package are always enabled for that Expert, shadow device-wide
+    entries with the same ID, and cannot be deselected. Deleting the Expert
+    unregisters its Security identity and removes the private resources with it.
+  * Add POST /api/v1/security/agents/reconcile. It removes only securityd
+    identities that no Runtime Expert declares, protects service principals and
+    Agents with a live Worker, ignores Agent IDs outside the Runtime namespace
+    so Hermes and DSH keep their registrations, defaults to a dry run, backs up
+    the registry before deleting, and stops at the first failure.
+  * Show assistant/message.end in the Trajectory ledger and print the full seq
+    range of folded stream records, so every persisted event is accounted for.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 20 Oct 2026 12:00:00 +0800
+
+bianbu-agent-runtime (0.1.178) resolute-porting; urgency=medium
+
+  * Strip the retired runtime keys before the first config read. The unit
+    provisions the profile, publishes the system starter and provisions again;
+    the publisher reads the same config, so the migration must precede every
+    reader on the very first start after the upgrade.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Tue, 20 Oct 2026 10:10:00 +0800
+
+bianbu-agent-runtime (0.1.177) resolute-porting; urgency=medium
+
+  * Drop the unused runtime execution and startup timeout keys. The control and
+    worker requested_mode entries never selected a mode and the startup timeout
+    entries never bounded a start; handshake_timeout_seconds is the real
+    deadline. Removed keys are rejected with a pointed error, provisioned user
+    configs lose them on upgrade, and the system starter no longer writes the
+    retired metadata execution mode.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Tue, 20 Oct 2026 09:55:00 +0800
+
+bianbu-agent-runtime (0.1.176) resolute-porting; urgency=medium
+
+  * Keep the Runtime resident after it stops. A manual stop, a package upgrade
+    or a securityd restart used to leave the control plane down until somebody
+    started it by hand. The unit now follows the security service lifecycle,
+    never gives up on a restart burst, and a keepalive timer starts it again
+    within seconds.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Tue, 20 Oct 2026 09:10:00 +0800
+
+bianbu-agent-runtime (0.1.175) resolute-porting; urgency=medium
+
+  * Publish the configured initial Expert on upgrade. The packaged publisher
+    read the starter ID from the retired managed-profile state, so a device
+    that upgraded kept announcing the old default even after `config.yaml`
+    named a new `initial_agent`. Resolve the template from the packaged config
+    instead, and keep the existing system starter ID only when the profile
+    already adopted that Expert.
+
+  * Render every packaged Agent template, both during the package build and at
+    publication time. An alternate `initial_agent` now receives the deploy-time
+    model selection instead of shipping the source placeholder, and the
+    renderer is installed so the publisher can reuse it on the device.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 19 Oct 2026 18:30:00 +0800
+
+bianbu-agent-runtime (0.1.174) resolute-porting; urgency=medium
+
+  * Add a per-Expert reasoning effort selection. `agent.yaml` now stores
+    `model.effort` as `off`, `low`, `high` or `max`, an omitted value is `low`,
+    and the Expert editor, HTTP API and CLI accept the same levels. DeepSeek
+    endpoints receive the thinking dialect: `off` disables thinking, every
+    other level sends reasoning_effort with thinking enabled. Session-title
+    requests stay at `low`.
+
+  * Split the packaged starter profile into `config.yaml` plus
+    `agents/<id>/agent.yaml`. `config.yaml` names the initial Expert through
+    the optional `initial_agent` key and otherwise falls back to the packaged
+    BibitEdgeAssistant template. The new starter Expert ID is
+    `com.bianbu.627d97ad908c`.
+
+  * Stop injecting Tool catalogs into the model context. Tools stay bound
+    through the tool-calling schema, `Power Dependencies` lists only the
+    resolved Skill, MCP server and Plugin names, and execution mode moved to
+    `Platform Context`.
+
+  * Unregister an Expert from securityd before deleting its declaration. The
+    HTTP API, typed package API, CLI and development uninstall all keep the
+    local Expert when securityd cannot confirm the removal, so the Security
+    console cannot retain a phantom identity.
+
+  * Remove the signed Security Runtime manifest system. The package no longer
+    builds or installs a manifest, the register unit only prepares accounts,
+    groups and live `/run` state, and the source launcher no longer creates a
+    development self-signed manifest.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Mon, 19 Oct 2026 18:00:00 +0800
+
+bianbu-agent-runtime (0.1.171) resolute-porting; urgency=medium
+
+  * Echo prior reasoning for `deepseek-flash` too. The provider extension that
+    keeps the reasoning of an earlier assistant turn on a tool-enabled request
+    was gated on a `deepseek-v4` name prefix, but the requirement is per model:
+    probes against api.deepseek.com on 2026-10-16 rejected a request without
+    prior reasoning for `deepseek-flash`, `deepseek-v4-flash` and
+    `deepseek-v4-pro`, and accepted it for `deepseek-v4-flash-vision-exp`,
+    `deepseek-chat` and `deepseek-reasoner`. The default custom provider serves
+    `deepseek-flash`, so a tool round on the shipped configuration failed with
+    HTTP 400 "The `reasoning_content` in the thinking mode must be passed back
+    to the API" and the Run was lost. The set is now listed by exact alias.
+
+  * Keep the reasoning of a folded assistant turn. The Session transcript
+    records provider reasoning as its own delta stream, and the fold treated it
+    as bookkeeping, so a continuation rebuilt an assistant turn without the
+    reasoning that DeepSeek requires on a tool-enabled request. Replaying the
+    folded history of a failed K3 Session against api.deepseek.com reproduced
+    the HTTP 400 exactly. The fold now attaches the reasoning to the turn it
+    explains; reasoning with no text and no tool call still adds no message.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Fri, 16 Oct 2026 19:05:00 +0800
+
+bianbu-agent-runtime (0.1.170) resolute-porting; urgency=medium
+
+  * Stop holding a Hook's own answer behind an engine build it does not use.
+    BEFORE_RUN Hooks run alongside the engine build, and a Hook such as the
+    Bibit intent Hook can answer the turn itself; the Run then never reaches
+    the graph, but it still awaited the in-flight build before publishing the
+    reply. On K3 that build is roughly a second, so "打开终端" sat at about
+    2.1s instead of the instantly known answer at about 1.2s. The build is
+    detached instead: it finishes on its own because a synchronous builder
+    runs in a worker thread that task cancellation cannot interrupt, and the
+    reply goes out as soon as the Hook returns. Managers wait for any
+    detached build during shutdown.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Fri, 16 Oct 2026 18:20:00 +0800
+
+bianbu-agent-runtime (0.1.169) resolute-porting; urgency=medium
+
+  * Record the request a Run actually sends. The Trajectory "Context" row was
+    rebuilt by the host from the Session log and carried only the system
+    prompt, so it drifted from the real request: tool declarations and the
+    folded messages never appeared. The Engine now renders the system prompt,
+    every tool declaration and every message with its declared tool calls as
+    one plain-text document and publishes it as the leading event of the Run,
+    so what an operator reads is what the model was handed.
+  * Stop hiding Hooks that patch nothing. The Trajectory view dropped any Hook
+    that completed without sections, metadata, a direct reply or an error, so
+    `bianbu.audit/audit.after_run` was invisible on ordinary turns even though
+    it ran and was logged. A Hook that executed is an execution fact, so every
+    Hook keeps its own row.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Fri, 16 Oct 2026 17:41:00 +0800
+
+bianbu-agent-runtime (0.1.168) resolute-porting; urgency=medium
+
+  * Stop paying for an HTTP client import in the Request path. Command Hooks
+    are short-lived processes, so a top-level import is paid on every Run: on
+    K3 (riscv64) `import httpx` costs 480-540ms while `http.client` costs
+    about 110ms, and the intent Hook spent that difference in front of the
+    user. The loopback edge boundary now uses a standard-library client
+    (`lib/edge_http.py`) that speaks the two shapes the Hook needs -- a JSON
+    POST and a cancel DELETE -- so the intent Hook window dropped from ~1090ms
+    to ~605ms and qterminal appeared at ~1185ms instead of ~1520ms.
+  * Report why a command Hook exited non-zero. `_execute` discarded the
+    child's stderr, so a Hook that died before printing its JSON surfaced only
+    as `Hook command exited with status 1`; a Run whose Hook failed on a
+    `SyntaxError` and a Run whose Hook was denied by the memory identity
+    broker were indistinguishable without a probe in the installed tree. The
+    stderr tail now goes to the operational log, and deliberately stays out of
+    the Run's user-facing error because plugin stderr may echo prompt content.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Thu, 16 Oct 2026 15:30:00 +0800
+
+bianbu-agent-runtime (0.1.167) resolute-porting; urgency=medium
+
+  * Delete a Session whose Run is still winding down. `delete_session` flushed
+    the write-behind queue before dropping the Session, but the Session store
+    owns the directory and retires it first, so that flush appended to a
+    transcript that was already gone: `DELETE /api/v1/sessions/{id}` answered
+    500 and the write it could not finish recreated the directory it had just
+    removed. Deletion now drops the queued events instead of writing them, so
+    the directory stays gone and a Run that lands after the delete cannot
+    resurrect the Session.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Thu, 15 Oct 2026 18:16:00 +0800
+
+bianbu-agent-runtime (0.1.166) resolute-porting; urgency=medium
+
+  * Replay declared tool policies on every start. `ensure_capabilities` only
+    registered rows securityd had never seen, so a policy an older release
+    wrote as its own default stayed in place forever: the packaged manifest
+    shipped `allow` for every tool while the stored rows still said `ask`, and
+    a Worker stayed sandboxed after an upgrade that was supposed to change that
+    default. The Runtime now records the policies it declares
+    (`<data_dir>/security/declared-capabilities.json`) and replays the
+    declaration over every row that still holds what this Runtime declared last
+    time. An operator's console edit is never rolled back, and the Runtime
+    Agent's own packaged manifest is reconciled the same way. A row left over
+    from a release that had no baseline yet follows the new declaration, so
+    stale defaults do not survive an upgrade.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Thu, 15 Oct 2026 17:05:00 +0800
+
+bianbu-agent-runtime (0.1.165) resolute-porting; urgency=medium
+
+  * Expose the effective execution boundary to the security console. The new
+    `permissions.boundary.v1` operation forwards to securityd's boundary
+    preview and fills in the Worker data root, which only the Runtime knows,
+    so the console can show the directories an Expert really reads and writes
+    instead of a separately written description.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Thu, 15 Oct 2026 11:05:00 +0800
+
+bianbu-agent-runtime (0.1.164) resolute-porting; urgency=medium
+
+  * Apply the read/write range exclusions in the sandbox. securityd lists the
+    excluded paths in `inaccessible_overrides` / `read_only_overrides`, but the
+    Runtime never translated them into namespace mounts, so "read this tree
+    except that subtree" silently kept the subtree visible and writable. The
+    bwrap backend now rebinds every exclusion after the include mounts, hiding a
+    read exclusion behind an empty tmpfs (or /dev/null for a file) and dropping
+    write access for a write exclusion, with the read exclusion winning when a
+    path carries both. Host mode adds the same paths to `ReadOnlyPaths` /
+    `InaccessiblePaths`.
+  * Default the syscall policy architecture to the host kernel. The console
+    selector and the security bridge both hardcoded `x86_64`, so on a riscv64
+    board the syscall blacklist page listed x86_64 names and numbers and wrote
+    them into the riscv64 policy. The API now resolves the host architecture
+    when the caller does not name one and reports it back, and the console
+    adopts that value instead of keeping a hardcoded default.
+
+ -- liudecheng[bot] <decheng.liu@spacemit.com>  Wed, 14 Oct 2026 21:15:00 +0800
+
 bianbu-agent-runtime (0.1.163) resolute-porting; urgency=medium
 
   * Stop declaring security state in the Agent editor. The starter Agent no

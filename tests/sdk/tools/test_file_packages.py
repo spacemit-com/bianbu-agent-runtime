@@ -56,19 +56,46 @@ async def test_write_and_read_file_are_owned_by_their_single_sources(
 
 
 @pytest.mark.asyncio
-async def test_file_packages_reject_paths_outside_workspace(tmp_path: Path) -> None:
+async def test_file_packages_prefer_the_workspace_but_accept_absolute_paths_outside(
+    tmp_path: Path,
+) -> None:
     workspace = tmp_path / "workspace"
-    outside = tmp_path / "outside.txt"
-    outside.write_text("private", encoding="utf-8")
+    workspace.mkdir()
+    outside = (tmp_path / "outside" / "hello.txt").resolve()
+    call = ToolCallContext("run", "session", "agent")
 
-    result = await _load("read_file", workspace).handler(
-        ToolCallContext("run", "session", "agent"),
-        {"path": str(outside)},
+    written = await _load("write_file", workspace).handler(
+        call,
+        {"path": str(outside), "content": "hello\n"},
     )
+    written_payload = json.loads(written.content)
+    assert written_payload["resolved_path"] == str(outside)
+    assert written_payload["bytes_written"] == 6
+    assert outside.read_text(encoding="utf-8") == "hello\n"
 
-    payload = json.loads(result.content)
-    assert payload["success"] is False
-    assert payload["code"] == "path_outside_workspace"
+    read = await _load("read_file", workspace).handler(call, {"path": str(outside)})
+    assert json.loads(read.content)["content"] == "1|hello"
+
+    patched = await _load("patch", workspace).handler(
+        call,
+        {
+            "mode": "replace",
+            "path": str(outside),
+            "old_string": "hello",
+            "new_string": "welcome",
+        },
+    )
+    assert json.loads(patched.content)["success"] is True
+    assert outside.read_text(encoding="utf-8") == "welcome\n"
+
+    found = await _load("search_files", workspace).handler(
+        call,
+        {"pattern": "welcome", "path": str(outside.parent)},
+    )
+    assert json.loads(found.content) == {
+        "total_count": 1,
+        "matches": [{"path": str(outside), "line": 1, "content": "welcome"}],
+    }
 
 
 @pytest.mark.asyncio

@@ -604,24 +604,30 @@ class AgentPackageManager:
             self._prepare_roots()
             system = self._system_package(normalized)
             user = self._home.agents_dir / normalized
+            package = None
             if user.exists() or user.is_symlink():
                 # A record this contract rejects is retired here, so the
                 # packaged declaration of the same Agent stays the one served.
-                target = user if self._read_user_package(user, expected_id=normalized) is not None else (
-                    system.root if system is not None else user
-                )
+                package = self._read_user_package(user, expected_id=normalized)
+                if package is None:
+                    package = system
             else:
-                target = system.root if system is not None else user
-            if not target.exists():
+                package = system
+            if package is None:
                 return None
+            target = package.root
             matches = [
                 target / f"avatar{suffix}"
-                for suffix in (".jpg", ".png", ".gif", ".webp")
+                for suffix in _AVATAR_SUFFIXES
                 if _is_regular_file(target / f"avatar{suffix}")
             ]
             if len(matches) > 1:
                 raise ValueError("Agent package contains multiple avatar images")
-            return matches[0] if matches else None
+            if matches:
+                # An image uploaded through the Runtime replaces the packaged
+                # one without rewriting agent.yaml.
+                return matches[0]
+            return _declared_avatar(target, package.manifest.spec.metadata.get("avatar"))
 
     def write_avatar(self, agent_id: str, suffix: str, payload: bytes) -> Path:
         """Atomically replace the image owned by one Agent package."""
@@ -993,6 +999,37 @@ def _rename_exchange(source: Path, destination: Path) -> None:
     if result != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error), destination)
+
+
+_AVATAR_SUFFIXES = (".jpg", ".png", ".gif", ".webp")
+
+
+def _declared_avatar(root: Path, value: object) -> Path | None:
+    """Resolve the avatar path an Agent package declares in its metadata.
+
+    APM publishes Experts with ``metadata.avatar: assets/avatar.png``.  Only a
+    canonical relative path to a regular image inside the package is accepted;
+    an emoji or any other display value is not a file.
+    """
+
+    if not isinstance(value, str) or not value or "\x00" in value:
+        return None
+    relative = Path(value)
+    if (
+        relative.is_absolute()
+        or any(part in {"", ".", ".."} for part in relative.parts)
+        or relative.suffix not in _AVATAR_SUFFIXES
+    ):
+        return None
+    candidate = root / relative
+    if not _is_regular_file(candidate):
+        return None
+    try:
+        if not candidate.resolve().is_relative_to(root.resolve()):
+            return None
+    except (OSError, RuntimeError):
+        return None
+    return candidate
 
 
 def _is_regular_file(path: Path) -> bool:

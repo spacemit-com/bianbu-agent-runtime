@@ -42,6 +42,47 @@ def test_memory_directory_tools_use_local_tool_name() -> None:
         ) == (expected, "")
 
 
+def test_bridge_restores_private_session_placeholders(monkeypatch):
+    import types
+
+    securityd = types.ModuleType("securityd")
+    securityd.__path__ = []
+    dlp = types.ModuleType("securityd.dlp")
+    dlp.__path__ = []
+    scanner = types.ModuleType("securityd.dlp.pii_scanner")
+
+    class PIIScanner:
+        @staticmethod
+        def unmask(text, mapping):
+            for placeholder, original in mapping.items():
+                text = text.replace(placeholder, original)
+            return text
+
+    scanner.PIIScanner = PIIScanner
+    securityd.dlp = dlp
+    dlp.pii_scanner = scanner
+    for name, module in {
+        "securityd": securityd,
+        "securityd.dlp": dlp,
+        "securityd.dlp.pii_scanner": scanner,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    class Sessions:
+        def get(self, session_id):
+            assert session_id == "session-1"
+            return {"[PII-手机号-001]": "13824681357"}
+
+    module = _module("bridge")
+    bridge = module.SecurityBridge.__new__(module.SecurityBridge)
+    bridge._dlp_ctx = {"dlp_sessions": Sessions()}
+
+    restored, count = bridge.restore_placeholders(
+        "session-1", {"phone": "[PII-手机号-001]", "other": "plain"})
+    assert restored == {"phone": "13824681357", "other": "plain"}
+    assert count == 1
+
+
 def test_real_mcp_tool_keeps_server_capability_boundary() -> None:
     mapping = _module("mapping")
 
@@ -170,8 +211,8 @@ def test_security_identity_uses_run_subject_without_policy_fallback(monkeypatch,
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mode,force_block', [('yolo', False), ('normal', False), ('yolo', True)])
-async def test_mcp_hook_checks_logical_expert_yolo_and_normal_block(monkeypatch, mode, force_block):
+@pytest.mark.parametrize('mode,force_block', [('yolo', False), ('safe', False), ('yolo', True)])
+async def test_mcp_hook_checks_logical_expert_yolo_and_safe_block(monkeypatch, mode, force_block):
     identity = _module('agent_id')
     lib = sys.modules['lib']
     monkeypatch.setenv('BIANBU_AGENT_ID', 'com.bianbu.runtime')
@@ -182,7 +223,7 @@ async def test_mcp_hook_checks_logical_expert_yolo_and_normal_block(monkeypatch,
             return [{'agent_id': expert}, {'agent_id': 'com.bianbu.runtime'}]
         def get_agent_security_mode(self, aid):
             calls.append(('mode', aid))
-            return {'mode': mode if aid == expert else 'normal'}
+            return {'mode': mode if aid == expert else 'safe'}
     class Bridge:
         available = True
         def client(self):

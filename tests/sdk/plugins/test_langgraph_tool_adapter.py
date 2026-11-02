@@ -594,8 +594,12 @@ async def test_tool_result_dlp_is_applied_before_return_to_model(action):
             if point != HookPoint.AFTER_TOOL:
                 return ContextPatch()
             seen.append(context.metadata.get('result'))
-            payload = ({'dlp_masked_result': masked} if action == 'mask' else
-                       {'result_blocked': True, 'block_reason': '受限敏感信息'} if action == 'block' else {})
+            if action == 'block':
+                # A veto is a Hook denial, not a metadata flag for the caller.
+                from bianbu_agent.hooks import HookDenied
+
+                raise HookDenied('受限敏感信息')
+            payload = {'dlp_masked_result': masked} if action == 'mask' else {}
             return ContextPatch(metadata={'bianbu.security': {'securityd': payload}})
 
     tool = build_plugin_tools([ToolContribution('sample', ToolSpec(
@@ -607,3 +611,121 @@ async def test_tool_result_dlp_is_applied_before_return_to_model(action):
     else:
         assert await tool.ainvoke({}) == (masked if action == 'mask' else raw)
     assert seen == [raw], 'post_tool_call must inspect the actual result'
+
+
+@pytest.mark.asyncio
+async def test_before_tool_private_arguments_reach_tool_not_metadata():
+    """A restored DLP value must be a private argument rewrite, not run metadata."""
+    seen = {}
+
+    async def handler(_context, arguments):
+        seen['arguments'] = dict(arguments)
+        return ToolResult(arguments['phone'])
+
+    class Hooks:
+        async def run_hooks(self, point, context, **kwargs):
+            if point != HookPoint.BEFORE_TOOL:
+                return ContextPatch()
+            return ContextPatch(
+                metadata={'bianbu.security': {'securityd': {'decision': 'ALLOW'}}},
+                tool_arguments={'phone': '13824681357'},
+            )
+
+    tool = build_plugin_tools([ToolContribution('sample', ToolSpec(
+        'lookup', 'Lookup', {'type': 'object'}), handler)], hook_runner=Hooks())[0]
+
+    assert await tool.ainvoke({'phone': '[PII-phone-R0123456789ab]'}) == '13824681357'
+    assert seen['arguments'] == {'phone': '13824681357'}
+
+
+@pytest.mark.asyncio
+async def test_after_tool_hook_sees_handles_while_the_tool_gets_plaintext():
+    """AfterTool observes the model's call, never the restored plaintext."""
+    seen = {}
+
+    async def handler(_context, arguments):
+        seen['tool'] = dict(arguments)
+        return ToolResult('ok')
+
+    class Hooks:
+        async def run_hooks(self, point, context, **kwargs):
+            if point is HookPoint.BEFORE_TOOL:
+                return ContextPatch(tool_arguments={'phone': '13824681357'})
+            if point is HookPoint.AFTER_TOOL:
+                seen['after_tool'] = dict(context.metadata.get('arguments') or {})
+            return ContextPatch()
+
+    tool = build_plugin_tools([ToolContribution('sample', ToolSpec(
+        'lookup', 'Lookup', {'type': 'object'}), handler)], hook_runner=Hooks())[0]
+
+    await tool.ainvoke({'phone': '[PII-phone-R0123456789ab]'})
+
+    assert seen['tool'] == {'phone': '13824681357'}
+    assert seen['after_tool'] == {'phone': '[PII-phone-R0123456789ab]'}
+
+
+@pytest.mark.asyncio
+async def test_bare_permission_error_from_after_tool_terminates_the_run():
+    """A Hook's plain PermissionError must not become a retryable ToolMessage."""
+
+    async def handler(_context, _arguments):
+        return ToolResult('secret')
+
+    async def deny_after_tool(_context):
+        raise PermissionError('denied by guard')
+
+    generation = PluginGeneration(
+        id=1,
+        plugins={
+            'guard.plugin': PluginRuntime(
+                plugin_id='guard.plugin',
+                instance=object(),
+                config={},
+                contributions=PluginContributions(hooks=(
+                    HookContribution(
+                        'guard.plugin', HookPoint.AFTER_TOOL,
+                        deny_after_tool, id='guard.after_tool',
+                    ),
+                )),
+            ),
+        },
+        statuses={},
+    )
+    tool = build_plugin_tools(
+        [ToolContribution('sample', ToolSpec(
+            'read', 'Read', {'type': 'object'}), handler)],
+        hook_runner=generation,
+    )[0]
+
+    with pytest.raises(PermissionError, match='denied by guard') as caught:
+        await tool.ainvoke({})
+    assert caught.value.should_terminate_run is True
+
+
+@pytest.mark.asyncio
+async def test_after_tool_stand_ins_reach_the_run_control(monkeypatch):
+    """A tool-result mapping must reach the stream restorer, not public metadata."""
+
+    async def handler(_context, _arguments):
+        return ToolResult('ok')
+
+    class Hooks:
+        async def run_hooks(self, point, context, **kwargs):
+            if point is HookPoint.AFTER_TOOL:
+                return ContextPatch(
+                    metadata={'bianbu.security': {'securityd': {'decision': 'MODIFY'}}},
+                    stream_stand_ins={'13879455773': '13812345678'},
+                )
+            return ContextPatch()
+
+    control = RunControl(request_id='run', session_id='session')
+    tool = build_plugin_tools([ToolContribution('sample', ToolSpec(
+        'read', 'Read', {'type': 'object'}), handler)], hook_runner=Hooks())[0]
+
+    assert await tool.ainvoke(
+        {},
+        config={'configurable': {'run_control': control}},
+    ) == 'ok'
+    assert control.dlp_stand_ins == {'13879455773': '13812345678'}
+    assert control.dlp_stand_ins is not None
+    assert '13879455773' not in repr(control)

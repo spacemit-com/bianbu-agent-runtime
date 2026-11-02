@@ -738,6 +738,8 @@ async def test_managed_mcp_server_resource_round_trips_with_normalized_envelopes
             "removable": True,
             "health_checked_at": None,
             "detail": "",
+            "private": False,
+            "owner_agent_id": None,
         }
         checked = await client.post(HEALTH_PATH)
         assert checked.status_code == 200

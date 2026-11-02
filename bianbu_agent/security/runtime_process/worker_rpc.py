@@ -159,6 +159,21 @@ class WorkerRPCClient:
         """Return a JSON-only view of the active Worker catalog."""
         return await self.request("worker.catalog")
 
+    async def terminate_session(
+        self,
+        session_id: str,
+        agent_id: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Ask the Worker to drop private state for a deleted Session."""
+
+        return await self.request(
+            "session.terminate",
+            session_id=str(session_id),
+            agent_id=str(agent_id),
+            reason=str(reason),
+        )
+
     async def cancel(self, run_id: str) -> bool:
         return bool((await self.request("run.cancel", run_id=str(run_id))).get("accepted"))
 
@@ -338,6 +353,7 @@ class WorkerRPCServer:
                     "worker.reload": "worker.reload.result", "worker.catalog": "worker.catalog.result",
                     "run.cancel": "run.cancel.result", "run.step_input": "run.step_input.result",
                     "approval.result": "approval.result",
+                    "title.generate": "title.generate.result",
                 }.get(kind, "error")
                 if response_kind == "error":
                     raise ProtocolError(f"unsupported request type: {kind}")

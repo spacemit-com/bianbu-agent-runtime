@@ -137,6 +137,7 @@ def test_application_exposes_exact_versioned_api_inventory() -> None:
         ("DELETE", "/api/v1/security/agents/{agent_id}/syscall-policy"),
         ("GET", "/api/v1/security/syscall-audit/events"),
         ("GET", "/api/v1/security/syscall-audit/status"),
+        ("POST", "/api/v1/security/agents/reconcile"),
         ("GET", "/api/health"),
     }
 

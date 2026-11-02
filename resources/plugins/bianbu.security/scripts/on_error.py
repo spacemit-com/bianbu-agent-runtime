@@ -29,7 +29,14 @@ async def on_error(run: dict) -> dict | None:
     return None
 
 
+def _warmup():
+    _bootstrap()
+    from lib import warm_bridge
+
+    warm_bridge()
+
+
 if __name__ == "__main__":
     from protocol import main
 
-    main(on_error)
+    main(on_error, warmup=_warmup)

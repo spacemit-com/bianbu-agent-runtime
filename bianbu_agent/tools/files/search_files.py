@@ -5,18 +5,7 @@ import json
 import re
 from pathlib import Path
 from bianbu_agent.tools import tool
-
-
-def _resolve(workspace: Path, raw_path: object) -> Path:
-    if not isinstance(raw_path, str):
-        raise ValueError("path must be a string")
-    candidate = Path(raw_path).expanduser()
-    if not candidate.is_absolute():
-        candidate = workspace / candidate
-    resolved = candidate.resolve()
-    if not resolved.is_relative_to(workspace.resolve()):
-        raise PermissionError("path is outside the Tool workspace")
-    return resolved
+from bianbu_agent.tools.files.paths import display_path, resolve_path
 
 
 def _iter_files(workspace: Path, root: Path):
@@ -27,7 +16,6 @@ def _iter_files(workspace: Path, root: Path):
         if (
             path.is_file()
             and not path.is_symlink()
-            and path.resolve().is_relative_to(workspace.resolve())
             and (
                 not any((part.startswith(".") for part in path.relative_to(root).parts))
             )
@@ -51,7 +39,7 @@ def _search(
     if target == "files":
         found = sorted(
             (
-                str(path.relative_to(workspace))
+                display_path(workspace, path)
                 for path in files
                 if fnmatch.fnmatch(path.name, pattern)
             )
@@ -66,7 +54,7 @@ def _search(
     matches: list[dict[str, object]] = []
     counts: dict[str, int] = {}
     for path in sorted(files):
-        relative = str(path.relative_to(workspace))
+        relative = display_path(workspace, path)
         if file_glob and (not fnmatch.fnmatch(path.name, file_glob)):
             continue
         try:
@@ -120,7 +108,7 @@ def create_tool(package_context):
             limit: Maximum number of results to return (default: 50)
             offset: Skip first N results for pagination (default: 0)
             output_mode: Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file
-            path: Directory or file to search in (default: current working directory)
+            path: Directory or file to search in; a relative path resolves against the workspace (default: the workspace)
             target: 'content' searches inside file contents, 'files' searches for files by name
         """
         arguments = {
@@ -140,7 +128,7 @@ def create_tool(package_context):
             pattern = arguments.get("pattern")
             if not isinstance(pattern, str) or not pattern:
                 raise ValueError("pattern must be a non-empty string")
-            root = _resolve(package_context.workspace_root, arguments.get("path", "."))
+            root = resolve_path(package_context.workspace_root, arguments.get("path", "."))
             payload = await asyncio.to_thread(
                 _search,
                 package_context.workspace_root,
@@ -152,12 +140,6 @@ def create_tool(package_context):
                 max(0, int(arguments.get("offset", 0))),
                 str(arguments.get("output_mode", "content")),
             )
-        except PermissionError as exc:
-            payload = {
-                "success": False,
-                "code": "path_outside_workspace",
-                "error": str(exc),
-            }
         except (OSError, TypeError, ValueError, re.error) as exc:
             payload = {"success": False, "code": "invalid_request", "error": str(exc)}
         return json.dumps(payload, ensure_ascii=False)

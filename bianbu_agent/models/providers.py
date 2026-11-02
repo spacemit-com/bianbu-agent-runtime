@@ -141,6 +141,22 @@ def normalize_provider_configuration(
     return normalized_base_url, normalized_api_key
 
 
+def is_local_endpoint(base_url: object) -> bool:
+    """Whether a Provider endpoint is served by this device.
+
+    Only a loopback host is proof that the payload stays on the device.  An
+    empty Base URL is not local: the OpenAI-compatible client then falls back
+    to the public provider endpoint.
+    """
+
+    value = base_url.strip() if isinstance(base_url, str) else ""
+    if not value:
+        return False
+    parsed = urlsplit(value if "://" in value else f"http://{value}")
+    host = (parsed.hostname or "").strip("[]").lower()
+    return host in _LOCAL_HOSTS
+
+
 def resolve_request_timeout(
     base_url: object,
     parameters: Mapping[str, object] | None = None,
@@ -222,6 +238,7 @@ __all__ = [
     "MAX_REQUEST_TIMEOUT_SECONDS",
     "PROVIDER_TEMPLATES",
     "ProviderConfig",
+    "is_local_endpoint",
     "normalize_provider_configuration",
     "resolve_request_timeout",
 ]

@@ -186,3 +186,43 @@ async def test_invoke_security_wraps_syscall_failure_in_actionable_envelope(monk
     assert response["requestId"] == "syscall-1"
     assert response["error"]["code"] == "unavailable"
     assert "socket missing" in response["error"]["message"]
+
+
+def test_syscall_operations_default_to_the_host_arch(monkeypatch):
+    """不传 arch 时用本机内核架构，避免在 riscv64 上改 x86_64 的策略。"""
+    from bianbu_agent.api import security
+
+    monkeypatch.setattr(security, "_host_arch", lambda: "riscv64")
+    calls = []
+
+    class _Client:
+        def get_syscall_catalog(self, arch):
+            calls.append(("catalog", arch))
+            return {"arch": arch, "syscalls": []}
+
+        def get_syscall_policy(self, agent_id, arch):
+            calls.append(("get", agent_id, arch))
+            return {"arch": arch}
+
+        def set_agent_syscall_policy(self, agent_id, arch, additions):
+            calls.append(("update", agent_id, arch, tuple(additions)))
+            return {"ok": True}
+
+        def reset_agent_syscall_policy(self, agent_id, arch):
+            calls.append(("reset", agent_id, arch))
+            return {"ok": True}
+
+    monkeypatch.setattr(security, "_client", lambda: _Client())
+
+    security._invoke_sync("syscall-catalog.v1", {})
+    security._invoke_sync("syscall-policy.get.v1", {"agent_id": "agent.demo"})
+    security._invoke_sync("syscall-policy.agent.update.v1",
+                          {"agent_id": "agent.demo", "additions": ["ptrace"]})
+    security._invoke_sync("syscall-policy.agent.reset.v1", {"agent_id": "agent.demo"})
+
+    assert calls == [
+        ("catalog", "riscv64"),
+        ("get", "agent.demo", "riscv64"),
+        ("update", "agent.demo", "riscv64", ("ptrace",)),
+        ("reset", "agent.demo", "riscv64"),
+    ]

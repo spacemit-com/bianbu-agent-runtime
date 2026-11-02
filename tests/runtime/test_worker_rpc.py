@@ -69,6 +69,48 @@ async def test_worker_rpc_hello_health_and_shutdown(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_worker_rpc_title_generate_round_trip(tmp_path: Path) -> None:
+    """A title is an auxiliary RPC reply, never a Run on the wire."""
+
+    socket_path = tmp_path / "instance" / "worker.sock"
+    instance = "instance-title"
+    token = "title-rpc-token"
+    seen: list[dict[str, object]] = []
+
+    async def dispatch(kind, message):
+        seen.append({
+            "kind": kind,
+            "prompt": message.get("prompt"),
+            "agent_id": message.get("agent_id"),
+        })
+        return {
+            "title": "K3 服务检查",
+            "agent_id": message["agent_id"],
+            "request": {"system": "instructions", "input": "title input"},
+            "route": {"provider": "custom:bibit", "model": "deepseek-flash"},
+        }
+
+    server = WorkerRPCServer(socket_path, instance, dispatch, token=token)
+    await server.start()
+    try:
+        client = WorkerRPCClient(socket_path, instance, token=token)
+        result = await client.request(
+            "title.generate", prompt="检查 K3 服务", agent_id="com.bianbu.demo",
+        )
+    finally:
+        await server.close()
+
+    assert result["type"] == "title.generate.result"
+    assert result["title"] == "K3 服务检查"
+    assert result["route"] == {"provider": "custom:bibit", "model": "deepseek-flash"}
+    assert seen == [{
+        "kind": "title.generate",
+        "prompt": "检查 K3 服务",
+        "agent_id": "com.bianbu.demo",
+    }]
+
+
+@pytest.mark.asyncio
 async def test_health_socket_timeout_is_reported_as_rpc_error(monkeypatch, tmp_path: Path) -> None:
     client = WorkerRPCClient(tmp_path / "worker.sock", "instance", token="token")
 

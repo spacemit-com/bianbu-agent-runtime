@@ -18,9 +18,11 @@ async def test_agent_crud_calls_logical_security_lifecycle(tmp_path: Path):
 
         async def unregister(agent_id):
             calls.append(("unregister", str(agent_id)))
+            return True
 
         runtime.register_logical_agent = register
         runtime.unregister_logical_agent = unregister
+        runtime._security_registration_enabled = lambda: True
 
         provider = await client.post(
             "/api/v1/providers",
@@ -30,7 +32,11 @@ async def test_agent_crud_calls_logical_security_lifecycle(tmp_path: Path):
 
         created = await client.post(
             "/api/v1/agents",
-            json={"name": "Lifecycle", "model": {"provider": "lifecycle-provider", "name": "model"}},
+            json={
+                "name": "Lifecycle",
+                "model": {"provider": "lifecycle-provider", "name": "model"},
+                "plugins": ["*"],
+            },
         )
         assert created.status_code == 201, created.text
         agent_id = created.json()["data"]["id"]
@@ -70,7 +76,10 @@ async def test_required_registration_failure_rolls_back_created_agent(tmp_path: 
 async def test_optional_security_unregister_pending_keeps_local_agent(tmp_path: Path):
     """Never delete Runtime state while securityd deletion is unconfirmed."""
     async with _api(tmp_path) as (client, runtime):
-        await runtime.agents.create(AgentSpec(id="pending", name="Pending"))
+        await runtime.agents.create(
+            AgentSpec(id="pending", name="Pending", plugins=("bianbu.security",)),
+            allow_capability_gap=True,
+        )
 
         async def pending_unregister(agent_id):
             assert agent_id == "pending"
@@ -84,3 +93,21 @@ async def test_optional_security_unregister_pending_keeps_local_agent(tmp_path: 
 
         assert response.status_code == 503
         assert await runtime.agents.get("pending") is not None
+
+
+@pytest.mark.asyncio
+async def test_plain_agent_delete_does_not_touch_securityd(tmp_path: Path):
+    async with _api(tmp_path) as (client, runtime):
+        await runtime.agents.create(AgentSpec(id="plain", name="Plain"))
+        runtime._security_registration_enabled = lambda: True
+
+        async def forbidden(_agent_id):
+            raise AssertionError("non-security Agent must not call securityd")
+
+        runtime.unregister_logical_agent = forbidden
+
+        response = await client.delete("/api/v1/agents/plain")
+
+        assert response.status_code == 204, response.text
+        with pytest.raises(KeyError):
+            await runtime.agents.get("plain")

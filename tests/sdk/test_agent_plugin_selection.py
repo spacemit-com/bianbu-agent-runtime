@@ -50,7 +50,7 @@ async def test_intent_ownership_move_preserves_existing_security_grant(monkeypat
         calls.append((agent, capability))
         return 0
     monkeypatch.setattr(runtime, 'security_client_module', lambda: SimpleNamespace(
-        get_agent_security_mode=lambda _: {'mode':'normal'}, check_permission=check))
+        get_agent_security_mode=lambda _: {'mode':'safe'}, check_permission=check))
     assert await runtime._securityd_allows_mcp('expert', 'bianbu.bibit.intent/bibit-intent')
     assert calls == [('expert', 'mcp.bibit-intent')]
     for mcp_id in (
@@ -65,6 +65,39 @@ async def test_intent_ownership_move_preserves_existing_security_grant(monkeypat
         ('expert', 'mcp.bibit-intent'),
         ('expert', 'mcp.bibit-intent'),
     ]
+
+
+@pytest.mark.asyncio
+async def test_unmapped_mcp_server_is_registered_and_blocked(monkeypatch):
+    """未映射工具的默认策略是 ask，层 1 不能把 ask 当成已授权放行。"""
+    from bianbu_agent.server import runtime
+    decisions = iter([1, 1, 0])  # 首次/二次 ask，授权后 allow
+    registered = []
+    monkeypatch.setattr(runtime, 'security_client_module', lambda: SimpleNamespace(
+        get_agent_security_mode=lambda _: {'mode': 'safe'},
+        check_permission=lambda agent, capability: next(decisions),
+        get_capabilities=lambda _: [],
+        register_capabilities=lambda agent, caps: registered.extend(caps) or True))
+
+    assert await runtime._securityd_allows_mcp('expert', 'new.server') is False
+    assert registered == [{'tool': 'mcp.new.server', 'policy': 'ask'}]
+    assert await runtime._securityd_allows_mcp('expert', 'new.server') is False
+    assert await runtime._securityd_allows_mcp('expert', 'new.server') is True
+
+
+@pytest.mark.asyncio
+async def test_registered_mcp_server_is_blocked_until_allowed(monkeypatch):
+    """已登记为 ask 的 server 仍应被拦截，且不重复登记。"""
+    from bianbu_agent.server import runtime
+    registered = []
+    monkeypatch.setattr(runtime, 'security_client_module', lambda: SimpleNamespace(
+        get_agent_security_mode=lambda _: {'mode': 'safe'},
+        check_permission=lambda agent, capability: 1,
+        get_capabilities=lambda _: [{'tool': 'mcp.pending', 'policy': 'ask'}],
+        register_capabilities=lambda agent, caps: registered.extend(caps) or True))
+
+    assert await runtime._securityd_allows_mcp('expert', 'pending') is False
+    assert registered == []
 
 
 @pytest.mark.asyncio
@@ -99,7 +132,7 @@ def test_packaged_expert_does_not_name_members_of_its_own_plugins():
     """
 
     spec = AgentManifest.from_path(
-        Path(__file__).parents[2] / "resources" / "default-profile" / "starter-agent.yaml"
+        Path(__file__).parents[2] / "resources" / "agents" / "com.bianbu.627d97ad908c" / "agent.yaml"
     ).spec
     selected_plugins = set(spec.plugins)
     assert selected_plugins and "*" not in selected_plugins

@@ -4,18 +4,7 @@ import difflib
 import json
 from pathlib import Path
 from bianbu_agent.tools import tool
-
-
-def _resolve(workspace: Path, raw_path: object) -> Path:
-    if not isinstance(raw_path, str) or not raw_path:
-        raise ValueError("path must be a non-empty string")
-    candidate = Path(raw_path).expanduser()
-    if not candidate.is_absolute():
-        candidate = workspace / candidate
-    resolved = candidate.resolve()
-    if not resolved.is_relative_to(workspace.resolve()):
-        raise PermissionError("path is outside the Tool workspace")
-    return resolved
+from bianbu_agent.tools.files.paths import resolve_path
 
 
 def _replace(path: Path, old: str, new: str, replace_all: bool) -> dict[str, object]:
@@ -79,8 +68,8 @@ def _v4a(workspace: Path, patch_text: str) -> dict[str, object]:
     diffs = []
     for action, raw_path, body in operations:
         if action == "move":
-            source = _resolve(workspace, raw_path[0])
-            target = _resolve(workspace, raw_path[1])
+            source = resolve_path(workspace, raw_path[0])
+            target = resolve_path(workspace, raw_path[1])
             if source == target:
                 raise ValueError("move source and destination must differ")
             if target.exists() or target in writes:
@@ -91,7 +80,7 @@ def _v4a(workspace: Path, patch_text: str) -> dict[str, object]:
             modified.append(str(target))
             deleted.append(str(source))
             continue
-        path = _resolve(workspace, raw_path)
+        path = resolve_path(workspace, raw_path)
         if action == "add":
             if path.exists() or path in writes:
                 raise ValueError(f"file already exists: {raw_path}")
@@ -182,7 +171,7 @@ def create_tool(package_context):
             new_string: REQUIRED when mode='replace'. Replacement text. Pass empty string '' to delete the matched text.
             old_string: REQUIRED when mode='replace'. Exact text to find and replace. Must be unique in the file unless replace_all=true. Include surrounding context lines to ensure uniqueness.
             patch: REQUIRED when mode='patch'. V4A format patch content. Format: *** Begin Patch *** Update File: path/to/file @@ context hint @@ context line -removed line +added line *** End Patch
-            path: REQUIRED when mode='replace'. File path to edit.
+            path: REQUIRED when mode='replace'. File path to edit; a relative path resolves against the workspace.
             replace_all: Replace all occurrences instead of requiring a unique match (default: false)
         """
         arguments = {
@@ -215,16 +204,10 @@ def create_tool(package_context):
                 raise ValueError(
                     "old_string and new_string must be strings; old_string cannot be empty"
                 )
-            path = _resolve(package_context.workspace_root, arguments.get("path"))
+            path = resolve_path(package_context.workspace_root, arguments.get("path"))
             payload = await asyncio.to_thread(
                 _replace, path, old, new, bool(arguments.get("replace_all", False))
             )
-        except PermissionError as exc:
-            payload = {
-                "success": False,
-                "code": "path_outside_workspace",
-                "error": str(exc),
-            }
         except (OSError, TypeError, ValueError) as exc:
             payload = {"success": False, "code": "invalid_request", "error": str(exc)}
         return json.dumps(payload, ensure_ascii=False)

@@ -118,6 +118,12 @@ Web Console 的 Chat 与 Trajectory 读取同一个 Session 显示窗口。Traje
 耗时及 Token 汇总。切换视图不会创建新请求或复制持久数据；向前加载仍使用同一个
 `before_seq` 历史接口，实时追加仍来自 `/events/mux`。
 
+`POST /api/v1/security/agents/reconcile` 对账 Runtime 专家清单与 securityd 注册表。
+它只注销“安全里有、Runtime 里没有”的孤儿身份，不是清空接口：服务身份、显式
+`keep` 的 ID、仍有 Worker 在跑的 Agent 以及 `prefix` 命名空间之外的 Agent
+（默认 `com.bianbu.`，Hermes/DSH 等其它产品因此不受影响）都会保留并在结果里单列。
+请求默认 `dry_run: true`，真删前会先备份 `capabilities.db`，第一个失败即停止后续删除。
+
 标准聊天提交以 `message_id` 幂等：网络失败重试复用原 ID，用户主动再次发送时生成新 ID。
 服务端不公开 Run 创建或快照资源；`run_id` 仅作为 Session 事件中的内部执行关联标识。
 
@@ -129,7 +135,7 @@ Session 会删除其内部执行记录，并尽力
 清理 checkpoint。
 
 创建 Agent 时必须提供 `name` 和结构化的
-`model: {"provider":"...","name":"..."}`，还可提供 `name_zh`、`name_en`、`description`、
+`model: {"provider":"...","name":"...","effort":"low"}`，还可提供 `name_zh`、`name_en`、`description`、
 `description_zh`、`soul`、`tools`、`skills`、`mcps`、`plugins` 和 `metadata`。Runtime 为每个新 Agent 生成
 `com.bianbu.<12位随机十六进制>` ID；请求携带 `id` 会返回 `422 validation_error`。Agent 不再声明
 Hook：Hook 属于 Plugin，选择 Plugin 即激活它提供的 Hook，包括安全 Hook。Plugin
@@ -144,10 +150,18 @@ Hook：Hook 属于 Plugin，选择 Plugin 即激活它提供的 Hook，包括安
 `metadata.execution.requested_mode`（`host`/`sandbox`，默认 `host`）；旧
 `metadata.runtime.requested_mode` 和「按安全策略自动选择」的 `auto` 都已退休，写入返回 422。
 PATCH 省略 `model`
-表示保持不变，显式 `null` 会被拒绝。头像使用 `/agents/{agent_id}/avatar` 子资源，图片保存在对应 Agent
-目录中，并随 Agent 一起删除。响应还包含 `available` 和
+表示保持不变，显式 `null` 会清空模型选择。头像使用 `/agents/{agent_id}/avatar` 子资源，图片保存在对应 Agent
+目录中，并随 Agent 一起删除。APM 安装的专家把图片放在 `metadata.avatar` 指向的
+`assets/` 相对路径下，Runtime 在没有上传覆盖时直接提供该文件；Agent 包内的 APM 布局
+`plugins/<name>/apc-plugin.json` 与 `mcp/<name>.json` 也按私有能力加载，和原生
+`skills/`、`mcps/<name>/mcp.json`、`plugins/<name>/plugin.yaml` 并存。响应还包含 `available` 和
 `unavailable_reason`，以说明所选 Provider 是否存在且已配置。Run 使用 Session 所绑定 Agent 自己的 Provider、
 模型和 MCP 能力，不接受旧式平面模型覆盖。
+
+`model.effort` 表示模型推理强度，取值固定为 `off`、`low`、`high`、`max`，省略时按
+`low` 处理；其它值返回 `422 validation_error`。PATCH 只改 `provider`/`name` 而省略
+`effort` 时保留原值，显式给出才会替换。`off` 表示关闭 thinking；DeepSeek 端点会同时发送
+`thinking: {"type": "disabled"}`，其它 OpenAI-compatible 端点省略 `reasoning_effort`。
 
 ## 受控 Execution 生命周期
 
@@ -215,7 +229,7 @@ revoke 会停止该 Agent 的活动实例并撤销其租约，后续能否再次
 | `GET` | `/api/v1/agents/{agent_id}` | 获取 Agent |
 | `PATCH` | `/api/v1/agents/{agent_id}` | 部分更新 Agent |
 | `POST` | `/api/v1/agents/{agent_id}/restart` | 重建当前 Agent 的托管 Worker，应用已保存策略；有在途任务返回 409，启动失败返回 503 |
-| `DELETE` | `/api/v1/agents/{agent_id}` | 删除 Agent |
+| `DELETE` | `/api/v1/agents/{agent_id}` | 先注销 securityd 中的 Agent 身份，再删除本地声明；注销失败返回 503 并保留声明 |
 | `POST` | `/api/v1/agents/{agent_id}/avatar` | 上传或替换头像 |
 | `GET` | `/api/v1/agents/{agent_id}/avatar` | 获取头像二进制 |
 | `DELETE` | `/api/v1/agents/{agent_id}/avatar` | 删除头像文件 |
@@ -231,7 +245,7 @@ revoke 会停止该 Agent 的活动实例并撤销其租约，后续能否再次
   "description": "写作助理",
   "description_zh": "写作助理",
   "soul": "回答简洁准确",
-  "model": {"provider": "openai", "name": "gpt-5"},
+  "model": {"provider": "openai", "name": "gpt-5", "effort": "low"},
   "tools": [],
   "skills": [],
   "mcps": [],
@@ -240,7 +254,8 @@ revoke 会停止该 Agent 的活动实例并撤销其租约，后续能否再次
 }
 ```
 
-`id` 可省略，由服务生成。PATCH 只修改提交的字段，`model: null` 被拒绝。`name` 是调用名，
+`id` 可省略，由服务生成。PATCH 只修改提交的字段，省略 `model` 保持不变，显式
+`model: null` 会清空模型选择。`name` 是调用名，
 `name_zh`/`name_en` 是可选展示名（分别给简体中文和英文界面），客户端按自己的语言取值、
 为空时回退 `name`；`description`/`description_zh` 是同样的两份界面简介。`description` 只用于
 界面展示，不进入 LLM 上下文，模型行为提示只读取 `soul`。新的 Agent 记录写成
@@ -278,7 +293,13 @@ Agent 会清掉标记并恢复。出厂专家目录由 root 拥有且每次启�
 | `GET` | `/api/v1/sessions/{session_id}/events?from_seq=N` | 游标读：从 `N` 起返回未折叠的原始事件，页内 `seq` 连续；窄页增量补洞 |
 | `POST` | `/api/v1/sessions/{session_id}/attachments` | 上传附件到 Agent workspace（multipart：单文件 `file`，或 `files` + `relative_paths` 目录）；返回工作区相对路径 |
 | `GET` | `/api/v1/sessions/{session_id}/attachments/{name}` | 读回已存储的附件字节，供控制台预览 |
-| `GET` | `/api/v1/sessions/{session_id}/vision` | 回答该 Session 当前模型能否读图，供控制台决定是否提示 |
+| `GET` | `/api/v1/sessions/{session_id}/vision` | 回答该 Session 当前模型的读图能力声明（`state`：`supported`/`unsupported`/`unknown`），供控制台决定是否提示 |
+
+`/vision` 返回的 `available` 表示「是否值得尝试」而非「是否确定支持」：`state` 为
+`unknown`（模型未编目）时 `available` 仍为 `true`，让 Provider 自己决定，失败时由
+`read_image` 报告真实原因；只有 `state` 为 `unsupported` 的显式否定才返回
+`available: false` 与 `reason: MODEL_DOES_NOT_SUPPORT_IMAGES`。响应同时带 `known`，
+便于客户端区分「确定不支持」与「尚不清楚」。
 
 创建请求为 `{"agent_id":"实际专家ID","title":"新对话","metadata":{}}`；PATCH 请求为
 `{"title":"接口设计讨论"}`。Session 创建后固定绑定 Agent。原始事件以 Session 内连续
@@ -305,7 +326,7 @@ Agent 会清掉标记并恢复。出厂专家目录由 root 拥有且每次启�
 有效：`/history` 会把 `seq` 重写成折叠后的序号，收到 `from_seq` 直接返回 422。注意两种读
 法复用同一个 `has_more` 字段但方向相反：窗口读写的是「还有更早的历史」。
 
-#### 通过 API 发送消息并临时选择 Skill
+#### 通过 API 发送消息并选择 Skill
 
 这不是独立的“执行 Skill”接口，而是在正常的会话输入请求中附带 `skill_ids`。
 以下示例中的地址、专家 ID、技能 ID 和会话 ID 均须替换为实际值。
@@ -354,11 +375,11 @@ curl -i -X POST "$BASE_URL/api/v1/sessions/$SESSION_ID/prompt" \
 | `message_id` | 是 | 客户端生成的消息标识；同一条消息的重试必须复用，新消息使用新 ID |
 | `content` | 是 | 实际任务正文，不需要添加 `/skill` 指令 |
 | `attachments` | 否 | 附件信息；没有附件可省略或传 `[]` |
-| `skill_ids` | 否 | 临时选择的技能 ID 数组，可同时选择多个；省略或 `[]` 表示不额外选择技能，不会移除专家原有技能 |
+| `skill_ids` | 否 | 本次 Run 额外选择的技能 ID 数组，可同时选择多个；省略或 `[]` 表示不额外选择技能，不会移除专家原有技能 |
 
 `message_id` 长度为 1–128，只允许字母数字、点、下划线和连字符；`content` 长度为
 1–16,000。可选的 `skill_ids` 最多包含 100 个全局 Skill ID；ID 会去除首尾空白、按首次
-出现顺序去重，空 ID 返回 `422 validation_error`。这些 Skill 只临时加入处理该条输入的
+出现顺序去重，空 ID 返回 `422 validation_error`。这些 Skill 只加入处理该条输入的
 Run，不修改 Session 绑定的 Agent，也不扩大 Agent 的 Tool、MCP、Hook 或模型权限。若 Skill
 在执行前被删除或禁用，该 Run 以 `skill_unavailable` 失败，而不会静默忽略。
 
@@ -401,27 +422,30 @@ engine，而会等待活动 Run 结束后启动新 Run，以保证所选 Skill �
 `claimed`，并包含原 `message_id` 和当前内部执行标识。
 网络失败重试必须复用同一 `message_id`；相同内容返回原结果，不同内容返回
 `409 session_input_conflict`。重试时正文、附件和技能选择均应保持不变；修改技能选择也属于不同请求。
-参数格式不合法返回 `422`。所选 Skill 不永久绑定专家；下一条消息仍需额外选用时，再次传入 `skill_ids`。
+参数格式不合法返回 `422`。API 中 `skill_ids` 的作用域是单次 Run：所选 Skill 不永久绑定专家，
+下一条消息仍需额外选用时，再次传入 `skill_ids`。Web Console 会把选择保留在输入栏中，
+并在后续消息里自动继续发送，直到用户点击标签上的 `×` 取消。
 输入在 `agent/inbox/spliced` 持久化，claim 后才以
 `user/message` 进入对话历史。
 
 #### 在聊天界面使用 `/skill` 和 `@专家`
 
 这两个操作都在 Web Console 的聊天输入框中使用，不是终端里的 `bianbu-agent` 命令。
-`/skill` 用于“这次任务使用哪些技能”，`@专家` 用于“让哪个专家处理这段对话”。
+`/skill` 用于“当前对话启用哪些技能”，`@专家` 用于“让哪个专家处理这段对话”。
 
 **使用公共 Skill：**
 
 1. 在输入框单独输入 `/skill` 或 `/skills`，按 Enter 打开技能选择器；两者等价。
 2. 搜索技能名称、ID 或描述，点击选择一个或多个技能。列表来自当前 Runtime 已安装、启用且可选择的公共技能，
-   不是远程技能商店；即使当前专家的配置未包含该 Skill，也可以临时选择。
-3. 关闭选择器，输入实际任务，再点击发送。输入栏旁会显示已选技能标签；发送前可点击标签上的 `×` 取消选择。
+   不是远程技能商店；即使当前专家的配置未包含该 Skill，也可以选择。
+3. 关闭选择器，输入实际任务，再点击发送。输入栏旁会显示已选技能标签；点击标签上的 `×` 取消选择。
 
 例如：先输入 `/skill`，选择一个已安装的代码审查技能，再发送“请审查下面这段代码”。
 不需要把 `/skill 技能名` 拼在任务正文前，也不需要修改专家配置。
 
-选择只随下一条被服务端接受的消息发送，接受成功后标签自动清空；请求被拒绝或网络失败时保留选择，方便重试。
-它不会永久绑定到专家或后续消息，也不会扩大工具、MCP、Hook 或模型权限。
+选择一旦生效就会常驻在当前对话的输入栏中：之后每条消息都会携带同一组 `skill_ids`，直到用户点击标签上的
+`×` 手动取消。请求被拒绝或网络失败时同样保留选择，方便重试。切换会话或新建对话会清空输入栏中的技能选择。
+常驻只影响当前对话后续发送的 Run，不会写入专家配置，也不会扩大工具、MCP、Hook 或模型权限。
 如果已有任务运行，携带 Skill 的新输入会等待当前 Run 结束后执行；不会把技能插入正在运行的模型上下文。
 列表为空时，先确认该技能已经安装、启用且可被选择；执行前被删除或禁用的技能会报 `skill_unavailable`。
 
@@ -435,7 +459,7 @@ engine，而会等待活动 Run 结束后启动新 Run，以保证所选 Skill �
 Bibit 不存在或不可用时显示专家选择器。历史会话统一按更新时间排列，不按专家分组。
 
 - 选择当前会话的专家：继续使用原会话。
-- 选择其他专家：进入该专家的新对话草稿，保留输入文字、附件及临时 Skill；首次发送才创建新会话。
+- 选择其他专家：进入该专家的新对话草稿，保留输入文字、附件及已选 Skill；首次发送才创建新会话。
   原会话仍绑定原专家，不复制旧历史，也不会停止原来正在运行的任务。
 - 按 Esc：只关闭专家选择器；选择器关闭后，原有 Esc 停止任务快捷键才生效。
 
@@ -913,6 +937,7 @@ GET /api/v1/providers/{provider_id}/models
 GET /api/v1/runtime/maintenance
 GET /api/v1/runtime/status
 GET /api/v1/runtime/workers
+POST /api/v1/security/agents/reconcile
 DELETE /api/v1/security/agents/{agent_id}/syscall-policy
 GET /api/v1/security/agents/{agent_id}/syscall-policy
 POST /api/v1/security/agents/{agent_id}/syscall-policy

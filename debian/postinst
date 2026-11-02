@@ -15,9 +15,9 @@ warn() {
 # a plain chroot, a container, CI, a firmware build) have no running systemd
 # manager, no D-Bus and no securityd, so every step that needs the live system
 # belongs to the device-side start path instead: the Runtime units pull in
-# bianbu-agent-runtime-register.service, which grants the securityd membership,
-# materialises /run state and publishes the signed manifest.  Nothing below may
-# fail because the installing host is not a device.
+# bianbu-agent-runtime-register.service, which grants the securityd membership
+# and materialises /run state.  Nothing below may fail because the installing
+# host is not a device.
 ensure_runtime_user() {
     if ! getent group bianbu-runtime >/dev/null 2>&1; then
         addgroup --system bianbu-runtime >/dev/null 2>&1 \
@@ -147,13 +147,39 @@ EOF
 # upgrade.  A build host has no manager, so systemctl prints a diagnostic and
 # fails there; both are expected and stay invisible.
 activate_installed_units() {
+    previous_version=${1:-}
     systemctl daemon-reload >/dev/null 2>&1 || true
     # The system service must always be enabled so it comes up on first boot.
     # Before the device user exists it runs as the packaged bianbu-runtime
     # fallback; the first-boot registration path re-resolves the user and the
     # Runtime unit restarts with the real identity.
     systemctl enable bianbu-agent-runtime.service >/dev/null 2>&1 || true
-    systemctl start bianbu-agent-runtime.service >/dev/null 2>&1 || true
+    if [ -z "$previous_version" ]; then
+        # Only the first install resets the shipped Agents to the product
+        # default.  Reinstalls and upgrades keep whatever the operator chose
+        # in the Security console, exactly like a user-created Agent.
+        mark_package_first_install
+    fi
+    # A reinstall must actually run the new generation, not keep the already
+    # active process.  Security modes live in securityd and are not touched by
+    # the package transaction, so the restart preserves the operator's choice.
+    systemctl restart bianbu-agent-runtime.service >/dev/null 2>&1 || true
+    # A stopped or crashed Runtime must come back without an operator. The
+    # timer starts the unit again every few seconds; starting an already active
+    # unit is a no-op.
+    systemctl enable --now bianbu-agent-runtime-keepalive.timer >/dev/null 2>&1 || true
+}
+
+mark_package_first_install() {
+    marker=${BIANBU_POSTINST_FIRST_INSTALL_MARKER:-/run/agent-runtime/package-first-install}
+    directory=$(dirname "$marker")
+    # The marker is live state for the next service start.  A build host has
+    # no device user or bianbu group, so failing here is expected and harmless.
+    install -d -m 2770 -o root -g bianbu "$directory" >/dev/null 2>&1 || return 0
+    token=$(date +%s)-$$
+    printf '%s\n' "$token" >"$marker" 2>/dev/null || return 0
+    chgrp bianbu "$marker" >/dev/null 2>&1 || true
+    chmod 0640 "$marker" >/dev/null 2>&1 || true
 }
 
 # 包不再往桌面放图标，旧版本自动装过的那份副本在 configure 时清掉。升级时跑的
@@ -170,7 +196,7 @@ if [ "$1" = configure ]; then
     ensure_runtime_admin_token
     configure_system_service_user
     cleanup_retired_desktop_icon
-    activate_installed_units
+    activate_installed_units "${2:-}"
 fi
 
 #DEBHELPER#

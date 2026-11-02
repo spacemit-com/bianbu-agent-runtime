@@ -30,7 +30,9 @@ from bianbu_agent.models.vision import (
     IMAGE_UNSUPPORTED_MESSAGE_EN,
     MAX_IMAGE_BYTES,
     MODEL_DOES_NOT_SUPPORT_IMAGES,
+    ImageSupport,
     image_input_available,
+    image_support,
     sniff_image_media_type,
 )
 from bianbu_agent.sessions.attachments import (
@@ -79,12 +81,27 @@ async def _selected_model(runtime, session_id: str) -> AgentModel | None:
     return selected if isinstance(selected, AgentModel) else None
 
 
-async def session_image_input_available(runtime, session_id: str) -> bool:
-    """Whether any configured model could read an image for this session.
+async def session_image_support_state(runtime, session_id: str) -> ImageSupport:
+    """What is declared about image input for this session's model.
 
-    The console asks this to *warn* the user before an image is sent; a
+    ``UNKNOWN`` is a real answer, not a failure: it means no declaration covers
+    the model, so the console may offer images and let the endpoint decide.
+    Only an explicit negative disables the affordance.
+    """
+
+    selected = await _selected_model(runtime, session_id)
+    if selected is None:
+        return ImageSupport.UNKNOWN
+    return image_support(selected.name)
+
+
+async def session_image_input_available(runtime, session_id: str) -> bool:
+    """Whether an image may be offered for this session.
+
+    The console asks this to *warn* the user before an image is sent, and a
     malformed ``capability-vision`` record must not take the whole console
-    down, so a probing failure reads as "unavailable".
+    down.  Unknown counts as available: attempting is cheap and reversible,
+    while hiding a working capability is neither.
     """
 
     selected = await _selected_model(runtime, session_id)
@@ -217,15 +234,19 @@ async def session_vision(session_id: str, request: Request) -> JSONResponse:
     runtime = request.app.state.runtime
     await runtime.sessions.get(session_id)
     selected = await _selected_model(runtime, session_id)
+    state = await session_image_support_state(runtime, session_id)
     available = await session_image_input_available(runtime, session_id)
+    unsupported = state is ImageSupport.UNSUPPORTED and not available
     return success(
         {
             "available": available,
+            "known": state.is_known,
+            "state": state.value,
             "provider": selected.provider if selected is not None else "",
             "model": selected.name if selected is not None else "",
-            "reason": "" if available else MODEL_DOES_NOT_SUPPORT_IMAGES,
-            "message": "" if available else IMAGE_UNSUPPORTED_MESSAGE,
-            "message_en": "" if available else IMAGE_UNSUPPORTED_MESSAGE_EN,
+            "reason": MODEL_DOES_NOT_SUPPORT_IMAGES if unsupported else "",
+            "message": IMAGE_UNSUPPORTED_MESSAGE if unsupported else "",
+            "message_en": IMAGE_UNSUPPORTED_MESSAGE_EN if unsupported else "",
         }
     )
 
@@ -263,4 +284,8 @@ async def read_attachment(session_id: str, name: str, request: Request) -> Respo
     )
 
 
-__all__ = ["router", "session_image_input_available"]
+__all__ = [
+    "router",
+    "session_image_input_available",
+    "session_image_support_state",
+]

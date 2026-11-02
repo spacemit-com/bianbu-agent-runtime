@@ -27,5 +27,5 @@ def test_sdk_exposes_framework_neutral_api_and_engine_packages() -> None:
 
     long_qualified = "vendor." + "namespace." * 10 + "/" + "tool_" * 20
     long_encoded = encode_tool_name(long_qualified)
-    assert len(long_encoded) <= 64
+    assert len(long_encoded) <= 128
     assert decode_tool_name(long_encoded) == long_qualified

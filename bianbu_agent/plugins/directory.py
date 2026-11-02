@@ -27,8 +27,13 @@ class DirectoryPackagePlugin:
         self._workspace = Path(workspace).expanduser().resolve()
         self.stopped = False
         self._command_snapshot = None
+        from bianbu_agent.hooks.resident import CommandProcessPool
         from bianbu_agent.hooks.state import CommandSessionState
         self._command_state = CommandSessionState()
+        # Owned by this Plugin instance, which is owned by one generation:
+        # a reload retires the instance and with it every resident Hook
+        # process started from the previous content.
+        self._command_processes = CommandProcessPool()
 
     async def setup(self, context: PluginContext) -> None:
         if context.plugin_id != self.manifest.id:
@@ -100,6 +105,7 @@ class DirectoryPackagePlugin:
                         data_root=context.data_dir,
                         owner_plugin_id=self.manifest.id,
                         command_state=self._command_state,
+                        command_processes=self._command_processes,
                         services=services,
                     ),
                 )
@@ -130,6 +136,7 @@ class DirectoryPackagePlugin:
     async def stop(self) -> None:
         self.stopped = True
         self._command_state.clear()
+        await self._command_processes.close()
         if self._command_snapshot is not None:
             self._command_snapshot.cleanup()
             self._command_snapshot = None

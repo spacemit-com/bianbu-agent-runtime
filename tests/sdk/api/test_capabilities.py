@@ -99,6 +99,8 @@ async def test_effective_capability_catalog_includes_hot_loaded_packages(
             "enabled": True,
             "assignable": True,
             "preset": False,
+            "private": False,
+            "owner_agent_id": None,
             "unavailable_reason": "",
     }
     assert set(BUILTIN_MODULES) <= set(tool_by_id), "builtin Tools stay listed"
@@ -129,6 +131,8 @@ async def test_effective_capability_catalog_includes_hot_loaded_packages(
             "enabled": True,
             "assignable": True,
             "preset": False,
+            "private": False,
+            "owner_agent_id": None,
             "unavailable_reason": "",
         },
     ]
@@ -156,6 +160,8 @@ async def test_effective_capability_catalog_includes_hot_loaded_packages(
             "enabled": True,
             "assignable": False,
             "preset": False,
+            "private": False,
+            "owner_agent_id": None,
             "unavailable_reason": "",
         },
     ]

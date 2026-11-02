@@ -12,7 +12,11 @@ from typing import Any
 import yaml
 
 from bianbu_agent._internal.yaml_documents import StrictSafeLoader
-from bianbu_agent.agents import AgentModel, AgentSpec
+from bianbu_agent.agents import (
+    AgentModel,
+    AgentSpec,
+    DEFAULT_MODEL_REASONING_EFFORT,
+)
 
 
 _AGENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -144,11 +148,17 @@ class AgentManifest:
         permissions = _thaw_permissions(agent.get("permissions", {}))
         model_value = agent.get("model")
         if isinstance(model_value, Mapping):
-            if set(model_value) != {"provider", "name"}:
+            unknown_model = set(model_value) - {"provider", "name", "effort"}
+            if unknown_model:
+                raise ValueError("agent.model contains unsupported fields")
+            if "provider" not in model_value or "name" not in model_value:
                 raise ValueError("agent.model must contain provider and name")
             model: AgentModel | None = AgentModel(
                 provider=model_value["provider"],
                 name=model_value["name"],
+                effort=model_value.get(
+                    "effort", DEFAULT_MODEL_REASONING_EFFORT,
+                ),
             )
         elif isinstance(model_value, str):
             raise ValueError("agent.model must be a mapping or null")
@@ -195,6 +205,7 @@ class AgentManifest:
                         {
                             "provider": spec.model.provider,
                             "name": spec.model.name,
+                            "effort": spec.model.effort,
                         }
                         if isinstance(spec.model, AgentModel)
                         else None

@@ -4,14 +4,13 @@ from pathlib import Path
 
 import asyncio
 from dataclasses import dataclass
+import importlib.util
 import logging
 import os
 import re
+import sys
 import uuid
 from typing import Mapping
-
-import httpx
-
 
 
 logger = logging.getLogger(__name__)
@@ -109,6 +108,25 @@ class _ServiceOutcome:
     route: str
     reason: str
     metadata: Mapping[str, object]
+    confirmation: Mapping[str, object] | None = None
+
+
+def _edge_http():
+    """加载插件自己的回环 HTTP 客户端（``lib/edge_http.py``）。
+
+    按文件路径加载：不依赖进程 cwd/sys.path，也不改动宿主模块解析——Hook 在测试里
+    是被进程内导入的。
+    """
+
+    name = "bianbu_bibit_intent_edge_http"
+    module = sys.modules.get(name)
+    if module is None:
+        path = Path(__file__).resolve().parents[1] / "lib" / "edge_http.py"
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return module
 
 
 class _ServiceClient:
@@ -119,23 +137,25 @@ class _ServiceClient:
         self._timeout = timeout
 
     async def run(self, prompt: str, session_id: str, run_id: str) -> _ServiceOutcome:
+        edge_http = _edge_http()
         # Connecting to the local service must not consume its execution budget.
         # A submitted request keeps the full read timeout before the Runtime
         # model takes over; the Hook never decides routing from the error type.
-        timeout = httpx.Timeout(self._timeout, connect=min(5.0, self._timeout))
-        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
-            response = await client.post(
-                f"{self._base_url}/v1/runs",
-                json={
-                    "run_id": run_id,
-                    "session_id": session_id,
-                    "prompt": prompt,
-                    "timeout_ms": 90000,
-                    "stream": False,
-                },
-            )
-        response.raise_for_status()
-        payload = response.json()
+        client = edge_http.Client(
+            base_url=self._base_url, connect_timeout=min(5.0, self._timeout)
+        )
+        response = await client.apost_json(
+            "/v1/runs",
+            {
+                "run_id": run_id,
+                "session_id": session_id,
+                "prompt": prompt,
+                "timeout_ms": 90000,
+                "stream": False,
+            },
+            read_timeout=self._timeout,
+        )
+        payload = response.payload
         if not isinstance(payload, dict):
             raise ValueError("Bibit service response must be a JSON object")
         metadata = payload.get("metadata", {})
@@ -149,13 +169,18 @@ class _ServiceClient:
             route=str(payload.get("route", "")),
             reason=str(payload.get("reason", "")),
             metadata=metadata,
+            confirmation=payload.get("confirmation"),
         )
 
     async def cancel(self, run_id: str) -> None:
-        async with httpx.AsyncClient(timeout=2.0, trust_env=False) as client:
-            response = await client.delete(f"{self._base_url}/v1/runs/{run_id}")
-            if response.status_code != 404:
-                response.raise_for_status()
+        edge_http = _edge_http()
+        client = edge_http.Client(base_url=self._base_url, connect_timeout=2.0)
+        try:
+            await client.adelete(edge_http.run_path(run_id), read_timeout=2.0)
+        except edge_http.UnexpectedStatus as exc:
+            if exc.status != 404:
+                raise
+
 
 def _metadata(outcome) -> dict[str, object]:
     metadata = {
@@ -170,6 +195,7 @@ def _metadata(outcome) -> dict[str, object]:
 
 
 async def before_run(run: dict) -> dict | None:
+    edge_http = _edge_http()
     service_client = _ServiceClient(
         base_url=os.environ.get("BIBIT_INTENT_BASE_URL", "http://127.0.0.1:8765"),
         timeout=110.0,
@@ -185,8 +211,10 @@ async def before_run(run: dict) -> dict | None:
         outcome = await service_client.run(run["request"], run["session_id"], run_id)
     except (Exception, asyncio.CancelledError) as exc:
         # 端侧服务不可用时一律交给云端；已提交的请求先尽力停掉，避免重复执行。
-        error_type = type(exc).__name__
-        submitted = not isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
+        # 建连失败说明请求根本没发出去，才不必停。
+        not_sent = isinstance(exc, edge_http.RequestNotSent)
+        error_type = type(exc.cause).__name__ if not_sent else type(exc).__name__
+        submitted = not not_sent
         logger.warning(
             "Bibit service unavailable (%s); falling back to the Runtime model",
             error_type,
@@ -208,6 +236,11 @@ async def before_run(run: dict) -> dict | None:
 
     metadata = _metadata(outcome)
     reply = str(outcome.reply).strip()
+    confirmation = getattr(outcome, "confirmation", None)
+    if confirmation is not None:
+        if not isinstance(confirmation, dict) or confirmation.get("kind") != "disable_ntp_and_set_time":
+            return dict(direct_reply="时间修改确认无效，本次未继续执行。", metadata={"reason": "invalid_time_confirmation"})
+        return dict(direct_reply=reply or "需要确认关闭自动校时。", metadata=metadata, approval=dict(confirmation))
     if outcome.handled:
         if not reply:
             reply = "端侧请求已处理。"
@@ -219,4 +252,4 @@ async def before_run(run: dict) -> dict | None:
 if __name__ == "__main__":
     from protocol import main
 
-    main(before_run)
+    main(before_run, warmup=_edge_http)

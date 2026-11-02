@@ -61,6 +61,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--soul", default=None, help="专家行为与边界（新建必填）")
     parser.add_argument("--provider", default=None, help="新建必填；更新时与 --model 成对")
     parser.add_argument("--model", default=None, help="新建必填；更新时与 --provider 成对")
+    parser.add_argument(
+        "--effort",
+        choices=("off", "low", "high", "max"),
+        default=None,
+        help="推理强度（新建默认 low；更新时只有给出才改）",
+    )
     parser.add_argument("--tool", action="append", default=None)
     parser.add_argument("--skill", action="append", default=None)
     parser.add_argument("--mcp", action="append", default=None)
@@ -148,13 +154,19 @@ def _payload(arguments: argparse.Namespace) -> dict:
 def _model(arguments: argparse.Namespace, *, required: bool) -> dict | None:
     provider = (arguments.provider or "").strip()
     model = (arguments.model or "").strip()
+    effort = arguments.effort
     if not provider and not model:
+        if effort is not None:
+            raise ValueError("--effort 需要与 --provider 和 --model 一起使用")
         if required:
             raise ValueError("新建专家需要 --provider 和 --model")
         return None
     if not provider or not model:
         raise ValueError("--provider 和 --model 必须成对给出")
-    return {"provider": provider, "name": model}
+    selected = {"provider": provider, "name": model}
+    if effort is not None:
+        selected["effort"] = effort
+    return selected
 
 
 def _update_payload(arguments: argparse.Namespace) -> dict:

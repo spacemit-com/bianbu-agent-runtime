@@ -1,65 +1,134 @@
 # Bianbu Agent Runtime
 
-Bianbu Agent Runtime 是一个由 YAML 配置驱动的 Agent 服务，也是 Bianbu AgentOS 的运行时
-核心。它负责会话、Agent 生命周期、模型调用、Tool 与插件执行，以及安全边界。
+English | [简体中文](README_cn.md)
 
-- **会话即事件流**：Session 历史是一份连续 `seq` 的事件日志，刷新、切换会话和多端观看
-  得到同一份投影，切换页面不会中断后台 Run。
-- **可插拔**：Plugin 可贡献 Tool、Skill、Hook、MCP Server 和 Console 页面。
-- **安全边界**：Tool 审批、per-Agent 能力同步、securityd 签名清单，生产模式 fail-closed。
-- **模型即配置**：Provider 只保存连接信息，模型名写在每个 Agent 自己的 `agent.yaml` 里。
-- **面向端侧**：目前只支持在 SpacemiT K3（riscv64）上运行。
+Bianbu Agent Runtime is a YAML-configured agent service and the runtime core of
+Bianbu AgentOS. It owns sessions, agent lifecycle, model calls, tool and plugin
+execution, and the security boundary around them.
 
-## 文档
+- **Sessions are event logs.** A session is one continuous `seq` log. Refreshing,
+  switching sessions and watching from several clients all project the same
+  history, and switching pages never stops a background run.
+- **Pluggable.** Plugins contribute tools, skills, hooks, MCP servers and console
+  pages.
+- **Secure by construction.** Tool approval, per-agent capability sync, the
+  securityd trust chain and fail-closed production mode are built in.
+- **Models are configuration.** A provider stores connection details only; the
+  model name lives in each agent's own `agent.yaml`.
+- **Built for the edge.** The current release targets SpacemiT K3 (riscv64).
 
-| 文档 | 内容 |
+## Documentation
+
+| Document | Contents |
 | --- | --- |
-| [HTTP API 指南](docs/api-guide.md) | `/api/v1` 路由索引、错误码、会话与事件流语义 |
-| [CLI 使用指南](docs/cli-guide.md) | `bianbu-agent` 命令行与资源管理 |
-| [插件开发指南](docs/plugin-development-guide.md) | Plugin 目录结构、Hook/Tool 调用身份与能力加载 |
-| [概要设计](docs/overview-guide.md) · [参考图册](docs/refs/README.md) | 分层、进程模型与关键设计决策 |
+| [HTTP API guide](docs/api-guide.md) | `/api/v1` routes, error codes, session and event-stream semantics |
+| [CLI guide](docs/cli-guide.md) | `bianbu-agent` commands and resource management |
+| [Plugin development guide](docs/plugin-development-guide.md) | Plugin layout, hook/tool identity and capability loading |
+| [Architecture overview](docs/overview-guide.md) | Layering, process model and key design decisions |
+| [Security plugin](docs/security-plugin.md) | How `bianbu.security` maps runtime hooks to securityd |
+| [DeepSeek Harness notes](docs/deepseek-harness-notes.md) | Behaviour mirrored from DeepSeek Harness, with source evidence |
 
-## 快速开始
+## Architecture
 
-> **运行平台**：当前版本只支持在 SpacemiT K3（riscv64，Bianbu 4.0）上运行，其余平台尚未验证；
-> 下面的命令和 `scripts/dev-provision.sh` 都假定目标设备就是 K3。
+### Processes
 
-### 1. 准备环境（一次性）
+```
+bianbu-agent-runtime.service            (one per device, starts at boot)
+└─ Control plane (FastAPI, /api/v1, WS /api/v1/events/*)
+   ├─ Sessions, runs, events, files, SQLite stores
+   ├─ Agent and resource inventory
+   ├─ WorkerSupervisor ──► Worker per agent
+   │                         ├─ models, tools, MCP, skills
+   │                         ├─ PluginGeneration (including bianbu.security)
+   │                         └─ security middleware (DLP / approval / deny)
+   └─ SecurityRuntimeClient ──► securityd (prepare/commit/abort start, leases)
+```
+
+- **Control plane**: holds session, agent and resource state, serves HTTP and
+  WebSocket APIs, and manages worker lifetimes.
+- **Worker**: executes runs. Model calls, tools and hooks all happen here, so a
+  run never blocks the control plane.
+- **Execution mode**: an agent declares `host` or `sandbox`; securityd resolves
+  the effective mode and issues the launch lease.
+- **File-backed resources**: configuration, plugins, models and sessions are
+  ordinary files under `data_dir`, readable and versionable without a database.
+
+### Source layout
+
+| Path | Responsibility |
+| --- | --- |
+| `bianbu_agent/api/` | `/api/v1` routers: agents, sessions, runs, security, packages, monitoring |
+| `bianbu_agent/server/` | Composition root, runtime bootstrap, worker supervision |
+| `bianbu_agent/sessions/` | Session log, projections, SQLite and JSON stores |
+| `bianbu_agent/runs/` | Run manager, worker RPC, checkpoints |
+| `bianbu_agent/engines/` | `AgentEngine` contract and the default LangGraph implementation |
+| `bianbu_agent/tools/` | Built-in tools (files, processes, skills, web, browser, vision, kanban) |
+| `bianbu_agent/plugins/` | Plugin host and contribution loading |
+| `bianbu_agent/hooks/` | Hook protocol, command hooks, failure handling |
+| `bianbu_agent/mcp/` | MCP server installation, health and credentials |
+| `bianbu_agent/security/` | securityd client, middleware, sandbox, DLP, syscall policy |
+| `bianbu_agent/console/web/` | Bundled web console assets |
+| `bianbu_agent/cli/` | `bianbu-agent` command line |
+| `resources/` | Starter agent, system plugins, models and MCP definitions shipped by the package |
+| `debian/` | Debian packaging, systemd units, polkit and provisioning scripts |
+
+### Sessions, runs and events
+
+Session history uses a persistent event log plus client-side folding. JSON and
+SQLite run stores write user messages, reasoning, text deltas, tools, approvals,
+the session inbox and the run terminal state into one `seq` log per session.
+`GET /api/v1/sessions/{id}/events` paginates history, `WS /api/v1/events/mux`
+pushes committed events for every session, and `WS /api/v1/events/host` pushes
+the session list and run state. Clients de-duplicate by `seq` and refetch the
+authoritative history after a gap.
+
+The console keeps one view model per session and projects the same event window
+into Chat and Trajectory. Chat is for reading the conversation; Trajectory shows
+user input, reasoning, assistant output, tools, approvals, context compaction and
+terminal state per run, with search, raw input/output, durations and token
+totals. Both views share history pagination and the live mux; there is no second
+trajectory store.
+
+## Quick start
+
+> **Platform:** the current release only supports SpacemiT K3 (riscv64, Bianbu
+> 4.0). Other platforms are untested, and the commands below plus
+> `scripts/dev-provision.sh` assume that device.
+
+### 1. Prepare the environment (once)
 
 ```bash
-git clone <仓库地址> bianbu-agent-runtime
+git clone <repository-url> bianbu-agent-runtime
 cd bianbu-agent-runtime
 ./scripts/dev-provision.sh
 ```
 
-`dev-provision.sh` 是幂等的，只准备环境、不启动 Runtime：
+`dev-provision.sh` is idempotent and only prepares the environment; it does not
+start the runtime. It installs or upgrades dependencies from APT (matching
+`debian/control`), installs `uv` when missing, adds the current user to the
+`bianbu-agent` and `bianbu-security` groups, starts securityd and memoryd and
+waits for their sockets, and prepares SearXNG and local model permissions.
 
-- 通过 APT 安装/升级运行时依赖（与 `debian/control` 的 `Depends` 对齐）；
-- 安装 `uv`（缺失时装到 `~/.local/bin`）；
-- 把当前用户加入 `bianbu-agent`、`bianbu-security` 组；
-- 拉起 `securityd`、`memoryd` 并等待 socket 就绪；
-- 准备 SearXNG 与本地模型记录的权限。
+The script needs `sudo`. For non-interactive use (CI, remote SSH) pass a password
+through `SUDO_ASKPASS`. Group membership takes effect after a new login or a new
+terminal.
 
-脚本需要 `sudo`；非交互场景（CI、远程 ssh）可通过 `SUDO_ASKPASS` 传入密码。加组要重新
-登录（或重开终端）后生效。
-
-### 2. 启动
+### 2. Start it
 
 ```bash
 ./run.sh
 ```
 
-`run.sh` 只做两件事——准备开发配置，然后 `exec` 源码 Runtime：
+`run.sh` only prepares the development configuration and then `exec`s the
+source runtime: it exports development defaults, merges
+`config/development.yaml` with the development self-signed security manifest into
+`.bianbu-agent/config-all.yaml`, provisions the starter agent, registers the
+development security identity (both need `sudo`), stops an installed service
+holding the same port, and starts the runtime from the source tree.
 
-- 铺开开发默认环境变量（下面每一项都能用同名环境变量覆盖）；
-- 把 `config/development.yaml` 与开发自签安全清单合并成
-  `.bianbu-agent/config-all.yaml`；
-- 生成 Starter Agent，并注册开发自签安全身份（这一步需要 `sudo`）；
-- 停掉占用同一端口的已安装系统服务，然后在源码目录里拉起 Runtime。
+Open <http://localhost:9899/chat> for the console.
 
-浏览器打开 <http://localhost:9899/chat> 进入控制台。
-
-### 3. 手动启动（不使用脚本）
+### 3. Start manually
 
 ```bash
 uv sync --locked
@@ -68,81 +137,19 @@ uv run bianbu-agent --config config/development.yaml model bootstrap-chat
 uv run --locked bianbu-agent --config config/development.yaml
 ```
 
-`model bootstrap-chat` 会交互式询问 Provider 连接信息和模型名并写入本地数据目录；已配置
-时直接退出。Runtime 会生成 `com.bianbu.<12 位随机十六进制>` 形式的 Agent ID，并在命令
-输出里返回；任何 Agent 都可以删除。
+`model bootstrap-chat` interactively asks for provider connection details and a
+model name, then writes them to the local data directory. It exits immediately
+when a configuration already exists. The runtime generates agent ids of the form
+`com.bianbu.<12 hex characters>` and prints them; every agent can be deleted.
 
-项目源码和 Linux riscv64 上的 SpacemiT wheel 统一使用 Python 3.14，仓库根的
-`.python-version` 让 `uv` 自动选择，依赖由提交的 `uv.lock` 严格锁定。
+Source builds and SpacemiT wheels on Linux riscv64 both use Python 3.14. The
+repository's `.python-version` makes `uv` select it, and `uv.lock` pins every
+dependency.
 
-## 架构
+## Configuration
 
-### 分层与进程模型
-
-- **控制面 Runtime**：FastAPI 服务，持有 Session、Agent 和资源状态，对外提供
-  `/api/v1` HTTP 接口与 `WS /api/v1/events/*` 事件流，并管理 Worker 生命周期。
-- **Worker**：Run 在 Worker 中执行，模型调用、Tool、Hook 都在 Worker 侧完成。
-- **执行模式**：Agent 只声明 `host` 与 `sandbox` 两种执行模式，开发默认 `host`。
-- **资源文件化**：配置、插件、模型和会话都是 `data_dir` 下的普通文件，可直接读写和版本化。
-
-### 会话事件与并行状态
-
-会话历史采用「持久事件日志 + 客户端折叠」原则：JSON 与 SQLite RunStore 会把用户消息、
-推理、文本增量、Tool、审批、Session inbox 和 Run 终态同步写入每个 Session 独立的连续
-`seq` 日志。`GET /api/v1/sessions/{id}/events` 用于分页回放，
-`WS /api/v1/events/mux` 在一条连接上推送所有 Session 的已提交事件，
-`WS /api/v1/events/host` 推送会话列表与运行状态。客户端按 `seq` 去重，发现缺口后重新拉取
-权威历史。
-
-控制台为每个 Session 保留独立的 ViewModel，同一事件窗口同时消费历史和实时事件，并分别
-投影成 Chat 与 Trajectory。Chat 面向对话阅读；Trajectory 按 Run 轮次展示用户输入、推理、
-助手输出、Tool、审批、上下文压缩和终态，可搜索记录、查看原始输入/输出、耗时与 Token 汇总。
-两个视图共用历史向前分页和实时 mux，不维护第二份轨迹存储。会话列表返回并展示
-`running`、`waiting`、`failed`、`completed_unread`、`active_run_id` 和 `pending_interaction`，
-因此切换页面不会停止后台任务，未选中会话完成后也会显示提醒。浏览器不连接单个 Run，也不在
-切换会话时重连，所以刷新和切换得到相同投影。
-
-## 安全
-
-### Tool 审批
-
-Tool 元数据声明 `requires_approval=true` 时，该 Tool 每次执行前都会等待用户批准。除此之外，
-Runtime 会动态检查 `terminal` 的命令参数：只要检测到独立的 `rm` 命令词（包括脚本、heredoc、
-包装器和子 Shell 中的 `rm`）就强制触发 approval，批准前不会执行终端 Tool。
-
-### Agent 安全生命周期
-
-Runtime 会把逻辑 Agent（默认 Agent、API 创建的专家以及导入的 `.agent` 包）在持久化后注册
-到 securityd，并在 Worker 启动前用 Agent 声明的 `permissions.capabilities`、tools、skills、
-MCP 和 hooks 做一次替换式能力同步。这条逻辑身份注册不要求每个 Agent 都具备 signed Runtime
-manifest；旧的受控 Worker lease 仍可由生产部署单独启用。
-
-`./run.sh` 面向开发态，默认 `BIANBU_SECURITY=1`、`BIANBU_RUNTIME_SECURITY=required`、
-`BIANBU_SANDBOX=off`，并且不给 Worker 施加 cgroup `MemoryMax`/`CPUQuota`：单板设备上没有
-需要保护的其它租户，长会话却可能被固定限额杀掉。需要复现限额时显式给一个值即可，例如
-`BIANBU_WORKER_MEMORY_MAX=2G ./run.sh`。要测试旧的受控 sandbox lease，显式设置
-`BIANBU_SANDBOX=agent`。
-
-生产环境应由受信 Runtime Manager 启动，并把 `BIANBU_RUNTIME_MODE=production` 与
-`BIANBU_RUNTIME_SECURITY=required` 配置为 fail-closed；`./run.sh` 会拒绝裸启动生产模式。
-
-管理员可在 Agent 的 Security/能力页开启 per-Agent YOLO 模式：所有当前、未知和未来的
-capability/scope 会免确认放行，但 caller validation、sandbox、网络策略、DLP、审计和
-securityd fail-closed 保持启用。模式由 securityd 权威保存，关闭后恢复原粒度授权；不要用
-环境变量或 Agent 配置模拟 YOLO。
-
-### 部署提示
-
-插件是宿主进程内的可信 Python 代码，不是操作系统沙箱。真实凭据和运行数据不应提交到版本
-控制。当前版本在开发模式和 Debian 包生产模式中都暂时禁用了 Web/管理 API 的管理员 Token
-门禁，Web Console 不需要手动输入 Token；服务只应部署在受信任网络，暴露到公网前必须在反向
-代理或网关增加认证、TLS 和访问控制。stdio MCP Server 同样会以服务用户身份启动子进程，
-因此只应安装可信配置和程序。
-
-## 模型与 Agent 配置
-
-后端全局只保存服务商连接信息和凭据，具体模型名不建立全局记录，而是直接写入每个 Agent 的
-`agent.yaml`：
+Only provider connection details are stored globally. The model name is written
+into each agent's `agent.yaml`:
 
 ```text
 models/
@@ -155,26 +162,34 @@ agents/writer/agent.yaml:
   model:
     provider: openai
     name: gpt-5
+    effort: low
 ```
 
-运行时严格按 Agent 保存的 `provider + name` 解析，不存在全局默认服务商或默认模型。
-`provider.yaml` 使用 `0600` 权限，因为其中可能包含 API Key。
+The runtime resolves exactly the `provider + name` stored on the agent; there is
+no global default provider or model. `effort` is stored with that model
+selection and accepts `off`, `low`, `high` or `max`; omitting it means `low`.
+`provider.yaml` is mode `0600` because it may contain an API key.
 
-Agent 配置里 `name` 是调用名，`name_zh`/`name_en` 是 Console 与 Bibit 各自语言下的展示名，
-`description`/`description_zh` 是对应的界面简介；展示字段为空时回退到 `name`。
-`description` 不进入 LLM 上下文，模型行为由 `soul` 定义。新的 `agent.yaml` 写成
-`schema_version: 2`（与 AgentHub 的 Power 格式 v2 一致），版本 1 的记录仍可读取。Agent HTTP
-API 同样使用这些字段和 `soul`，不再接受旧的 `instructions` 字段。
+In an agent configuration, `name` is the call-facing name, while `name_zh` /
+`name_en` are display names for the console and Bibit in their respective
+languages; `description` / `description_zh` are the matching UI summaries and
+fall back to `name` when empty. `description` never enters the LLM context; model
+behaviour is defined by `soul`. New `agent.yaml` files use `schema_version: 2`,
+matching AgentHub's Power format v2; version 1 records remain readable. The agent
+HTTP API uses the same fields and `soul`, and no longer accepts the old
+`instructions` field.
 
-## 数据目录
+### Data directory
 
-`data_dir` 下可包含 `agents/`、`models/`、`sessions/`、`skills/`、`mcps/`、`plugins/`、
-`workspace/` 和 `logs/`；`skills/`、`mcps/`、`plugins/` 等扩展根由写入它们的 manager 按需
-创建。独立 MCP 位于 `mcps/<mcp-id>/`。默认插件位于 `plugins/<plugin-id>/`，可贡献 Hook、
-Tool、Skill、Console，以及 `mcps/<name>/` 下的多个 MCP Server。
+`data_dir` can contain `agents/`, `models/`, `sessions/`, `skills/`, `mcps/`,
+`plugins/`, `workspace/` and `logs/`. Extension roots such as `skills/`, `mcps/`
+and `plugins/` are created on demand by the managers that write them. A
+standalone MCP lives in `mcps/<mcp-id>/`; a bundled plugin lives in
+`plugins/<plugin-id>/` and may contribute hooks, tools, skills, console pages and
+several MCP servers under `mcps/<name>/`.
 
-服务与资源管理命令使用显式 `--config`；项目开发命令会依次查找项目内 `runtime.yaml` 和
-`BIANBU_AGENT_CONFIG`：
+Service and resource commands take an explicit `--config`. Development commands
+resolve `runtime.yaml` in the project, then `BIANBU_AGENT_CONFIG`:
 
 ```yaml
 data_dir: .
@@ -185,82 +200,156 @@ service:
   port: 9899
 ```
 
-相对 `data_dir` 以配置文件所在目录为基准，`~` 会展开，因此配置可以放在
-`~/.bianbu-agent/config.yaml`、项目目录或任意其它位置。Runtime 没有全局默认 Agent，
-每个 Session 都显式记录使用的 Agent ID。HTTP 调用仅使用 `/api/v1`。
+A relative `data_dir` is resolved against the configuration file's directory and
+`~` expands, so the configuration can live in `~/.bianbu-agent/config.yaml`, a
+project directory or anywhere else. The runtime has no global default agent;
+every session records the agent id it uses. HTTP access uses `/api/v1` only.
 
-## 本地资源管理
+## Security boundary
 
-`bianbu-agent` 直接读写资源文件，不启动 Worker 或加载执行框架：
+### Tool approval
 
-```bash
-bianbu-agent --help
-bianbu-agent agent create Writer --provider my-provider --model my-model
-bianbu-agent agent list
-bianbu-agent skill install /路径/example.skill
-bianbu-agent plugin effective
-bianbu-agent session create session-001 --agent com.bianbu.实际ID
-```
+When a tool declares `requires_approval=true`, every execution waits for user
+approval. The runtime also inspects `terminal` command arguments: a standalone
+`rm` command word, including inside scripts, heredocs, wrappers and subshells,
+forces approval before anything executes.
 
-内置工具源码按职责组织在 `bianbu_agent/tools/`，用户工具目录仅用于扩展。
+### Agent security lifecycle
 
-## 安装 MCP Server
+After an agent is persisted (the default agent, API-created experts and imported
+`.agent` packages), the runtime registers it with securityd and replaces its
+capabilities, tools, skills, MCP servers and hooks before starting a worker. This
+logical identity registration does not require a per-agent signed manifest. A
+controlled worker lease can still be enabled separately in production. Deleting
+an expert calls securityd's `UnregisterAgent` first and removes the local
+declaration only after that succeeds; a failed unregister keeps the expert and
+returns an error.
 
-最简单的方式是在 Web 控制台进入「MCP」页面，填写名称和一行启动命令后点击「安装」。
-例如安装 Filesystem MCP，并只开放 `/data/projects`：
+`./run.sh` is development-oriented: it sets `BIANBU_SECURITY=1`,
+`BIANBU_RUNTIME_SECURITY=required`, `BIANBU_SANDBOX=off`, and applies no cgroup
+`MemoryMax` / `CPUQuota` / `TasksMax` to workers, because a single-board device
+has no other tenant to protect while a long session can be killed by a fixed
+limit. Pass a value to reproduce limits, for example
+`BIANBU_WORKER_MEMORY_MAX=2G ./run.sh`. Set `BIANBU_SANDBOX=agent` to exercise
+the controlled sandbox lease.
 
-```text
-npx -y @modelcontextprotocol/server-filesystem /data/projects
-```
+Production must be launched by a trusted runtime manager with
+`BIANBU_RUNTIME_MODE=production` and `BIANBU_RUNTIME_SECURITY=required` so it fails
+closed; `./run.sh` refuses to start production mode directly.
 
-安装成功后，MCP 页面显示连接状态、启动命令和发现的内部工具。MCP 不会出现在「工具」页面；
-请在专家编辑器的 MCP 区域按整台 Server 授权。新建和已有专家默认都不使用任何 MCP，
-`tools: ["*"]` 也不会授予 MCP 权限。页面会按 POSIX 参数规则解析命令并直接启动程序，
-不经过 Shell，因此不支持管道、重定向、命令替换等 Shell 语法。只应安装可信来源，并为
-Filesystem MCP 指定最小必要目录。
+Per-agent YOLO mode is available on the Security / capabilities page. It allows
+every current, unknown and future capability or scope without confirmation, but
+keeps caller validation, sandboxing, network policy, DLP, auditing and securityd
+fail-closed behaviour. securityd stores the mode authoritatively; disabling YOLO
+restores the original granular grants. Never emulate YOLO with environment
+variables or agent configuration.
 
-需要 HTTP transport、环境变量或请求头时，可以使用高级目录安装方式。一个目录对应一个
-Server，目录名是 MCP ID，目录内只放置 `mcp.json`：
+### Deployment notes
 
-```text
-acme.filesystem/
-└── mcp.json
-```
+Plugins are trusted Python code inside the host process, not an OS sandbox. Do
+not commit real credentials or runtime data. The current release disables the
+admin token gate for the web and management APIs in both development and Debian
+production mode, so the console needs no manual token; deploy it only on trusted
+networks, and add authentication, TLS and access control at a reverse proxy or
+gateway before exposing it publicly. stdio MCP servers also start child processes
+as the service user, so install only trusted configurations and programs.
 
-```json
-{
-  "transport": "stdio",
-  "command": "npx",
-  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/data/projects"],
-  "env": {"LOG_LEVEL": "info"}
-}
-```
+## Integrations
 
-CLI 也可完成同样的操作（`bianbu-agent ... mcp add/get/list/remove`）。安装、移除 MCP 后
-需要重启正在运行的 Runtime，新服务才会进入活动 Generation；源码启动的实例按 Ctrl-C 停止后
-重新执行 `./run.sh` 即可：
+### securityd
+
+The runtime talks to `bianbu-securityd` over D-Bus `io.bianbu.Security` and the
+securityd UDS. The control plane prepares, commits and aborts worker starts,
+receives the effective execution mode and lease, and passes the lease identity to
+the worker. Workers run the `bianbu.security` plugin, which maps runtime hooks to
+securityd hook points:
+
+| Runtime hook | securityd hook point |
+| --- | --- |
+| `BeforeRun` | `agent_startup` |
+| `AfterContext` | `input` |
+| `BeforeModel` | `pre_model_call` |
+| `AfterModel` | `post_model_call` |
+| `PreToolUse` | `pre_tool_call` |
+| `PostToolUse` | `post_tool_call` |
+| `AfterRun` | `output` / `agent_shutdown` |
+
+See [Security plugin](docs/security-plugin.md) for the full mapping, DLP
+behaviour and failure semantics.
+
+### hermes-agent
+
+The runtime registers a hermes agent with securityd and infers its framework
+from the `framework` field or from a `com.hermes*` agent id, so the console shows
+the hermes tool catalog for it. Runtime reconciliation never removes
+`com.hermes.*` rows: securityd is the shared registry for runtime, hermes and
+DeepSeek Harness agents.
+
+The hermes-side adapter lives in the `bianbu-agent-security` repository
+(`impl/bianbu-securityd/hermes_plugin/`). It is a hermes plugin that calls
+securityd before tool execution, binds the profile-derived agent id
+(`com.hermes.<profile>`) and applies DLP to tool arguments, tool results and the
+final output. Install it with
+`hermes_plugin/scripts/install-on-k3.sh hermes`. The runtime does not run hermes
+itself and does not import hermes code.
+
+### DeepSeek Harness (dsh)
+
+DeepSeek Harness is a separate runtime. The runtime's security registration
+already accepts `harness` agents, and securityd owns a dedicated `harness` tool
+catalog, so a dsh agent appears in the same security console as
+`com.dsh.agent`.
+
+The dsh adapter lives in `impl/bianbu-securityd/harness_plugin/`: an out-of-tree
+Node bundle plus a Python sidecar that speaks JSON-RPC over stdio and calls
+securityd. `tools/pre-execute` maps to `pre_tool_call`, `tools/post-execute` to
+`post_tool_call` and `agent/pre-step` to `input`. dsh exposes no public hook that
+can rewrite committed assistant messages or provider requests, so the adapter
+deliberately does not claim output-side masking.
+
+DeepSeek Harness is also a behavioural reference for this repository. Design
+notes with upstream revisions and file-level evidence live in
+[DeepSeek Harness notes](docs/deepseek-harness-notes.md).
+
+## Models, tools and MCP
+
+Each agent stores its model in `agent.yaml` and resolves it at run time. The
+default engine is LangGraph, but `AgentEngine` is an abstract contract and
+`engine_builder` can inject another implementation; plugin contracts never
+mention LangGraph.
+
+Built-in tool sources live in `bianbu_agent/tools/`. User tool directories are
+for extensions only. MCP servers are installed from the console MCP page or with
+the CLI. A stdio MCP command is parsed according to POSIX argument rules and
+executed directly, without a shell, so pipes, redirection and command
+substitution are not supported. Install only trusted sources and grant the
+smallest directory you need.
 
 ```bash
 bianbu-agent --config ~/.bianbu-agent/config.yaml \
   mcp add filesystem --command npx \
   --args -y @modelcontextprotocol/server-filesystem /data/projects
 bianbu-agent --config ~/.bianbu-agent/config.yaml mcp list
-bianbu-agent --config ~/.bianbu-agent/config.yaml mcp get filesystem
 bianbu-agent --config ~/.bianbu-agent/config.yaml mcp remove filesystem
 ```
 
-## K3 与 Bibit Intent
+Installing or removing an MCP server requires restarting the running runtime so
+the new server enters the active generation.
 
-K3 上的端侧意图与模型能力由独立的 `bibit-intent` Debian 包提供，
-`bianbu-agent-runtime` 已声明对它的运行时依赖；刷新索引并安装或更新 Runtime 时，APT 会
-自动安装匹配的 Bibit 包。
+## K3 and Bibit Intent
 
-端侧模型和 service 生命周期都归 bibit-intent 包自己：它安装并全局启用
-`bibit-intent.service`，再由该单元 `Wants` 的 `bibit-intent-models.service` 在 AI Gateway
-里准备 `bibit-llm`/`bibit-embed`。Runtime（包括 `./run.sh`）不代为 enable/start，只探测
-一次它对外的 `http://127.0.0.1:8765/healthz` 报告就绪状态；未就绪不会阻塞 Runtime 启动
-（端侧不可用时对话按云端降级）。这些全局启用的 user unit 随图形桌面会话启动，只重新连接
-SSH 不会重建已经存在的桌面 user manager。验证命令：
+On K3, on-device intent and model capabilities come from the separate
+`bibit-intent` Debian package, which `bianbu-agent-runtime` depends on. Refreshing
+the index and installing or upgrading the runtime pulls in the matching Bibit
+package.
+
+Bibit owns the lifetime of its on-device models and services. It installs and
+globally enables `bibit-intent.service`, whose `Wants` pulls in
+`bibit-intent-models.service` to prepare `bibit-llm` / `bibit-embed` in the AI
+gateway. The runtime (including `./run.sh`) never enables or starts them; it
+probes `http://127.0.0.1:8765/healthz` once and reports readiness without blocking
+startup, so conversations fall back to the cloud when the edge model is
+unavailable.
 
 ```bash
 systemctl --user is-active bibit-intent bibit-intent-models
@@ -268,27 +357,32 @@ curl -fsS http://127.0.0.1:8765/healthz
 curl -fsS http://127.0.0.1:9899/api/v1/runtime/status
 ```
 
-服务没起来时按 bibit-intent 自己的说明排查：`systemctl --user status bibit-intent.service`。
-生产 Worker 通过 `127.0.0.1:8765` 的稳定 HTTP 协议调用 Bibit，不需要把 `/opt/bibit-intent`
-挂进 Runtime 沙箱；签名网络策略显式声明 `localhost`，只为 Worker 放行 Bibit 的回环服务，
-不开放局域网或任意外网地址。
+Production workers call Bibit over the stable loopback HTTP endpoint, so
+`/opt/bibit-intent` is not mounted into the sandbox. The signed network policy
+allows `localhost` for that loopback service only, not the LAN or arbitrary
+internet hosts.
 
-## Debian 安装后的系统 Runtime 服务
+## Debian package
 
-DEB 安装一个整机唯一的系统级服务 `bianbu-agent-runtime.service`，由 `multi-user.target`
-拉起：开机即启动，跟谁登录无关。运行身份是安装时解析出的设备用户，记录在
-`/etc/bianbu-agent-runtime/service-user`，并通过 drop-in
-`/etc/systemd/system/bianbu-agent-runtime.service.d/10-service-user.conf` 覆盖包内默认值
-（`User=` 读不了配置文件，只能这样下发）。这么设计是为了让 host Worker 保持真实登录身份：
-家目录、文件资源、sudo/PAM 都依赖它。安装时找不到设备用户（镜像 chroot、容器、CI）就保留
-包内默认的 `bianbu-runtime` 账号，并且不 enable。
+The package installs one system-level service,
+`bianbu-agent-runtime.service`, wanted by `multi-user.target`: it starts at boot
+regardless of who logs in. Its identity is the device user resolved at install
+time, recorded in `/etc/bianbu-agent-runtime/service-user` and published through
+the drop-in `/etc/systemd/system/bianbu-agent-runtime.service.d/10-service-user.conf`
+(because `User=` cannot read a configuration file). Running as the device user
+is deliberate: host workers keep the real login identity, and home directories,
+file resources, sudo and PAM depend on it. If no device user can be found (image
+chroot, container, CI), the packaged `bianbu-runtime` account is kept and the
+unit is not enabled.
 
-持久状态位于服务用户的 `~/.bianbu-agent/`，控制台端口由 UID 推出：UID 1000 是 9899，
-其余是 `9899 + ((uid - 1000) % 55637)`。Host 与 bwrap Worker 继续使用 system transient
-scope，polkit 只放行来自 `bianbu-agent-runtime.service` 的调用，不给本地会话任何 unit 管理
-权限——控制台在浏览器里按端口打开，不需要有人从桌面把它拉起来。
+Persistent state lives in the service user's `~/.bianbu-agent/`. The console port
+is derived from that account's UID: 9899 for UID 1000, otherwise
+`9899 + ((uid - 1000) % 55637)`. Host and bwrap workers use system transient
+scopes, and polkit only admits calls originating from
+`bianbu-agent-runtime.service`, so a local session gets no unit management
+rights. Open the console in a browser at that port.
 
-系统级 DEB 只需安装一次，服务开机自启；以下命令用于排查：
+The system package must be installed once; the service starts at boot:
 
 ```bash
 sudo systemctl status bianbu-agent-runtime.service
@@ -296,26 +390,51 @@ journalctl -u bianbu-agent-runtime.service
 sudo systemctl restart bianbu-agent-runtime.service
 ```
 
-整机只有一个数据目录，所以调用者不需要猜它在谁家里，按顺序解析即可：
+There is exactly one data directory per device, so callers resolve it in this
+order:
 
-1. `BIANBU_AGENT_CONFIG`（显式指定，优先级最高）；
-2. `/etc/bianbu-agent-runtime/service-user` 里记录的账号，取它的
-   `~/.bianbu-agent/config.yaml`——命令行工具（`bianbu-agent`）和 Worker 都走这一步，
-   所以 `sudo bianbu-agent model list` 不会落到 `/root/.bianbu-agent`；
-3. 没有安装记录（源码目录、开发机）时回落到当前用户的 `~/.bianbu-agent/config.yaml`。
+1. `BIANBU_AGENT_CONFIG` (explicit, highest priority);
+2. the account recorded in `/etc/bianbu-agent-runtime/service-user`, using its
+   `~/.bianbu-agent/config.yaml`; the `bianbu-agent` CLI and workers both follow
+   this, so `sudo bianbu-agent model list` never reads `/root/.bianbu-agent`;
+3. the caller's own `~/.bianbu-agent/config.yaml` when no install record exists
+   (source checkout, development machine).
 
-`/api/v1/runtime/status` 也返回 `service_user` 和 `data_dir`，控制台的「Runtime 状态」页
-会显示。开发联调仍可用 `BIANBU_AGENT_CONFIG=/path/config.yaml` 显式覆盖配置。
+`/api/v1/runtime/status` also reports `service_user` and `data_dir`, and the
+console's Runtime status page shows both. Development can still override the
+configuration with `BIANBU_AGENT_CONFIG=/path/config.yaml`.
 
-预装 Agent、Skill、Plugin、MCP 和模型定义由系统包提供，统一安装到
-`/usr/share/bianbu-agent-runtime/`，升级可直接替换。内置工具位于 Python 包的
-`bianbu_agent/tools/`；默认 Agent 的稳定实例位于 `/var/lib/bianbu-agent-profiles/`。
-AgentHub 安装、应用编辑产生的资源和运行数据写入 `~/.bianbu-agent/`，同 ID 的用户定义优先。
-部署语言 `deployment.language` 仅支持 `zh`（简体中文）和 `en`（英文）。
+Preinstalled agents, skills, plugins, MCP servers and model definitions are
+shipped by the system package under `/usr/share/bianbu-agent-runtime/` and are
+replaced on upgrade. Built-in tools live in the Python package's
+`bianbu_agent/tools/`; the default agent's stable instance lives in
+`/var/lib/bianbu-agent-profiles/`. AgentHub installs and edited resources are
+written to `~/.bianbu-agent/`, and a user definition with the same id takes
+precedence. The deployment language setting `deployment.language` supports only
+`zh` (Simplified Chinese) and `en` (English).
 
-## 验证
+## Build from source
+
+```bash
+uv sync --locked                 # create the locked Python environment
+uv build                         # build the wheel/sdist
+dpkg-buildpackage -us -uc -b     # build the Debian package
+```
+
+The Debian build creates a relocatable, locked virtualenv under
+`/usr/lib/bianbu-agent-runtime` and runs the packaging tests in
+`debian/tests/`. On riscv64 it downloads the
+pinned SpacemiT `sqlite-vec` wheel and verifies its SHA-256.
+
+Install the resulting `bianbu-agent-runtime_<version>_<arch>.deb` with
+`sudo apt install ./bianbu-agent-runtime_*.deb`.
+
+## Verification
 
 ```bash
 uv run pytest -q
 uv build
 ```
+
+Development records, release notes and on-device acceptance results live in
+`debian/changelog` and the documents above.

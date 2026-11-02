@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+from collections.abc import Mapping
+from dataclasses import replace
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from bianbu_agent.engines.default import to_langchain_model
 from bianbu_agent.engines.reasoning_markup import strip_reasoning_markup
-from bianbu_agent.models import ChatModel
+from bianbu_agent.models import ChatModel, OpenAICompatibleModel
 from bianbu_agent.sessions.manager import normalize_session_title
 
 
@@ -76,15 +79,12 @@ def fallback_session_title(
     return ""
 
 
-async def generate_session_title(
-    model: ChatModel,
+def title_request(
     user_message: str,
     *,
-    timeout_seconds: float = TITLE_TIMEOUT_SECONDS,
     max_input_bytes: int = TITLE_INPUT_MAX_BYTES,
-    max_output_tokens: int = TITLE_OUTPUT_MAX_TOKENS,
-) -> str:
-    """Run one tool-free auxiliary model request outside Agent checkpoints."""
+) -> dict[str, str]:
+    """Build the exact model-visible title request, without dispatching it."""
 
     framed = "Generate the session title from this JSON array of human messages:\n" + json.dumps(
         [{"text": str(user_message)}],
@@ -96,15 +96,116 @@ async def generate_session_title(
         raise SessionTitleError(
             f"session title input is {input_bytes} bytes, exceeding {max_input_bytes}"
         )
+    return {"system": _TITLE_SYSTEM_PROMPT, "input": framed}
+
+
+def title_route(model: ChatModel) -> dict[str, str]:
+    """Provider/model identity recorded beside one auxiliary title request."""
+
+    route: dict[str, str] = {}
+    provider = str(getattr(model, "provider_id", "") or "").strip()
+    name = str(getattr(model, "model", "") or "").strip()
+    if provider:
+        route["provider"] = provider
+    if name:
+        route["model"] = name
+    return route
+
+
+def mask_title_request(
+    request: Mapping[str, str],
+    *,
+    agent_id: str = "",
+) -> dict[str, str]:
+    """Apply the Runtime DLP boundary to one model-visible title request.
+
+    Titles are dispatched outside the Agent graph, so the security middleware
+    never sees them.  Masking has to happen here, before the prompt leaves for
+    the provider: an auxiliary request may not become the path that hands a
+    remote model the raw user message.
+    """
+
+    selected = {
+        "system": str(request.get("system") or ""),
+        "input": str(request.get("input") or ""),
+    }
+    if os.environ.get("BIANBU_SECURITY", "1") == "0":
+        return selected
+    from bianbu_agent.security.security_dlp import scan_text
+
+    return {
+        "system": scan_text(selected["system"], agent_id=agent_id or None),
+        "input": scan_text(selected["input"], agent_id=agent_id or None),
+    }
+
+
+async def prepare_title_request(
+    user_message: str,
+    *,
+    max_input_bytes: int = TITLE_INPUT_MAX_BYTES,
+    agent_id: str = "",
+) -> dict[str, str]:
+    """Build the title request and mask it before any provider dispatch."""
+
+    request = title_request(user_message, max_input_bytes=max_input_bytes)
+    prepared = await asyncio.to_thread(
+        mask_title_request, request, agent_id=agent_id)
+    input_bytes = len(prepared["input"].encode("utf-8"))
+    if input_bytes > max_input_bytes:
+        raise SessionTitleError(
+            f"session title input is {input_bytes} bytes after DLP masking, "
+            f"exceeding {max_input_bytes}"
+        )
+    return prepared
+
+
+async def generate_session_title(
+    model: ChatModel,
+    user_message: str,
+    *,
+    timeout_seconds: float = TITLE_TIMEOUT_SECONDS,
+    max_input_bytes: int = TITLE_INPUT_MAX_BYTES,
+    max_output_tokens: int = TITLE_OUTPUT_MAX_TOKENS,
+    agent_id: str = "",
+) -> str:
+    """Run one tool-free auxiliary model request outside Agent checkpoints."""
+
+    request = await prepare_title_request(
+        user_message,
+        max_input_bytes=max_input_bytes,
+        agent_id=agent_id,
+    )
+    return await run_title_request(
+        model,
+        request,
+        timeout_seconds=timeout_seconds,
+        max_output_tokens=max_output_tokens,
+    )
+
+
+async def run_title_request(
+    model: ChatModel,
+    request: Mapping[str, str],
+    *,
+    timeout_seconds: float = TITLE_TIMEOUT_SECONDS,
+    max_output_tokens: int = TITLE_OUTPUT_MAX_TOKENS,
+) -> str:
+    """Dispatch one already-prepared title request and parse its title."""
+
     from bianbu_agent.context.config import bounded_output_settings
+    # A title is auxiliary: spending a reasoning budget on it delays the
+    # conversation and can consume the tiny output cap. Ask for the lowest
+    # level explicitly instead of inheriting the Agent's effort.
+    if isinstance(model, OpenAICompatibleModel):
+        model = replace(model, reasoning_effort="low")
     chat_model = to_langchain_model(model)
     chat_model = chat_model.bind(**bounded_output_settings(
         chat_model, {"max_tokens": max_output_tokens}))
     try:
         async with asyncio.timeout(timeout_seconds):
             response = await chat_model.ainvoke([
-                SystemMessage(content=_TITLE_SYSTEM_PROMPT),
-                HumanMessage(content=framed),
+                SystemMessage(content=str(request.get("system") or "")),
+                HumanMessage(content=str(request.get("input") or "")),
             ])
     except TimeoutError as exc:
         raise SessionTitleError(
@@ -126,15 +227,13 @@ async def generate_session_title(
     return title
 
 
-def is_title_generation(metadata: object) -> bool:
-    """Identify the internal auxiliary title operation."""
-
-    return isinstance(metadata, dict) and metadata.get("console_operation") == "generate_title"
-
-
 __all__ = [
     "SessionTitleError",
     "fallback_session_title",
     "generate_session_title",
-    "is_title_generation",
+    "mask_title_request",
+    "prepare_title_request",
+    "run_title_request",
+    "title_request",
+    "title_route",
 ]

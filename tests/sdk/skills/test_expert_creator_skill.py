@@ -450,6 +450,25 @@ def test_creation_defaults_the_avatar_and_requires_name_soul_and_model(
     assert runtime.requests[-1]["body"]["metadata"] == {"avatar": "🤖"}
 
 
+def test_creation_and_update_can_select_reasoning_effort(
+    runtime: _FakeRuntime, capsys: pytest.CaptureFixture[str],
+) -> None:
+    script = _load_script()
+
+    assert script.main([
+        "--base-url", runtime.base_url,
+        "--name", "Deep Thinker", "--soul", "Think.",
+        "--provider", "custom:bibit", "--model", "deepseek-flash",
+        "--effort", "max",
+    ]) == 0
+    capsys.readouterr()
+    assert runtime.requests[-1]["body"]["model"] == {
+        "provider": "custom:bibit",
+        "name": "deepseek-flash",
+        "effort": "max",
+    }
+
+
 def test_script_refuses_a_duplicate_name_by_default(capsys: pytest.CaptureFixture[str]) -> None:
     server = _FakeRuntime(agents=[{"id": "com.bianbu.existing0001", "name": "Writer",
                                    "name_zh": "写作专家"}])

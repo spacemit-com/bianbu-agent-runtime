@@ -769,8 +769,12 @@ async def test_security_confirm_for_file_tools_interrupts_before_execution(
     monkeypatch.setenv("BIANBU_SECURITY", "1")
     monkeypatch.setattr(
         security_middleware,
-        "securityd_requires_confirm",
-        lambda request: request.tool_call.get("name") == tool_name,
+        "securityd_approval_decision",
+        lambda request: (
+            security_middleware.APPROVAL_ASK
+            if request.tool_call.get("name") == tool_name
+            else security_middleware.APPROVAL_ALLOW
+        ),
     )
 
     model = CountingFakeMessagesListChatModel(
@@ -1143,7 +1147,6 @@ async def test_custom_agent_uses_model_capabilities_and_profile() -> None:
         "system and safety instructions still take precedence.\n\n"
         "Agent name: Researcher\n\n"
         "Soul:\nPrefer primary sources.\n\n"
-            "Available tools: web_search.\n\n"
             "Enabled skills: research.\n\n"
             "Enabled MCP servers: none.\n\n"
             "Current user request:\nWhat changed?"

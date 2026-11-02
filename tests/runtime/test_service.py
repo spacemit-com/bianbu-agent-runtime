@@ -144,23 +144,6 @@ def test_development_worker_fallback_translates_the_sandbox_config_argument(
 
 
 @pytest.mark.asyncio
-async def test_control_runtime_rejects_unimplemented_sandbox_mode(tmp_path: Path) -> None:
-    config_path = tmp_path / "runtime.yaml"
-    config_path.write_text(
-        "data_dir: .bianbu-agent\n"
-        "runtime:\n"
-        "  control:\n"
-        "    execution:\n"
-        "      requested_mode: sandbox\n",
-        encoding="utf-8",
-    )
-    config = bianbu_agent.load_runtime_config(config_path)
-    runtime = bianbu_agent.create_runtime(config, role="control")
-    with pytest.raises(bianbu_agent.RuntimeStartupError, match="控制面 sandbox 尚未实现"):
-        await runtime.start()
-
-
-@pytest.mark.asyncio
 async def test_control_runtime_starts_without_eager_agent_worker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -642,49 +625,6 @@ async def test_agent_worker_pool_isolates_one_reload_failure() -> None:
     assert pool._supervisors["default"].catalog_stale is True
     assert pool._supervisors["research"].catalog_stale is False
     assert pool._supervisors["research"].client.reload_calls == 1
-
-
-@pytest.mark.asyncio
-async def test_agent_worker_pool_applies_learning_policy_to_matching_security_boundary(
-    tmp_path: Path,
-) -> None:
-    from bianbu_agent.config import RuntimeConfig
-    from bianbu_agent.security.runtime_process.supervisor import AgentWorkerPool
-
-    class Coordinator:
-        def __init__(self, active):
-            self.active = active
-            self.calls = []
-
-        async def apply_network_learning_policy(self, agent_id, mode, version):
-            self.calls.append((agent_id, mode, version))
-            return {"active_instances": self.active,
-                    "collectors_started": self.active,
-                    "collectors_stopped": 0, "degraded_instances": 0}
-
-    class Supervisor:
-        def __init__(self, agent_id, security_agent_id, active):
-            self.agent_id = agent_id
-            self.security_agent_id = security_agent_id
-            self.coordinator = Coordinator(active)
-
-    pool = AgentWorkerPool(RuntimeConfig(data_dir=tmp_path))
-    first = Supervisor("default", "com.bianbu.runtime", 1)
-    second = Supervisor("research", "com.bianbu.runtime", 1)
-    unrelated = Supervisor("other", "com.other.runtime", 1)
-    pool._supervisors = {
-        "default": first, "research": second, "other": unrelated,
-    }
-
-    result = await pool.apply_network_learning_policy(
-        "research", "learning", 12,
-    )
-
-    assert result == {"active_instances": 1, "collectors_started": 1,
-                      "collectors_stopped": 0, "degraded_instances": 0}
-    assert first.coordinator.calls == []
-    assert second.coordinator.calls == [("com.bianbu.runtime", "learning", 12)]
-    assert unrelated.coordinator.calls == []
 
 
 @pytest.mark.asyncio
@@ -1244,6 +1184,44 @@ def test_agent_worker_catalog_marks_unavailable_skill_disabled() -> None:
     assert skill["unavailable_reason"] == "dependency missing"
 
 
+@pytest.mark.asyncio
+async def test_worker_catalog_survives_an_unreadable_installed_mcp_catalog() -> None:
+    """One broken package listing must not fail every MCP status.
+
+    ``_installed_mcp_ids`` logs the failure, so a missing module logger turned a
+    package-manager error into a ``NameError`` that failed the whole
+    ``worker.catalog`` RPC and left every Server at ``unknown`` in Control.
+    """
+
+    from bianbu_agent.security.runtime_process.worker import AgentWorker
+
+    class Installed:
+        def list(self):
+            raise OSError("catalog is unreadable")
+
+    generation = SimpleNamespace(
+        id=1,
+        capability_catalog=None,
+        mcps={},
+        statuses={},
+        tools={},
+        skills={},
+        hooks={},
+    )
+    worker = AgentWorker.__new__(AgentWorker)
+    worker._activated = True
+    worker.runtime = SimpleNamespace(
+        mcps=Installed(),
+        mcp_preparation=None,
+        plugin_runtime=SimpleNamespace(current_generation=generation),
+    )
+
+    catalog = await worker.dispatch("worker.catalog", {})
+
+    assert catalog["mcp_statuses"] == {}
+    assert catalog["mcp_servers"] == []
+
+
 async def _noop_tool_handler(_context, _arguments):
     raise NotImplementedError
 
@@ -1762,8 +1740,8 @@ async def test_control_start_only_warms_system_bibit(tmp_path, monkeypatch):
         await asyncio.wait_for(entered.wait(), 3)
         await asyncio.wait_for(asyncio.shield(startup), 1)
         assert started == ['default']
-        # 执行模式由 securityd 按安全设置推导，Runtime 不再自行指定。
-        assert runtime.worker_supervisor.for_agent('other').requested_mode == 'auto'
+        # 未选 bianbu.security 的专家固定为正常模式（yolo + host）。
+        assert runtime.worker_supervisor.for_agent('other').requested_mode == 'host'
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(runtime, manage_lifespan=False)), base_url='http://test') as client:
             assert (await client.get('/api/v1/runtime/status')).status_code == 200
     finally:

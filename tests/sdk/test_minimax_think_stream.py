@@ -71,6 +71,73 @@ class _MessageGraph:
             yield message, {}
 
 
+class _RequestCapturingGraph:
+    """A graph that records the request the Engine publishes before streaming."""
+
+    async def astream(
+        self,
+        _agent_input: object,
+        **_kwargs: Any,
+    ) -> AsyncIterator[tuple[AIMessageChunk, dict[str, object]]]:
+        yield AIMessageChunk(content="ok"), {}
+
+
+@pytest.mark.asyncio
+async def test_engine_publishes_the_request_it_actually_sends() -> None:
+    """The Context record is the real request: system prompt, tools, messages."""
+
+    from langchain_core.tools import StructuredTool
+    from langchain_core.messages import HumanMessage
+
+    def _terminal(command: str) -> str:
+        """Run one shell command."""
+        return command
+
+    tool = StructuredTool.from_function(
+        func=_terminal, name="terminal", description="Run one shell command.",
+    )
+    graph = _ChunkGraph(["never used"])
+    setattr(graph, "_bianbu_tool_definitions", None)
+    from bianbu_agent.engines.langgraph.engine import tool_definitions
+
+    setattr(graph, "_bianbu_tool_definitions", tool_definitions([tool]))
+    engine = LangGraphEngine(
+        graph,
+        provider_id="bibit",
+        model_name="local",
+        agent_id="com.bianbu.agent",
+        system_prompt="You are the selected agent.",
+    )
+
+    events = [
+        event
+        async for event in engine.stream(
+            "hello",
+            session_id="thread-request",
+            control=RunControl(
+                request_id="run-request", session_id="session-request",
+            ),
+        )
+    ]
+
+    record = next(event for event in events if event.kind == "request_context")
+    # The record leads the Run: it is the request, not a post-hoc summary.
+    assert events[0].kind == "request_context"
+    assert record.payload["provider"] == "bibit"
+    assert record.payload["model"] == "local"
+    assert record.payload["reason"] == "initial"
+    text = str(record.payload["text"])
+    # Everything model-visible is present, in provider order.
+    assert text.index("## System prompt") < text.index("## Tools (1)")
+    assert text.index("## Tools (1)") < text.index("## Messages (1)")
+    assert "You are the selected agent." in text
+    assert "### terminal" in text
+    assert "Run one shell command." in text
+    assert "parameters:" in text
+    assert "### user" in text
+    assert "hello" in text
+
+
 async def _engine_events(
     graph: object,
     *,

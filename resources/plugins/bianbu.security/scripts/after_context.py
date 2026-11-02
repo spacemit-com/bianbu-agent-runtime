@@ -37,16 +37,33 @@ async def after_context(run: dict) -> dict | None:
     meta.pop("_handler_trace", None)
     payload.update(meta)
     if result.decision.value == "BLOCK":
-        # AFTER_CONTEXT 不在 host.py 的 PermissionError 重抛白名单，
-        # 抛了会被吞。改为落标记，由 before_model（在白名单内）拦住。
-        payload["deny_run"] = True
-        payload["deny_reason"] = result.message
+        # Every event point may veto the Run; no need to defer to before_model.
+        raise SecurityDenied(
+            tool="<input>", capability="input.scan",
+            reason=result.message or "输入含受限敏感信息",
+        )
+    if result.decision.value == "CONFIRM":
+        payload["requires_approval"] = True
     if result.decision.value == "MODIFY" and result.modified_data is not None:
         payload["dlp_masked_input"] = result.modified_data
-    return dict(metadata={"securityd": payload})
+    # The private map lets the Runtime restore streamed deltas before they are
+    # published.  It is a top-level Hook field, never part of public metadata.
+    return dict(
+        metadata={"securityd": payload},
+        # Read after ``invoke``: masking a tool result or model output creates
+        # stand-ins that did not exist when the Hook started.
+        stream_stand_ins=bridge.session_state(run["session_id"]).get("pii_map") or None,
+    )
+
+
+def _warmup():
+    _bootstrap()
+    from lib import warm_bridge
+
+    warm_bridge()
 
 
 if __name__ == "__main__":
     from protocol import main
 
-    main(after_context)
+    main(after_context, warmup=_warmup)

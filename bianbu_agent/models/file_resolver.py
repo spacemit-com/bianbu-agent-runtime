@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from bianbu_agent.agents import AgentModel
 
@@ -77,6 +78,8 @@ class YAMLModelResolver:
                 model=selected.name,
                 api_key=api_key,
                 base_url=base_url,
+                reasoning_effort=selected.effort,
+                thinking_format=_thinking_format(selected.provider, base_url),
                 provider_id=selected.provider,
                 request_timeout_seconds=resolve_request_timeout(
                     base_url, credential.parameters
@@ -128,6 +131,7 @@ class YAMLModelResolver:
             model=target.model,
             api_key=api_key,
             base_url=base_url,
+            thinking_format=_thinking_format(target.provider, base_url),
             provider_id=target.provider,
             request_timeout_seconds=resolve_request_timeout(
                 base_url, credential.parameters
@@ -135,6 +139,24 @@ class YAMLModelResolver:
             profile=cached_profile(credential.parameters.get("observed_model_profiles"),
                                    base_url, target.model),
         )
+
+
+def _thinking_format(provider_id: str, base_url: str) -> str:
+    """Select the thinking dialect the endpoint actually speaks.
+
+    DeepSeek's own route and an OpenAI-compatible gateway pointing at it need
+    ``thinking`` beside ``reasoning_effort``; other endpoints get the plain
+    OpenAI spelling.  The provider record cannot name a private gateway that
+    proxies DeepSeek, so the base URL is the only reliable signal there.
+    """
+
+    host = urlsplit(base_url).hostname or ""
+    if (
+        provider_id.strip().casefold() == "deepseek"
+        or host.casefold().endswith("deepseek.com")
+    ):
+        return "deepseek"
+    return "openai"
 
 
 __all__ = ["YAMLModelResolver"]

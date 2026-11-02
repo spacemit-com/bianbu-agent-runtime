@@ -3,9 +3,10 @@
 此目录只保存随 Runtime 发布的资源定义，整棵树 1:1 映射到
 `/usr/share/bianbu-agent-runtime/`，包升级可以覆盖。本文件只描述源码布局，不随包安装。
 
-- `default-profile/`：出厂 profile。`config.yaml` 是系统默认配置；`starter-agent.yaml`
-  是默认 Agent 模板，构建时由 `debian/render-starter-agent.py` 渲染，把部署模型的占位值
-  换成实际选择。
+- `config.yaml`：系统默认配置。可选的 `initial_agent` 指定出厂 Agent 模板的
+  `agent.id`；不配置时使用 `BibitEdgeAssistant` 对应的模板。
+- `agents/<id>/agent.yaml`：出厂 Agent 模板。构建时由
+  `debian/render-starter-agent.py` 渲染，把部署模型的占位值换成实际选择。
 - `models/`：模型与服务商默认定义。
 - `plugins/`：插件清单、事件 Hook 配置、外部脚本和插件内资源。
 - `skills/`：预装技能及其辅助文件。

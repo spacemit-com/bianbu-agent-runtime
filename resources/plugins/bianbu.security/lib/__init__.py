@@ -1,6 +1,12 @@
 """Shared security service clients used by the external Hook programs."""
 from .agent_id import resolve_agent_id
-from .bridge import HIGH_RISK_TOOLS, SecurityBridge, agent_security_mode_is_yolo, get_bridge
+from .bridge import (
+    HIGH_RISK_TOOLS,
+    SecurityBridge,
+    agent_security_mode_is_yolo,
+    get_bridge,
+    warm_bridge,
+)
 from .errors import SecurityDenied
 from .mcp_transport import (
     clear_cache as clear_mcp_transport_cache,
@@ -18,6 +24,7 @@ from .mapping import (
 __all__ = [
     "SecurityBridge",
     "get_bridge",
+    "warm_bridge",
     "SecurityDenied",
     "resolve_capability",
     "resolve_agent_id",

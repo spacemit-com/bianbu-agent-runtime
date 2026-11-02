@@ -1,6 +1,10 @@
 """bianbu.security 插件的安全身份传递与未映射策略默认值。"""
 from __future__ import annotations
 
+import sys
+import types
+from enum import Enum
+
 
 def _load_uds_transport():
     import importlib.util
@@ -12,6 +16,79 @@ def _load_uds_transport():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _install_fake_securityd(monkeypatch):
+    """Expose just enough of securityd's DLP modules to load the plugin."""
+    action_cls = Enum("DLPAction", {
+        "ALLOW": "allow", "ASK": "ask", "DENY": "deny", "MASK": "mask",
+    }, type=str)
+    pii_cls = Enum("PIIType", {"NAME": "name"}, type=str)
+
+    class ScanResult:
+        def __init__(self, findings=None, masked_text="", mask_map=None):
+            self.findings = list(findings or [])
+            self.masked_text = masked_text
+            self.mask_map = dict(mask_map or {})
+
+    securityd = types.ModuleType("securityd")
+    securityd.__path__ = []
+    dlp = types.ModuleType("securityd.dlp")
+    dlp.__path__ = []
+    policy_store = types.ModuleType("securityd.dlp.policy_store")
+    policy_store.DLPAction = action_cls
+    pii_scanner = types.ModuleType("securityd.dlp.pii_scanner")
+    pii_scanner.PIIType = pii_cls
+    pii_scanner.ScanResult = ScanResult
+    securityd.dlp = dlp
+    dlp.policy_store = policy_store
+    dlp.pii_scanner = pii_scanner
+    for name, module in {
+        "securityd": securityd,
+        "securityd.dlp": dlp,
+        "securityd.dlp.policy_store": policy_store,
+        "securityd.dlp.pii_scanner": pii_scanner,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    return action_cls, pii_cls
+
+
+def test_hybrid_policy_store_uses_deny_action(monkeypatch):
+    """DLP gaps must resolve to DENY without touching the removed BLOCK name."""
+    actions, pii = _install_fake_securityd(monkeypatch)
+
+    class UnavailableTransport:
+        def call(self, request):
+            raise RuntimeError("securityd down")
+
+    mod = _load_uds_transport()
+    store = mod.HybridDLPPolicyStore(object(), UnavailableTransport())
+    assert store.get_action("agent", pii.NAME) is actions.DENY
+
+
+def test_mask_subset_keeps_deny_types(monkeypatch):
+    actions, pii = _install_fake_securityd(monkeypatch)
+
+    mod = _load_uds_transport()
+    scanner = mod.HybridPIIScanner.__new__(mod.HybridPIIScanner)
+    finding = types.SimpleNamespace(pii_type=pii.NAME, start=0, end=4)
+    scanner.scan_for_agent = lambda agent_id, text: types.SimpleNamespace(
+        findings=[finding])
+    kept: list = []
+
+    def mask(text, findings):
+        kept.extend(findings)
+        return types.SimpleNamespace(masked_text="****", mask_map={})
+
+    scanner._mask_findings = mask
+
+    class Store:
+        def get_action(self, agent_id, pii_type):
+            return actions.DENY
+
+    result = scanner.scan_mask_subset_for_agent("agent", "name", Store())
+    assert kept == [finding]
+    assert result.findings == [finding]
 
 
 def test_managed_worker_uds_requests_carry_security_agent_id(monkeypatch):
@@ -88,12 +165,12 @@ def _load_mapping(monkeypatch):
 
 
 def test_unmapped_allow_override_is_ignored_in_production(monkeypatch):
-    """未映射工具默认 allow；生产模式下环境变量不能放宽（allow 即默认值）。"""
+    """未映射工具默认 ask；生产模式下环境变量不能把它放宽成 allow。"""
     monkeypatch.setenv("BIANBU_SECURITY_UNMAPPED", "allow")
     monkeypatch.setenv("BIANBU_RUNTIME_MODE", "production")
     mapping = _load_mapping(monkeypatch)
-    assert mapping.unmapped_policy() == "allow"
-    assert mapping.unmapped_decision() == 0
+    assert mapping.unmapped_policy() == "ask"
+    assert mapping.unmapped_decision() == 1
     assert not hasattr(mapping, "DEFAULT_ALLOW")
     monkeypatch.setenv("BIANBU_RUNTIME_MODE", "development")
     assert mapping.unmapped_policy() == "allow"
@@ -108,15 +185,15 @@ def test_unmapped_override_tightens_policy_in_development(monkeypatch):
     assert mapping.unmapped_decision() == 2
 
 
-def test_unmapped_policy_defaults_to_allow(monkeypatch):
+def test_unmapped_policy_defaults_to_ask(monkeypatch):
     monkeypatch.delenv("BIANBU_SECURITY_UNMAPPED", raising=False)
     monkeypatch.setenv("BIANBU_RUNTIME_MODE", "production")
     mapping = _load_mapping(monkeypatch)
-    assert mapping.unmapped_policy() == "allow"
-    assert mapping.unmapped_decision() == 0
+    assert mapping.unmapped_policy() == "ask"
+    assert mapping.unmapped_decision() == 1
 
 
 def test_unmapped_policy_rejects_unknown_values(monkeypatch):
     monkeypatch.setenv("BIANBU_SECURITY_UNMAPPED", "maybe")
     mapping = _load_mapping(monkeypatch)
-    assert mapping.unmapped_policy() == "allow"
+    assert mapping.unmapped_policy() == "ask"

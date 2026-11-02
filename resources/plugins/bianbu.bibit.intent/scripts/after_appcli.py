@@ -18,12 +18,13 @@
 """
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
+import sys
 import time
 import uuid
-
-import httpx
+from pathlib import Path
 
 #: executor 派发工具前要求「剩余预算 ≥ 40s」，比这更小会被判 edge_deadline_exceeded
 #: 而根本不派发；客户端实际等多久由 BIBIT_INTENT_APPCLI_TIMEOUT 决定（尽力而为）。
@@ -87,24 +88,43 @@ def _verdict(reply: str) -> str:
 
 
 async def _verify(appcli: str, action: str, target: str) -> str:
+    edge_http = _edge_http()
     base_url = os.environ.get("BIBIT_INTENT_BASE_URL", "http://127.0.0.1:8765").rstrip("/")
     timeout = float(os.environ.get("BIBIT_INTENT_APPCLI_TIMEOUT", "20"))
-    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
-        response = await client.post(
-            f"{base_url}/v1/runs",
-            json={
-                "run_id": uuid.uuid4().hex,
-                "session_id": "bibit-appcli-verify",
-                "prompt": f"{_VERIFY_PREFIX} {appcli} {action} {target}",
-                "timeout_ms": _EDGE_TIMEOUT_MS,
-                "stream": False,
-            },
-        )
-    response.raise_for_status()
-    payload = response.json()
+    client = edge_http.Client(base_url=base_url, connect_timeout=min(5.0, timeout))
+    response = await client.apost_json(
+        "/v1/runs",
+        {
+            "run_id": uuid.uuid4().hex,
+            "session_id": "bibit-appcli-verify",
+            "prompt": f"{_VERIFY_PREFIX} {appcli} {action} {target}",
+            "timeout_ms": _EDGE_TIMEOUT_MS,
+            "stream": False,
+        },
+        read_timeout=timeout,
+    )
+    payload = response.payload
     if not isinstance(payload, dict) or not payload.get("handled"):
         return ""
     return str(payload.get("reply") or "")
+
+
+def _edge_http():
+    """加载插件自己的回环 HTTP 客户端（``lib/edge_http.py``）。
+
+    按文件路径加载：不依赖进程 cwd/sys.path，也不改动宿主模块解析——Hook 在测试里
+    是被进程内导入的。
+    """
+
+    name = "bianbu_bibit_intent_edge_http"
+    module = sys.modules.get(name)
+    if module is None:
+        path = Path(__file__).resolve().parents[1] / "lib" / "edge_http.py"
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return module
 
 
 def _evidence(reply: str, limit: int = 3) -> str:
@@ -159,4 +179,4 @@ if __name__ == "__main__":
     sys.path.insert(0, str(_Path(__file__).resolve().parent))
     from protocol import main
 
-    main(after_appcli)
+    main(after_appcli, warmup=_edge_http)

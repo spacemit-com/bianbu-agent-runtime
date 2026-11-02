@@ -13,14 +13,14 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import os
 import re
+import sys
 import time
 import uuid
 from pathlib import Path
-
-import httpx
 
 _WINDOW_SECONDS = 60.0
 # executor 执行工具前要求「剩余预算 ≥ 40s」，比这更小会被判成
@@ -45,6 +45,24 @@ _CODE_NAMES = frozenset({
 })
 _REQUIREMENTS_RE = re.compile(r"requirements[-_].+\.txt$")
 _V4A_FILE_RE = re.compile(r"^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$", re.MULTILINE)
+
+
+def _edge_http():
+    """加载插件自己的回环 HTTP 客户端（``lib/edge_http.py``）。
+
+    按文件路径加载：不依赖进程 cwd/sys.path，也不改动宿主模块解析——Hook 在测试里
+    是被进程内导入的。
+    """
+
+    name = "bianbu_bibit_intent_edge_http"
+    module = sys.modules.get(name)
+    if module is None:
+        path = Path(__file__).resolve().parents[1] / "lib" / "edge_http.py"
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return module
 
 
 def _target_paths(tool_input: dict) -> list[str]:
@@ -90,21 +108,22 @@ def _should_check(workspace: Path, tool_input: dict) -> bool:
 
 
 async def _notice(root: Path) -> str:
+    edge_http = _edge_http()
     base_url = os.environ.get("BIBIT_INTENT_BASE_URL", "http://127.0.0.1:8765").rstrip("/")
     timeout = float(os.environ.get("BIBIT_INTENT_NOTICE_TIMEOUT", "20"))
-    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
-        response = await client.post(
-            f"{base_url}/v1/runs",
-            json={
-                "run_id": uuid.uuid4().hex,
-                "session_id": "bibit-dep-notice",
-                "prompt": f"{_NOTICE_PREFIX} {root}",
-                "timeout_ms": _EDGE_TIMEOUT_MS,
-                "stream": False,
-            },
-        )
-    response.raise_for_status()
-    payload = response.json()
+    client = edge_http.Client(base_url=base_url, connect_timeout=min(5.0, timeout))
+    response = await client.apost_json(
+        "/v1/runs",
+        {
+            "run_id": uuid.uuid4().hex,
+            "session_id": "bibit-dep-notice",
+            "prompt": f"{_NOTICE_PREFIX} {root}",
+            "timeout_ms": _EDGE_TIMEOUT_MS,
+            "stream": False,
+        },
+        read_timeout=timeout,
+    )
+    payload = response.payload
     if not isinstance(payload, dict) or not payload.get("handled"):
         return ""
     # 规则路径的 reply 会在提示行后附带工具的 detail JSON，只取提示那一行
@@ -149,4 +168,4 @@ async def after_tool(run: dict) -> dict | None:
 if __name__ == "__main__":
     from protocol import main
 
-    main(after_tool)
+    main(after_tool, warmup=_edge_http)

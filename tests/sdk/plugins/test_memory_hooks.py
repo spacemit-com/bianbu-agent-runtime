@@ -213,6 +213,8 @@ async def test_memory_hook_agent_memory_branch_injects_recall_and_writes_run_sta
     session_search 按需拉取。run-start 水位让执行中的首轮 run 对其它会话可见。
     """
 
+    sdk_context = pytest.importorskip("bianbu_agent_sdk.memory.context")
+
     class _FakeBridge:
         def __init__(self) -> None:
             self.run_started: list[dict] = []
@@ -220,9 +222,19 @@ async def test_memory_hook_agent_memory_branch_injects_recall_and_writes_run_sta
         async def settings(self) -> dict:
             return {"memory_enabled": True}
 
-        async def recall(self, query, *, top_k=5, max_chars=4000):
+        async def prepare_context(self, **kwargs):
+            return await sdk_context.prepare_context(self, **kwargs)
+
+        async def _client_or_none(self):
+            return None
+
+        async def record_runtime_result(self, **kwargs):
+            return True
+
+        async def recall(self, query, *, top_k=5, max_chars=4000, include_explicit=True):
+            assert include_explicit is False
             return (
-                "[preference slot=preference.terminal] 终端颜色偏好为浅色",
+                "[preference slot=appearance.terminal_color_scheme] 终端颜色偏好为浅色",
                 "[fact rev=1 source=agent score=0.015] RT0190_MEMORY_E2E_deadbeef",
             )
 
@@ -356,6 +368,10 @@ class _SwitchedOffBridge:
 
     async def settings(self) -> dict:
         return dict(self._settings)
+
+    async def prepare_context(self, **kwargs):
+        # SDK policy tests cover each switch; the host must accept an empty patch.
+        return None
 
     async def recall(self, *_args, **_kwargs):
         raise AssertionError("recall must not run while the backend switch is off")

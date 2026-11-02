@@ -35,6 +35,8 @@ class OpenAICompatibleModel:
     base_url: str = ""
     temperature: float | None = None
     max_tokens: int | None = None
+    reasoning_effort: str = "low"
+    thinking_format: str = "openai"
     provider_id: str = ""
     request_timeout_seconds: float = 120.0
     profile: Mapping[str, object] = field(default_factory=dict)
@@ -54,6 +56,16 @@ class OpenAICompatibleModel:
         object.__setattr__(self, "provider_id", provider_id)
         if self.max_tokens is not None and self.max_tokens <= 0:
             raise ValueError("max_tokens must be positive")
+        effort = str(self.reasoning_effort).strip().casefold()
+        if effort not in {"off", "low", "high", "max"}:
+            raise ValueError(
+                "reasoning_effort must be one of: off, low, high, max"
+            )
+        object.__setattr__(self, "reasoning_effort", effort)
+        thinking_format = str(self.thinking_format).strip().casefold()
+        if thinking_format not in {"openai", "deepseek"}:
+            raise ValueError("thinking_format must be openai or deepseek")
+        object.__setattr__(self, "thinking_format", thinking_format)
         timeout = self.request_timeout_seconds
         if (
             isinstance(timeout, bool)

@@ -11,6 +11,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "debian" / "provision-user.py"
+PUBLISHER_PATH = ROOT / "scripts" / "provision-system-agent.py"
 MANAGED_KINDS = ("agents", "skills", "plugins", "mcps", "models")
 
 
@@ -23,10 +24,20 @@ def _load_module():
     return module
 
 
+def _load_publisher():
+    spec = importlib.util.spec_from_file_location(
+        "provision_system_agent", PUBLISHER_PATH
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _profile(tmp_path: Path) -> Path:
-    profile = tmp_path / "default-profile"
-    profile.mkdir()
-    (profile / "config.yaml").write_text(
+    resources = tmp_path / "resources"
+    (resources / "agents").mkdir(parents=True)
+    (resources / "config.yaml").write_text(
         """data_dir: ~/.bianbu-agent
 service:
   title: Bianbu Agent
@@ -42,19 +53,19 @@ security:
   client_dir: /usr/lib/bianbu-securityd/client
 runtime:
   control:
-    execution: {requested_mode: host}
+    handshake_timeout_seconds: 60
   worker:
-    execution: {requested_mode: host}
     entrypoint: [/usr/bin/bianbu-agent, --role, agent-worker, --config, /home/agent/config.yaml, worker]
 """,
         encoding="utf-8",
     )
-    (profile / "starter-agent.yaml").write_text(
+    (resources / "agents" / "com.bianbu.627d97ad908c").mkdir(parents=True)
+    (resources / "agents" / "com.bianbu.627d97ad908c" / "agent.yaml").write_text(
         """schema_version: 1
 agent:
-  id: starter-template
+  id: com.bianbu.627d97ad908c
   version: 1.0.0
-  name: BianbuAgent
+  name: BibitEdgeAssistant
   name_zh: Bianbu智能助手
   description: Starter local Bianbu agent
   soul: Help the user complete practical work safely.
@@ -68,23 +79,23 @@ agent:
         encoding="utf-8",
     )
     for kind in MANAGED_KINDS:
-        component = profile / kind / f"package-{kind}"
+        component = resources / kind / f"package-{kind}"
         component.mkdir(parents=True)
         (component / "payload.txt").write_text(f"{kind}-v1\n", encoding="utf-8")
-    return profile
+    return resources
 
 
 def _prepared(tmp_path):
     provisioner = _load_module()
-    profile = _profile(tmp_path)
+    resources = _profile(tmp_path)
     home = tmp_path / "home"
     home.mkdir()
-    result = provisioner.provision(profile, home, uid=1001)
-    return provisioner, profile, home, home / ".bianbu-agent", result
+    result = provisioner.provision(resources, home, uid=1001)
+    return provisioner, resources, home, home / ".bianbu-agent", result
 
 
 def test_first_use_keeps_preinstalled_resources_out_of_user_home(tmp_path):
-    provisioner, profile, home, root, first = _prepared(tmp_path)
+    provisioner, resources, home, root, first = _prepared(tmp_path)
     assert first.updated
     config = yaml.safe_load((root / "config.yaml").read_text())
     assert config["service"]["port"] == 9900
@@ -98,53 +109,69 @@ def test_first_use_keeps_preinstalled_resources_out_of_user_home(tmp_path):
         # that ships nothing for a kind keeps no empty directory behind.
         target = root / kind
         assert not target.exists() or not list(target.iterdir())
-    assert not provisioner.provision(profile, home, uid=1001).updated
+    assert not provisioner.provision(resources, home, uid=1001).updated
+
+
+def test_migration_runs_before_any_config_reader(tmp_path, monkeypatch):
+    provisioner, resources, home, root, _ = _prepared(tmp_path)
+    config = yaml.safe_load((root / "config.yaml").read_text())
+    config["runtime"]["control"]["execution"] = {"requested_mode": "host"}
+    config["runtime"]["worker"]["startup_timeout_seconds"] = 15
+    (root / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+    (resources / "config.yaml").write_text((resources / "config.yaml").read_text() + "# upgrade\n")
+
+    observed = []
+    original = provisioner._initial_agent_source
+
+    def read_after_migration(resource_root):
+        current = yaml.safe_load((root / "config.yaml").read_text())
+        observed.append(("execution" in current["runtime"]["control"],
+                         "startup_timeout_seconds" in current["runtime"]["worker"]))
+        return original(resource_root)
+
+    monkeypatch.setattr(provisioner, "_initial_agent_source", read_after_migration)
+    assert provisioner.provision(resources, home, uid=1001).updated
+    assert observed and set(observed) == {(False, False)}
 
 
 def test_upgrade_preserves_user_config_agents_and_resources(tmp_path):
-    provisioner, profile, home, root, _ = _prepared(tmp_path)
+    provisioner, resources, home, root, _ = _prepared(tmp_path)
     (root / "config.yaml").write_text("user-config: true\n")
     for kind in MANAGED_KINDS:
         target = root / kind / "user-created"
         target.mkdir(parents=True)
         (target / "payload.txt").write_text("keep")
-    (profile / "config.yaml").write_text((profile / "config.yaml").read_text() + "# upgrade\n")
-    assert provisioner.provision(profile, home, uid=1001).updated
+    (resources / "config.yaml").write_text((resources / "config.yaml").read_text() + "# upgrade\n")
+    assert provisioner.provision(resources, home, uid=1001).updated
     assert (root / "config.yaml").read_text() == "user-config: true\n"
     for kind in MANAGED_KINDS:
         assert (root / kind / "user-created/payload.txt").read_text() == "keep"
 
 
-def test_upgrade_retires_the_automatic_execution_mode(tmp_path):
-    provisioner, profile, home, root, _ = _prepared(tmp_path)
+def test_upgrade_removes_retired_runtime_keys(tmp_path):
+    provisioner, resources, home, root, _ = _prepared(tmp_path)
     config = yaml.safe_load((root / "config.yaml").read_text())
-    config["runtime"]["control"]["execution"]["requested_mode"] = "auto"
-    config["runtime"]["worker"]["execution"]["requested_mode"] = "auto"
+    config["runtime"]["control"]["execution"] = {"requested_mode": "auto"}
+    config["runtime"]["control"]["startup_timeout_seconds"] = 30
+    config["runtime"]["worker"]["execution"] = {"requested_mode": "sandbox"}
+    config["runtime"]["worker"]["startup_timeout_seconds"] = 15
     (root / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
-    (profile / "config.yaml").write_text((profile / "config.yaml").read_text() + "# upgrade\n")
-    assert provisioner.provision(profile, home, uid=1001).updated
+    (resources / "config.yaml").write_text((resources / "config.yaml").read_text() + "# upgrade\n")
+    assert provisioner.provision(resources, home, uid=1001).updated
     upgraded = yaml.safe_load((root / "config.yaml").read_text())
-    assert upgraded["runtime"]["control"]["execution"]["requested_mode"] == "host"
-    assert upgraded["runtime"]["worker"]["execution"]["requested_mode"] == "host"
-    # The migration touches the execution default only.
+    for scope in ("control", "worker"):
+        assert "execution" not in upgraded["runtime"][scope]
+        assert "startup_timeout_seconds" not in upgraded["runtime"][scope]
+    assert upgraded["runtime"]["control"]["handshake_timeout_seconds"] == 60
+    assert upgraded["runtime"]["worker"]["entrypoint"][0] == "/usr/bin/bianbu-agent"
+    # The migration leaves every other user setting alone.
     assert upgraded["service"]["port"] == 9900
     assert upgraded["language"] == "zh"
-    assert not provisioner.provision(profile, home, uid=1001).updated
-
-
-def test_upgrade_keeps_an_explicit_execution_mode(tmp_path):
-    provisioner, profile, home, root, _ = _prepared(tmp_path)
-    config = yaml.safe_load((root / "config.yaml").read_text())
-    config["runtime"]["worker"]["execution"]["requested_mode"] = "sandbox"
-    (root / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
-    (profile / "config.yaml").write_text((profile / "config.yaml").read_text() + "# upgrade\n")
-    assert provisioner.provision(profile, home, uid=1001).updated
-    upgraded = yaml.safe_load((root / "config.yaml").read_text())
-    assert upgraded["runtime"]["worker"]["execution"]["requested_mode"] == "sandbox"
+    assert not provisioner.provision(resources, home, uid=1001).updated
 
 
 def test_legacy_managed_resources_are_backed_up_and_not_reseeded(tmp_path):
-    provisioner, profile, home, root, _ = _prepared(tmp_path)
+    provisioner, resources, home, root, _ = _prepared(tmp_path)
     state_path = root / ".managed-profile.json"
     state = json.loads(state_path.read_text())
     state["profile_digest"] = "old"
@@ -154,7 +181,7 @@ def test_legacy_managed_resources_are_backed_up_and_not_reseeded(tmp_path):
         (target / "payload.txt").write_text("modified")
         state["managed"][kind] = ["old-default"]
     state_path.write_text(json.dumps(state))
-    result = provisioner.provision(profile, home, uid=1001)
+    result = provisioner.provision(resources, home, uid=1001)
     for kind in MANAGED_KINDS:
         assert not (root / kind / "old-default").exists()
         assert (root / "backups/package-upgrade" / result.profile_digest[:12] / kind / "old-default/payload.txt").read_text() == "modified"
@@ -528,3 +555,114 @@ def test_presets_return_to_a_config_older_than_the_backfill(tmp_path):
     assert updated["presets"] == presets
     assert updated["language"] == "en"
     assert updated["service"]["port"] == document["service"]["port"]
+
+
+def _write_initial_agent(profile: Path, value: object | None) -> None:
+    path = profile / "config.yaml"
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if value is None:
+        document.pop("initial_agent", None)
+    else:
+        document["initial_agent"] = value
+    path.write_text(
+        yaml.safe_dump(document, allow_unicode=True, sort_keys=False), encoding="utf-8"
+    )
+
+
+def test_initial_agent_defaults_to_bibit_edge_assistant(tmp_path):
+    provisioner = _load_module()
+    profile = _profile(tmp_path)
+    _write_initial_agent(profile, None)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    result = provisioner.provision(profile, home, uid=1001)
+
+    state = json.loads((home / ".bianbu-agent" / ".managed-profile.json").read_text())
+    assert result.updated
+    assert state["starter_agent_id"] == "com.bianbu.627d97ad908c"
+
+
+def test_initial_agent_selects_the_named_template(tmp_path):
+    provisioner = _load_module()
+    profile = _profile(tmp_path)
+    alternate = "com.bianbu.fedcba543210"
+    (profile / "agents" / alternate).mkdir()
+    (profile / "agents" / alternate / "agent.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "agent": {
+                    "id": alternate,
+                    "version": "1.0.0",
+                    "name": "Alternate",
+                    "model": {"provider": "deepseek", "name": "deepseek-flash"},
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    _write_initial_agent(profile, alternate)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    provisioner.provision(profile, home, uid=1001)
+
+    state = json.loads((home / ".bianbu-agent" / ".managed-profile.json").read_text())
+    assert state["starter_agent_id"] == alternate
+
+
+def test_initial_agent_must_name_a_packaged_template(tmp_path):
+    provisioner = _load_module()
+    profile = _profile(tmp_path)
+    _write_initial_agent(profile, "com.bianbu.000000000000")
+    home = tmp_path / "home"
+    home.mkdir()
+
+    with pytest.raises(provisioner.ProvisionError, match="initial_agent"):
+        provisioner.provision(profile, home, uid=1001)
+
+
+@pytest.mark.parametrize("value", ["", "   ", 7, None])
+def test_initial_agent_rejects_invalid_values(tmp_path, value):
+    provisioner = _load_module()
+    profile = _profile(tmp_path)
+    _write_initial_agent(profile, value)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    if value is None:
+        # An explicit null behaves like an omitted key and selects the default.
+        provisioner.provision(profile, home, uid=1001)
+        return
+    with pytest.raises(provisioner.ProvisionError, match="initial_agent"):
+        provisioner.provision(profile, home, uid=1001)
+
+
+def test_starter_publisher_migrates_before_reading_the_profile(tmp_path):
+    """The middle unit step must not load a config the new loader rejects."""
+
+    publisher = _load_publisher()
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    config = profile / "config.yaml"
+    config.write_text(
+        """runtime:
+  control:
+    execution:
+      requested_mode: host
+    handshake_timeout_seconds: 60
+  worker:
+    startup_timeout_seconds: 15
+""",
+        encoding="utf-8",
+    )
+
+    publisher._strip_retired_runtime_keys(config)
+
+    document = yaml.safe_load(config.read_text(encoding="utf-8"))
+    assert document == {
+        "runtime": {"control": {"handshake_timeout_seconds": 60}},
+    }
+    assert config.stat().st_mode & 0o777 == 0o600

@@ -125,6 +125,12 @@ serve / worker 是 Runtime 服务启动入口。
     agent_create.add_argument("name")
     agent_create.add_argument("--provider", required=True)
     agent_create.add_argument("--model", required=True)
+    agent_create.add_argument(
+        "--effort",
+        choices=("off", "low", "high", "max"),
+        default="low",
+        help="推理强度（默认 low）",
+    )
     agent_create.add_argument("--tool", action="append", default=[])
     agent_create.add_argument("--skill", action="append", default=[])
     agent_create.add_argument("--mcp", action="append", default=[])

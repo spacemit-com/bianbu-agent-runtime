@@ -23,7 +23,6 @@ def test_development_launchers_share_bibit_agent_provisioner(launcher: str) -> N
     script = (root / launcher).read_text(encoding="utf-8")
 
     assert script.count("scripts/provision-starter-agent.py") == 1
-    # run.sh also passes this template to the security-manifest builder.
-    assert "resources/default-profile/starter-agent.yaml" in script
+    assert "resources/agents/com.bianbu.627d97ad908c/agent.yaml" in script
     assert "COM_BIANBU_AGENT_ID" in script
     assert "BIANBU_WORKER_AGENT_ID" in script

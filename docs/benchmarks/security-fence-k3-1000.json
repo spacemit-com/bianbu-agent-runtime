@@ -1,0 +1,100 @@
+{
+  "generated_at": "2026-10-28 11:03:42 +0800",
+  "calls": 1000,
+  "environment": {
+    "hostname": "bianbu-spacemitk3picoitx",
+    "machine": "riscv64",
+    "platform": "Linux-6.18.3-generic-riscv64-with-glibc2.43",
+    "python": "3.14.4",
+    "securityd_active": true,
+    "securityd_unit": "bianbu-securityd",
+    "bwrap_version": "bubblewrap 0.11.1",
+    "rss_start_mb": 22.2,
+    "rss_end_mb": 65.9
+  },
+  "results": {
+    "plain_call": {
+      "count": 1000,
+      "total_ms": 388.704,
+      "mean_ms": 0.389,
+      "median_ms": 0.344,
+      "p95_ms": 0.773,
+      "p99_ms": 1.02,
+      "min_ms": 0.332,
+      "max_ms": 1.405,
+      "stdev_ms": 0.14
+    },
+    "middleware_allow": {
+      "count": 1000,
+      "total_ms": 396.725,
+      "mean_ms": 0.397,
+      "median_ms": 0.387,
+      "p95_ms": 0.423,
+      "p99_ms": 0.65,
+      "min_ms": 0.378,
+      "max_ms": 0.751,
+      "stdev_ms": 0.039
+    },
+    "middleware_failclosed": {
+      "count": 1000,
+      "total_ms": 175919.306,
+      "mean_ms": 175.919,
+      "median_ms": 171.97,
+      "p95_ms": 199.778,
+      "p99_ms": 214.032,
+      "min_ms": 162.58,
+      "max_ms": 238.386,
+      "stdev_ms": 11.47,
+      "first_call_ms": 194.409
+    },
+    "sandbox_process": {
+      "count": 1000,
+      "total_ms": 46111.555,
+      "mean_ms": 46.112,
+      "median_ms": 45.027,
+      "p95_ms": 52.117,
+      "p99_ms": 60.077,
+      "min_ms": 42.458,
+      "max_ms": 68.532,
+      "stdev_ms": 3.471,
+      "errors": 0,
+      "argv_head": [
+        "bwrap",
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--cap-drop",
+        "ALL",
+        "--die-with-parent"
+      ]
+    },
+    "sandbox_payload": {
+      "count": 1000,
+      "total_ms": 69314.132,
+      "mean_ms": 69.314,
+      "median_ms": 67.261,
+      "p95_ms": 81.284,
+      "p99_ms": 95.45,
+      "min_ms": 63.519,
+      "max_ms": 109.153,
+      "stdev_ms": 6.119,
+      "errors": 0
+    },
+    "agent_fence_amortized": {
+      "count": 1000,
+      "total_ms": 0.477,
+      "mean_ms": 0.0,
+      "median_ms": 0.0,
+      "p95_ms": 0.001,
+      "p99_ms": 0.001,
+      "min_ms": 0.0,
+      "max_ms": 0.002,
+      "stdev_ms": 0.0,
+      "inner_total_ms": 0.476937,
+      "wall_ms": 79.457,
+      "startup_ms": 78.98,
+      "startup_per_call_ms": 0.079
+    }
+  }
+}

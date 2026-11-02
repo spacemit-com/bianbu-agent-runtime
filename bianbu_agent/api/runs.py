@@ -11,7 +11,6 @@ from typing import Any
 from bianbu_agent.runs.events import RunEvent
 from bianbu_agent.runs import RunHandle, RunResult
 from bianbu_agent.server.runtime import BianbuAgentRuntime
-from bianbu_agent.sessions import SessionAgentMismatchError
 
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
@@ -55,23 +54,10 @@ class RunBroker:
             raise ValueError("idempotency_key must not be empty")
 
         async with self._submit_lock:
-            title_only = (
-                dict(metadata or {}).get("console_operation") == "generate_title"
+            session = await self._runtime.sessions.get_or_create(
+                session_id=normalized_session,
+                agent_id=agent_id,
             )
-            if title_only:
-                session = await self._runtime.sessions.get(normalized_session)
-                supplied_agent = str(agent_id or "").strip()
-                if supplied_agent and supplied_agent != session.agent_id:
-                    raise SessionAgentMismatchError(
-                        normalized_session,
-                        session.agent_id,
-                        supplied_agent,
-                    )
-            else:
-                session = await self._runtime.sessions.get_or_create(
-                    session_id=normalized_session,
-                    agent_id=agent_id,
-                )
             fingerprint = _request_fingerprint(
                 session_id=normalized_session,
                 prompt=normalized_prompt,
@@ -133,7 +119,6 @@ class RunBroker:
                     item
                     for item in session_runs
                     if item.status not in _TERMINAL_STATUSES
-                    and _is_title_record(item) == title_only
                 ),
                 None,
             )
@@ -364,17 +349,6 @@ def _request_fingerprint(
         sort_keys=True,
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def _is_title_record(record: object) -> bool:
-    request = getattr(record, "request", {})
-    if not isinstance(request, dict):
-        return False
-    metadata = request.get("metadata")
-    return (
-        isinstance(metadata, dict)
-        and metadata.get("console_operation") == "generate_title"
-    )
 
 
 def _pending_actions(events: tuple[RunEvent, ...]) -> list[dict[str, object]]:

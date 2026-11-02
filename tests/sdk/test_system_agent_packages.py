@@ -11,7 +11,7 @@ from bianbu_agent.home import AgentHome
 
 def test_system_agents_are_readable_without_copying_into_user_home(tmp_path: Path):
     system_home = AgentHome(tmp_path / "system")
-    spec = AgentSpec(id="com.bianbu.abcdef012345", name="BibitEdgeAssistant")
+    spec = AgentSpec(id="com.bianbu.abcdef012345", name="BibitEdgeAssistant", plugins=("*",))
     AgentPackageManager(system_home).create(spec)
     user_home = AgentHome(tmp_path / "user")
     packages = AgentPackageManager(user_home, system_agents_dir=system_home.agents_dir)
@@ -28,7 +28,7 @@ def test_system_agents_are_readable_without_copying_into_user_home(tmp_path: Pat
 @pytest.mark.parametrize("operation", ["update", "sync", "write_avatar", "delete_avatar"])
 def test_user_operations_create_overrides_without_modifying_system_agent(tmp_path: Path, operation: str):
     system_home = AgentHome(tmp_path / "system")
-    spec = AgentSpec(id="com.bianbu.abcdef012345", name="BibitEdgeAssistant")
+    spec = AgentSpec(id="com.bianbu.abcdef012345", name="BibitEdgeAssistant", plugins=("*",))
     original = AgentPackageManager(system_home).create(spec)
     user_home = AgentHome(tmp_path / "user")
     packages = AgentPackageManager(user_home, system_agents_dir=system_home.agents_dir)
@@ -51,7 +51,7 @@ def test_deleting_a_packaged_agent_hides_it_without_touching_the_package(tmp_pat
     """A user can remove a factory expert; the signed package keeps its bytes."""
 
     system_home = AgentHome(tmp_path / "system")
-    spec = AgentSpec(id="com.bianbu.abcdef012345", name="BibitEdgeAssistant")
+    spec = AgentSpec(id="com.bianbu.abcdef012345", name="BibitEdgeAssistant", plugins=("*",))
     original = AgentPackageManager(system_home).create(spec)
     original_bytes = (original.root / "agent.yaml").read_bytes()
     user_home = AgentHome(tmp_path / "user")
@@ -77,7 +77,7 @@ def test_deleting_a_packaged_agent_hides_it_without_touching_the_package(tmp_pat
 
 def test_user_override_wins_over_system_definition(tmp_path: Path):
     system_home, user_home = AgentHome(tmp_path / "system"), AgentHome(tmp_path / "user")
-    spec = AgentSpec(id="com.bianbu.abcdef012345", name="BibitEdgeAssistant")
+    spec = AgentSpec(id="com.bianbu.abcdef012345", name="BibitEdgeAssistant", plugins=("*",))
     AgentPackageManager(system_home).create(spec)
     AgentPackageManager(user_home).create(AgentSpec(id=spec.id, name="Shadow"))
     packages = AgentPackageManager(user_home, system_agents_dir=system_home.agents_dir)
@@ -87,7 +87,7 @@ def test_user_override_wins_over_system_definition(tmp_path: Path):
 
 def test_system_package_upgrade_rollback_preserves_location(tmp_path):
     system_home, user_home = AgentHome(tmp_path / "system"), AgentHome(tmp_path / "user")
-    spec = AgentSpec(id="com.bianbu.abcdef012345", name="BibitEdgeAssistant")
+    spec = AgentSpec(id="com.bianbu.abcdef012345", name="BibitEdgeAssistant", plugins=("*",))
     original = AgentPackageManager(system_home).create(spec)
     candidate = AgentPackageManager(AgentHome(tmp_path / "candidate")).create(
         replace(spec, description="upgrade"), version="2.0.0",
@@ -113,7 +113,7 @@ def test_system_package_on_another_filesystem_can_sync_and_delete(tmp_path):
         pytest.skip("requires a writable second filesystem")
     with tempfile.TemporaryDirectory(prefix="bianbu-package-test-", dir="/dev/shm") as directory:
         system_home = AgentHome(Path(directory))
-        spec = AgentSpec(id="com.bianbu.abcdef012345", name="BibitEdgeAssistant")
+        spec = AgentSpec(id="com.bianbu.abcdef012345", name="BibitEdgeAssistant", plugins=("*",))
         original = AgentPackageManager(system_home).create(spec)
         user_home = AgentHome(tmp_path / "user")
         packages = AgentPackageManager(user_home, system_agents_dir=system_home.agents_dir)
@@ -135,7 +135,7 @@ async def test_system_agent_api_edits_user_override_and_deletes_it(tmp_path: Pat
     monkeypatch.setattr(system_paths, "SYSTEM_PROFILE_ROOT", tmp_path / "system-profiles")
     async with _file_backed_api(tmp_path) as (client, runtime):
         system_dir = system_paths.system_agent_directory(runtime.home.root)
-        spec = AgentSpec(id="com.bianbu.abcdef012345", name="BibitEdgeAssistant")
+        spec = AgentSpec(id="com.bianbu.abcdef012345", name="BibitEdgeAssistant", plugins=("*",))
         AgentPackageManager(AgentHome(system_dir.parent)).create(spec)
         listed = (await client.get("/api/v1/agents")).json()["data"]
         system = next(item for item in listed if item["id"] == spec.id)
@@ -145,7 +145,9 @@ async def test_system_agent_api_edits_user_override_and_deletes_it(tmp_path: Pat
 
         async def unregister(agent_id):
             mutations.append(agent_id)
+            return True
 
+        monkeypatch.setattr(runtime, "_security_registration_enabled", lambda: True)
         monkeypatch.setattr(runtime, "unregister_logical_agent", unregister)
         response = await client.patch(f"/api/v1/agents/{spec.id}", json={"description": "My Bibit"})
         assert response.status_code == 200, response.text

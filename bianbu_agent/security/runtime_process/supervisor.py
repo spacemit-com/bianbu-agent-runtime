@@ -38,6 +38,7 @@ from bianbu_agent.security.runtime_process.cgroup_memory import (
 )
 from bianbu_agent.security.execution_runtime import ExecutionCoordinator, ExecutionRecord
 from bianbu_agent.security.security_runtime import SecurityRuntimeClient
+from bianbu_agent.security.syscall_catalog import normalize_arch
 from bianbu_agent.observability import bind_log_context, log_run_terminal
 
 logger = logging.getLogger(__name__)
@@ -55,9 +56,9 @@ _SESSION_DELETE_JOIN_TIMEOUT_SECONDS = 30.0
 def _sandbox_config_argument(config_path: Path, data_dir: Path) -> str:
     """Return the config argument a sandboxed Worker is started with.
 
-    Security Runtime binds the Agent data root at ``/home/agent``, so a signed
-    entrypoint names the Worker config relative to that root.  Leftovers from
-    manifests outside the data root keep the legacy fixed path.
+    Security Runtime binds the Agent data root at ``/home/agent``, so the
+    securityd entrypoint names the Worker config relative to that root.
+    Configs outside the data root keep their host path.
     """
     if not str(config_path):
         return _SANDBOX_CONFIG
@@ -96,13 +97,23 @@ class WorkerIdentity:
 class WorkerSupervisor:
     """Start one fixed-entrypoint Worker and expose its RPC client."""
 
+    # Default keeps hand-built supervisors (tests, embedders) on the managed
+    # path; ``__init__`` sets the per-Agent decision.
+    security_enabled: bool = True
+
     def __init__(self, config: RuntimeConfig, *, agent_id: str,
                  metrics: object | None = None,
-                 requested_mode: str | None = None) -> None:
+                 requested_mode: str | None = None,
+                 security_enabled: bool = True) -> None:
         self.config = config
         self.metrics = metrics
         self.agent_id = str(agent_id).strip()
         self.requested_mode = str(requested_mode or "").strip().lower()
+        # Per-Agent switch.  An Agent that did not select the bianbu.security
+        # Plugin must not reach securityd at all: no registration, no lease,
+        # no network policy, no audit.  Its Worker starts as a plain host
+        # process through the same fixed entrypoint the managed path uses.
+        self.security_enabled = bool(security_enabled)
         if not self.agent_id:
             raise ValueError("agent_id must not be empty")
         self.security_agent_id = (
@@ -140,6 +151,11 @@ class WorkerSupervisor:
         self._hook_memory_registration = None
         self._development_process: asyncio.subprocess.Process | None = None
         self.catalog_stale = False
+        # Network policy version compiled into the running Worker.  A host or
+        # sandbox Worker receives the address filter at launch (systemd
+        # IPAddress* properties or the bwrap network namespace), so a saved
+        # whitelist only takes effect after a rebuild.
+        self._network_policy_version: int | None = None
 
     @property
     def ready(self) -> bool:
@@ -189,25 +205,124 @@ class WorkerSupervisor:
         if self.ready:
             assert self.identity is not None
             return self.identity
-        if self._starting is not None:
-            await self._starting
+        starting = self._starting
+        if starting is None:
+            starting = asyncio.create_task(
+                self._start_impl(), name="bianbu-worker-start",
+            )
+            self._starting = starting
+            if self.metrics is not None:
+                self.metrics.inc(
+                    "runtime_worker_start_seconds", mode="unknown", result="started",
+                )
+            # Startup is shared state, not the caller's work.  A title request
+            # that is superseded while the Worker is still booting must not
+            # cancel the boot: the next caller would otherwise start a second
+            # Worker and overwrite the first one's socket and identity.
+            starting.add_done_callback(
+                lambda task, supervisor=self: supervisor._start_finished(task),
+            )
+        # The waiting coroutine may be cancelled; the boot task keeps running.
+        await asyncio.shield(starting)
+        if not starting.cancelled() and starting.exception() is None:
             assert self.identity is not None
             return self.identity
-        self._starting = asyncio.create_task(self._start_impl(), name="bianbu-worker-start")
-        if self.metrics is not None:
-            self.metrics.inc("runtime_worker_start_seconds", mode="unknown", result="started")
-        try:
-            await self._starting
-        except Exception as exc:
+        assert starting.exception() is not None
+        raise starting.exception()
+
+    async def refresh_syscall_policy_if_needed(self) -> bool:
+        """Rebuild a running sandbox Worker after its syscall policy changed.
+
+        Workers are long-lived and load the seccomp filter only at startup, so
+        saving a new denylist leaves an already-running Worker on the old
+        version.  The control plane calls this immediately before dispatching a
+        Run; a rebuild is safe there because no active Run can be interrupted.
+        """
+        identity = self.identity
+        if not self.ready or identity is None or not identity.sandboxed:
+            return False
+        arch = normalize_arch()
+        if arch == "unknown":
+            logger.warning(
+                "无法确定 Worker 架构，跳过系统调用策略刷新：agent_id=%s", self.agent_id)
+            return False
+        policy = await self.coordinator.security_client.get_syscall_policy(
+            self.agent_id, arch)
+        if not isinstance(policy, Mapping):
+            return False
+        pending = policy.get("pending_restart")
+        if pending is None:
+            pending = int(policy.get("policy_version", 0) or 0) != int(
+                policy.get("applied_policy_version", 0) or 0)
+        if not pending:
+            return False
+        logger.info(
+            "系统调用策略已更新，重建 Worker 以装载 seccomp：agent_id=%s "
+            "policy_version=%s applied_policy_version=%s",
+            self.agent_id, policy.get("policy_version"),
+            policy.get("applied_policy_version"),
+        )
+        await self.stop(reason="syscall policy changed", strict=True)
+        await self.start()
+        return True
+
+    async def _attest_and_record_policy(self, handle, record, decision) -> None:
+        """Attest the Worker and remember the network policy it launched with."""
+
+        network = (getattr(decision, "policy", None) or {}).get("network") or {}
+        version = network.get("version") if isinstance(network, Mapping) else None
+        self._network_policy_version = (
+            int(version) if isinstance(version, (int, str)) and str(version).strip() else None
+        )
+        await self._attest_worker(handle, record, decision)
+
+    async def refresh_network_policy_if_needed(self) -> bool:
+        """Rebuild a running Worker after its network policy changed.
+
+        The address filter is installed when the process starts: sandbox
+        Workers get it with their network namespace, host Workers through the
+        systemd scope's ``IPAddressAllow``/``IPAddressDeny`` properties.  A
+        saved whitelist therefore leaves an already-running Worker on the old
+        policy and the model connection keeps failing with the previous
+        verdict.  The control plane calls this immediately before dispatching a
+        Run, where no other Run can be interrupted.
+        """
+
+        if not self.security_enabled:
+            return False
+        launched = self._network_policy_version
+        if not self.ready or launched is None:
+            return False
+        client = getattr(self.coordinator, "security_client", None)
+        getter = getattr(client, "get_network_policy", None)
+        if not callable(getter):
+            return False
+        policy = await getter(self.agent_id)
+        if not isinstance(policy, Mapping):
+            return False
+        current = int(policy.get("version", 0) or 0)
+        if current == launched:
+            return False
+        logger.info(
+            "网络策略已更新，重建 Worker 以应用地址过滤：agent_id=%s "
+            "launched_version=%s current_version=%s",
+            self.agent_id, launched, current,
+        )
+        await self.stop(reason="network policy changed", strict=True)
+        await self.start()
+        return True
+
+    def _start_finished(self, task: asyncio.Task[None]) -> None:
+        if self._starting is task:
+            self._starting = None
+        if task.cancelled():
+            return
+        failure = task.exception()
+        if failure is not None:
             # Keep the failure available to the control-plane status endpoint.
             # A failed first Worker must not be mistaken for an unstarted
             # control plane, and the supervisor remains retryable.
-            self._failure = exc
-            raise
-        finally:
-            self._starting = None
-        assert self.identity is not None
-        return self.identity
+            self._failure = failure
 
     async def reap_orphans(self) -> int:
         """Reap ledger-owned workers left by an earlier control process."""
@@ -220,6 +335,8 @@ class WorkerSupervisor:
         return count
 
     async def _audit_event(self, event: str, target: str, result: str) -> None:
+        if not self.security_enabled:
+            return
         audit = getattr(self.coordinator.security_client, "audit_event", None)
         if not callable(audit):
             return
@@ -291,6 +408,9 @@ class WorkerSupervisor:
             # inherit the parent's environment like systemd-run did.
             "BIANBU_RUNTIME_MODE": os.environ.get("BIANBU_RUNTIME_MODE", "development"),
             "BIANBU_SECURITY": os.environ.get("BIANBU_SECURITY", "1"),
+            "BIANBU_SECURITY_AGENT_ENABLED": (
+                "1" if self.security_enabled else "0"
+            ),
             "BIANBU_RUNTIME_SECURITY": os.environ.get("BIANBU_RUNTIME_SECURITY", "required"),
             # Feature-gated plugin disable list (run.sh --with). The worker owns
             # plugin loading, so this must cross the Runtime→Worker boundary.
@@ -397,38 +517,44 @@ class WorkerSupervisor:
             if link_target.is_absolute():
                 python_runtime_target = link_target.parent.parent
         try:
-            if direct_dev_fallback:
+            if not self.security_enabled:
+                record = await self._start_development_process(
+                    env, reason="Agent did not select the bianbu.security Plugin"
+                )
+            elif direct_dev_fallback:
                 raise RuntimeError("development optional host fallback")
-            record = await self.coordinator.start_registered(
-                agent_id=self.security_agent_id,
-                worker_agent_id=self.agent_id,
-                requested_mode=requested,
-                env=env,
-                cwd=str(self.config.data_dir),
-                instance_id=self.instance_id,
-                worker_data_root=str(self.config.data_dir.resolve()),
-                worker_socket_root=socket_root,
-                worker_config_path=str(self.config.config_path or ""),
-                security_uds=security_uds,
-                securityd_home=securityd_home,
-                memory_uds=(env["BIANBU_AGENT_MEMORY_SOCKET"]
-                            if env.get("BIANBU_AGENT_MEMORY_ENABLED", "true").lower()
-                            in {"1", "true", "yes", "on"} else "/tmp"),
-                memory_registry_dir=env["BIANBU_AGENT_MEMORY_REGISTRY_DIR"],
-                bibit_intent_root=bibit_intent_root,
-                runtime_source_root=(Path(__file__).resolve().parents[3]
-                                     if development else None),
-                python_runtime_root=(Path(sys.executable).resolve().parents[1]
-                                     if development else None),
-                python_runtime_target=python_runtime_target,
-                user_skills_root=user_skills_root,
-                fallback_entrypoint=self._entrypoint(),
-                before_commit=self._attest_worker,
+            else:
+                record = await self.coordinator.start_registered(
+                    agent_id=self.security_agent_id,
+                    worker_agent_id=self.agent_id,
+                    requested_mode=requested,
+                    env=env,
+                    cwd=str(self.config.data_dir),
+                    instance_id=self.instance_id,
+                    worker_data_root=str(self.config.data_dir.resolve()),
+                    worker_socket_root=socket_root,
+                    worker_config_path=str(self.config.config_path or ""),
+                    security_uds=security_uds,
+                    securityd_home=securityd_home,
+                    memory_uds=(env["BIANBU_AGENT_MEMORY_SOCKET"]
+                                if env.get("BIANBU_AGENT_MEMORY_ENABLED", "true").lower()
+                                in {"1", "true", "yes", "on"} else "/tmp"),
+                    memory_registry_dir=env["BIANBU_AGENT_MEMORY_REGISTRY_DIR"],
+                    bibit_intent_root=bibit_intent_root,
+                    runtime_source_root=(Path(__file__).resolve().parents[3]
+                                         if development else None),
+                    python_runtime_root=(Path(sys.executable).resolve().parents[1]
+                                         if development else None),
+                    python_runtime_target=python_runtime_target,
+                    user_skills_root=user_skills_root,
+                    fallback_entrypoint=self._entrypoint(),
+                    before_commit=self._attest_and_record_policy,
             )
-            await self._audit_event(
-                "runtime.worker_spawn", self.instance_id,
-                f"pid={record.pid};backend={record.backend}",
-            )
+            if self.security_enabled:
+                await self._audit_event(
+                    "runtime.worker_spawn", self.instance_id,
+                    f"pid={record.pid};backend={record.backend}",
+                )
             # The security policy may allow only a fixed environment allowlist.
             # Values required for Hello are not user secrets and are injected
             # by the trusted supervisor, so fail closed if policy strips them.
@@ -441,7 +567,7 @@ class WorkerSupervisor:
             # In development without the policy service, allow the explicit fixed
             # entrypoint to be used for protocol/API testing. Production never
             # reaches this branch: even an accidentally inherited development
-            # override must not disable the signed Runtime manifest gate.
+            # override must not bypass the security runtime gate.
             if not self._allows_unmanaged_fallback(requested):
                 raise
             logger.warning(
@@ -602,7 +728,9 @@ class WorkerSupervisor:
             except Exception as exc:  # noqa: BLE001
                 logger.error("Worker restart failed: %s", exc)
 
-    async def _start_development_process(self, env: Mapping[str, str]) -> ExecutionRecord:
+    async def _start_development_process(
+        self, env: Mapping[str, str], *, reason: str = ""
+    ) -> ExecutionRecord:
         if not self.rpc_token:
             self.rpc_token = secrets.token_urlsafe(32)
         if not self.instance_id:
@@ -611,10 +739,10 @@ class WorkerSupervisor:
         command = self._entrypoint()
         socket_display = self.socket_path if self.instance_id else "<pending>"
         logger.info(
-            "启动开发态 unmanaged Worker：instance=%s socket=%s",
-            self.instance_id, socket_display,
+            "启动 unmanaged host Worker：instance=%s socket=%s reason=%s",
+            self.instance_id, socket_display, reason or "development fallback",
         )
-        # A signed manifest stores the canonical sandbox config path.  The
+        # The securityd entrypoint stores the canonical sandbox config path.  The
         # explicit unmanaged fallback is a host process, so translate only
         # that canonical argument to the trusted local config file; never
         # translate arbitrary HTTP-provided argv values.
@@ -653,6 +781,15 @@ class WorkerSupervisor:
         # request already failed.
         child_env["BIANBU_WORKER_UNMANAGED_FALLBACK"] = "1"
         child_env["BIANBU_AGENT_ID"] = self.agent_id
+        # The Worker must not create a security client or register itself when
+        # its Agent never selected the Plugin.  This is a deliberate product
+        # path, not only a development fallback, so state it explicitly rather
+        # than relying on the fallback marker alone.
+        child_env["BIANBU_SECURITY_AGENT_ENABLED"] = (
+            "1" if self.security_enabled else "0"
+        )
+        if not self.security_enabled:
+            child_env["BIANBU_SECURITY"] = "0"
         # The control plane may itself be launched inside the outer Runtime bwrap.
         # An explicitly unmanaged development Worker is still recorded as a
         # host-process fallback (no security.runtime lease), so do not inherit
@@ -944,6 +1081,14 @@ class AgentWorkerPool:
             for handle in getattr(self.run_manager, "_active", {}).values()
         )
 
+    def busy_agents(self) -> tuple[str, ...]:
+        """Agents with a live Run; used when reconciling security state."""
+
+        return tuple(sorted({
+            str(handle.agent_id)
+            for handle in getattr(self.run_manager, "_active", {}).values()
+        }))
+
     def _normalize(self, agent_id: str | None) -> str:
         normalized = str(agent_id or "").strip()
         if not normalized:
@@ -951,7 +1096,8 @@ class AgentWorkerPool:
         return normalized
 
     def for_agent(self, agent_id: str | None,
-                  requested_mode: str | None = None) -> WorkerSupervisor:
+                  requested_mode: str | None = None,
+                  security_enabled: bool | None = None) -> WorkerSupervisor:
         normalized = self._normalize(agent_id)
         if normalized in self._retired_agents:
             raise RuntimeError(f"Agent Worker was deleted: {normalized}")
@@ -962,12 +1108,17 @@ class AgentWorkerPool:
                 agent_id=normalized,
                 metrics=self.metrics,
                 requested_mode=requested_mode,
+                security_enabled=(
+                    True if security_enabled is None else security_enabled
+                ),
             )
             if self.run_manager is not None:
                 supervisor.run_manager = self.run_manager
             self._supervisors[normalized] = supervisor
         elif requested_mode:
             supervisor.requested_mode = str(requested_mode).strip().lower()
+        if security_enabled is not None:
+            supervisor.security_enabled = bool(security_enabled)
         return supervisor
 
     @property
@@ -1032,21 +1183,6 @@ class AgentWorkerPool:
         latest["failures"] = failures
         return latest
 
-    async def apply_network_learning_policy(
-        self, agent_id: str, mode: str, version: int,
-    ) -> dict[str, int]:
-        totals = {"active_instances": 0, "collectors_started": 0,
-                  "collectors_stopped": 0, "degraded_instances": 0}
-        for supervisor in tuple(self._supervisors.values()):
-            if str(supervisor.agent_id) != str(agent_id):
-                continue
-            result = await supervisor.coordinator.apply_network_learning_policy(
-                str(supervisor.security_agent_id), str(mode), int(version),
-            )
-            for key in totals:
-                totals[key] += int(result.get(key, 0))
-        return totals
-
     async def remove_agent(self, agent_id: str) -> bool:
         """Stop and forget the Worker owned by a deleted logical Agent."""
         normalized = self._normalize(agent_id)
@@ -1059,11 +1195,16 @@ class AgentWorkerPool:
             self._supervisors.pop(normalized, None)
         return True
 
-    def activate_agent(self, agent_id: str, requested_mode: str | None = None) -> None:
+    def activate_agent(self, agent_id: str, requested_mode: str | None = None,
+                       security_enabled: bool | None = None) -> None:
         """Allow a newly created Agent ID to acquire a fresh Worker."""
         self._retired_agents.discard(self._normalize(agent_id))
-        if requested_mode:
-            self.for_agent(agent_id, requested_mode=requested_mode)
+        if requested_mode or security_enabled is not None:
+            self.for_agent(
+                agent_id,
+                requested_mode=requested_mode,
+                security_enabled=security_enabled,
+            )
 
     def status_snapshot(self) -> dict[str, Any]:
         workers = {
@@ -1115,6 +1256,7 @@ class ControlRunManager:
         self._dispatching: set[str] = set()
         self._accepted: set[str] = set()
         self._cancel_requested: set[str] = set()
+        self._policy_locks: dict[str, asyncio.Lock] = {}
         self._active: dict[str, RunHandle] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._closing = False
@@ -1141,6 +1283,57 @@ class ControlRunManager:
     def _worker_for_run(self, run_id: str) -> WorkerSupervisor | None:
         return self._run_supervisors.get(run_id)
 
+    def _agent_lock(self, agent_id: str) -> asyncio.Lock:
+        """Serialize policy refreshes for one Agent.
+
+        ``AgentWorkerPool`` already exposes the same lock for mode changes and
+        warmup.  A standalone supervisor used by tests keeps a local lock so the
+        refresh path has identical concurrency semantics.
+        """
+        factory = getattr(self._supervisor, "agent_lock", None)
+        if callable(factory):
+            return factory(str(agent_id))
+        return self._policy_locks.setdefault(str(agent_id), asyncio.Lock())
+
+    def _has_active_for(self, supervisor: WorkerSupervisor) -> bool:
+        return any(
+            self._run_supervisors.get(run_id) is supervisor
+            for run_id in self._active
+        )
+
+    async def _refresh_worker_policy(self, supervisor: WorkerSupervisor) -> bool:
+        """Apply saved security policy before accepting the next Run.
+
+        A Worker that is already serving requests must be rebuilt to load a new
+        seccomp filter or network filter.  Never restart it while another Run is
+        active: that would abort unrelated work.  The next idle Run performs the
+        rebuild.
+        """
+        refreshers = [
+            getattr(supervisor, "refresh_syscall_policy_if_needed", None),
+            getattr(supervisor, "refresh_network_policy_if_needed", None),
+        ]
+        if not any(callable(item) for item in refreshers):
+            return False
+        if not getattr(supervisor, "ready", False):
+            return False
+        if self._has_active_for(supervisor):
+            logger.info(
+                "安全策略待应用，但 Agent 仍有任务在执行；下一次空闲请求将重建 Worker："
+                "agent_id=%s", supervisor.agent_id)
+            return False
+        async with self._agent_lock(supervisor.agent_id):
+            if self._has_active_for(supervisor):
+                return False
+            for refresh in refreshers:
+                if not callable(refresh):
+                    continue
+                # A rebuilt Worker reloads every policy at launch, so the
+                # remaining refreshers have nothing left to apply.
+                if await refresh():
+                    return True
+            return False
+
     def has_active_for(self, supervisor: WorkerSupervisor) -> bool:
         return any(
             self._run_supervisors.get(run_id) is supervisor
@@ -1159,6 +1352,7 @@ class ControlRunManager:
         if not selected_account_id:
             raise ValueError("account_id must not be empty")
         supervisor = self._worker_for(agent_id)
+        await self._refresh_worker_policy(supervisor)
         run_id = str(request_id or uuid.uuid4())
         generation_id = int(
             getattr(getattr(supervisor, "identity", None), "generation_id", 0) or 0
@@ -1431,6 +1625,32 @@ class ControlRunManager:
                 logger.warning(
                     "Session %s deleted while %d Run stream(s) were still "
                     "winding down", session_id, len(tasks),
+                )
+        # The Worker also holds the Session's private DLP stand-in map.  A
+        # Session id can be reused, so removing only the control plane's copy
+        # would let the next Session inherit plaintext it never provided.
+        supervisors = {
+            supervisor
+            for supervisor in (
+                self._run_supervisors.get(run_id) for run_id in self._active
+            )
+            if supervisor is not None
+        }
+        if not supervisors:
+            supervisors = set(getattr(self._supervisor, "_supervisors", {}).values())
+        agent_id = ""
+        for supervisor in supervisors:
+            sender = getattr(supervisor, "client", None)
+            terminate = getattr(sender, "terminate_session", None)
+            if not callable(terminate):
+                continue
+            agent_id = str(getattr(supervisor, "agent_id", "") or agent_id)
+            try:
+                await terminate(session_id, agent_id, "session_deleted")
+            except Exception:  # noqa: BLE001 - deletion must still complete
+                logger.warning(
+                    "Worker Session cleanup failed agent=%s session=%s",
+                    agent_id, session_id, exc_info=True,
                 )
         deleted = await self._store.delete_session(session_id)
         if deleted: self._changes.notify()

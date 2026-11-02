@@ -4,7 +4,11 @@ from hashlib import sha256
 import re
 from threading import Lock
 
-_MAX_PROVIDER_NAME = 64
+# Provider wire contract, verified against the shipped default provider
+# (https://api.deepseek.com/v1, deepseek-flash): a 128-character function name is
+# accepted, 129 is rejected with "string too long"; characters outside
+# [A-Za-z0-9_-] are rejected with "does not match pattern".
+_MAX_PROVIDER_NAME = 128
 _LOCK = Lock()
 _DECODED: dict[str, str] = {}
 

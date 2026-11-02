@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from functools import partial
 from typing import Annotated
+
+import logging
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
@@ -37,6 +38,7 @@ from bianbu_agent.sessions.titles import fallback_session_title
 
 
 router = APIRouter(prefix="/sessions")
+logger = logging.getLogger(__name__)
 
 
 def session_row(runtime: object, session_id: str) -> dict[str, object]:
@@ -140,7 +142,7 @@ def session_view(
     last_prompt = selected.get("last_prompt_at")
     return {
         "id": session_id,
-        "title": str(getattr(session, "title")),
+        "title": str(selected.get("title") or getattr(session, "title")),
         "agent_id": str(getattr(session, "agent_id")),
         "metadata": dict(getattr(session, "metadata", {}) or {}),
         "created_at": float(getattr(session, "created_at")),
@@ -167,6 +169,7 @@ _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _EMPTY_ROW = {
     "blank": False,
     "last_prompt_at": None,
+    "title": "",
     "as_of_seq": None,
 }
 _EMPTY_EXECUTION_VIEW = {
@@ -287,16 +290,23 @@ def _hidden_run_ids(events: list[object]) -> set[str]:
 
 
 def _history_page(
-    events: list[object], max_messages: int,
+    events: list[object], max_messages: int, *, include_internal: bool = False,
 ) -> tuple[list[object], bool, list[str]]:
-    """Return a suffix beginning at a complete visible-message boundary."""
+    """Return a suffix beginning at a complete visible-message boundary.
+
+    ``include_internal`` keeps Console-operation Runs (currently Session title
+    generation) in the window.  The Chat view still receives their IDs in
+    ``hidden_run_ids`` and filters them out there; the Trajectory view needs
+    every persisted event, otherwise a title Run leaves an unexplained hole in
+    the event sequence.
+    """
 
     hidden_runs = _hidden_run_ids(events)
     starts: list[int] = []
     role_by_run: dict[str, str] = {}
     for index, event in enumerate(events):
         run_id = "" if event.run_id is None else str(event.run_id)
-        if run_id in hidden_runs:
+        if run_id in hidden_runs and not include_internal:
             continue
         if event.type == "user/message":
             starts.append(index)
@@ -467,12 +477,64 @@ async def _cached_session_body(
 async def delete_session(runtime: object, session_id: str) -> bool:
     """Delete a Session and every persisted Run it owns."""
 
-    await runtime.sessions.get(session_id)
+    session = await runtime.sessions.get(session_id)
+    # The Worker owns the DLP stand-in map, so terminate there first: deleting
+    # the control-plane Session would otherwise discard the only RPC route
+    # that can tell it which Session to clear.
+    await _terminate_security_session(
+        runtime, session_id, agent_id=str(getattr(session, "agent_id", "")),
+        reason="session_deleted",
+    )
     deleted = await runtime.sessions.delete(session_id)
     if not deleted:
         return False
     await runtime.runs.delete_session(session_id)
     return True
+
+
+async def _terminate_security_session(
+    runtime: object,
+    session_id: str,
+    *,
+    agent_id: str,
+    reason: str,
+) -> None:
+    """Best-effort private-state cleanup ahead of removing the Session.
+
+    A failure is logged rather than surfaced: deletion must still complete,
+    and the DLP store also expires idle mappings on its own.  In a control
+    plane the actual lease runs in the Worker, which receives its own
+    ``session.terminate`` RPC through RunManager deletion.
+    """
+
+    try:
+        from bianbu_agent.security.security_dlp import _REFERENCES
+
+        _REFERENCES.clear(session_id)
+    except Exception:  # noqa: BLE001 - cleanup must not fail the delete
+        logger.warning("Unable to clear local DLP references", exc_info=True)
+    plugins = getattr(runtime, "plugin_runtime", None)
+    if plugins is None or not agent_id:
+        return
+    try:
+        from bianbu_agent.plugins import HookPoint, RunContext
+
+        async with plugins.lease() as generation:
+            runner = getattr(generation, "run_hooks", None)
+            if callable(runner):
+                await runner(
+                    HookPoint.ON_ERROR,
+                    RunContext(
+                        run_id=f"session-delete:{session_id}",
+                        session_id=session_id,
+                        agent_id=agent_id,
+                        request="",
+                        status="cancelled",
+                        exit_reason=reason,
+                    ),
+                )
+    except Exception:  # noqa: BLE001 - best effort
+        logger.debug("Session DLP cleanup hook failed", exc_info=True)
 
 
 @router.get("", response_model=CollectionEnvelope)
@@ -548,6 +610,7 @@ async def search_sessions(
         reverse=True,
     )
 
+    rows = session_rows(runtime, sessions)
     hits: list[dict[str, object]] = []
     has_more = False
     for session in sessions:
@@ -567,7 +630,10 @@ async def search_sessions(
                 {
                     **hit,
                     "session_id": str(session.id),
-                    "title": str(session.title),
+                    "title": str(
+                        rows.get(str(session.id), _EMPTY_ROW).get("title")
+                        or session.title
+                    ),
                     "updated_at": float(session.updated_at),
                 }
             )
@@ -660,6 +726,10 @@ async def prompt_session(
     runtime = request.app.state.runtime
     session = await runtime.sessions.get(session_id)
     agent = await runtime.agents.get(session.agent_id)
+    # A console unregister removes the securityd identity but not the
+    # declaration.  Restore it before the Run so the DLP Hook does not reject
+    # the prompt with "agent ... 未注册".
+    await runtime.ensure_logical_agent_registered(agent.id)
     if not isinstance(agent.model, AgentModel) and not getattr(runtime, "has_default_model", False):
         raise HTTPException(
             status_code=409,
@@ -689,6 +759,29 @@ async def prompt_session(
     return success(result, status_code=202)
 
 
+async def _latest_user_message_seq(
+    runtime: object,
+    session_id: str,
+) -> int | None:
+    """Seq of the newest user-authored message, for title attribution."""
+
+    store = _event_store(runtime)
+    reader = getattr(store, "read_session_events", None)
+    if not callable(reader):
+        return None
+    try:
+        events = await reader(session_id)
+    except Exception:  # noqa: BLE001 - attribution is best-effort metadata
+        return None
+    selected = [
+        int(event.seq)
+        for event in events
+        if getattr(event, "type", "") == "user/message"
+        and not (getattr(event, "data", {}) or {}).get("console_operation")
+    ]
+    return max(selected) if selected else None
+
+
 @router.post(
     "/{session_id}/generate-title",
     status_code=202,
@@ -701,27 +794,37 @@ async def generate_session_title(
 ) -> JSONResponse:
     runtime = request.app.state.runtime
     session = await runtime.sessions.get(session_id)
-    title = session.title or fallback_session_title(payload.content)
-    if not session.title:
-        session = await runtime.sessions.rename(session_id, title)
-    digest = hashlib.sha256(payload.message_id.encode("utf-8")).hexdigest()
-    snapshot = await request.app.state.run_broker.submit(
-        session_id=session_id,
-        prompt=payload.content,
-        idempotency_key=f"title:{digest}",
-        agent_id=session.agent_id,
-        metadata={"console_operation": "generate_title"},
-    )
-    request.app.state.session_title_manager.track(
+    message_seq = await _latest_user_message_seq(runtime, session_id)
+    manager = request.app.state.session_title_manager
+    # Every title request gets its own identity up front.  The fallback is
+    # written before the model-facing request exists, so this id is what keeps
+    # the two events in one Trajectory unit.
+    title_request_id = manager.new_request_id()
+    # Build the exact model-visible request here so the fallback and the
+    # request are one durable batch.  Otherwise the request event waits behind
+    # whatever Run currently holds the Session log, and the trajectory shows
+    # that wait as if computing the fallback took a second.
+    from bianbu_agent.sessions.titles import title_request
+    request_body = title_request(payload.content)
+    title = await manager.publish_fallback(
         session_id,
-        str(snapshot["id"]),
-        title,
+        fallback=fallback_session_title(payload.content),
+        request_id=title_request_id,
+        message_seq=message_seq,
+        request=request_body,
+    )
+    manager.track(
+        session_id,
+        request_id=title_request_id,
+        prompt=payload.content,
+        fallback=title,
+        message_seq=message_seq,
     )
     return success(
         {
             "title": title,
-            "run_id": str(snapshot["id"]),
-            "status": str(snapshot["status"]),
+            "status": "accepted",
+            "agent_id": session.agent_id,
         },
         status_code=202,
     )
@@ -910,7 +1013,9 @@ def _history_body(
     max_messages: int,
     tail: int | None,
 ) -> bytes:
-    selected, has_more, hidden_run_ids = _history_page(events, max_messages)
+    selected, has_more, hidden_run_ids = _history_page(
+        events, max_messages, include_internal=True,
+    )
     folded = _fold_history_events(selected)
     return _render_json({
         "data": folded,

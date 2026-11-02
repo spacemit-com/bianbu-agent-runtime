@@ -9,6 +9,10 @@ from typing import Protocol, runtime_checkable
 from collections.abc import Iterable, Mapping
 
 
+MODEL_REASONING_EFFORTS = ("off", "low", "high", "max")
+DEFAULT_MODEL_REASONING_EFFORT = "low"
+
+
 def _required_text(value: object, field_name: str) -> str:
     normalized = str(value).strip()
     if not normalized:
@@ -34,10 +38,11 @@ def _capability_names(values: object) -> tuple[str, ...]:
 
 @dataclass(frozen=True, slots=True)
 class AgentModel:
-    """Provider and remote model selected by one Agent."""
+    """Provider, remote model, and reasoning effort selected by one Agent."""
 
     provider: str
     name: str
+    effort: str = DEFAULT_MODEL_REASONING_EFFORT
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -46,13 +51,24 @@ class AgentModel:
             _required_text(self.provider, "model.provider"),
         )
         object.__setattr__(self, "name", _required_text(self.name, "model.name"))
+        effort = str(self.effort).strip().casefold()
+        if effort not in MODEL_REASONING_EFFORTS:
+            raise ValueError(
+                "model.effort must be one of: "
+                + ", ".join(MODEL_REASONING_EFFORTS)
+            )
+        object.__setattr__(self, "effort", effort)
 
 
 def agent_model_data(model: AgentModel | str | None) -> object:
     """Return the JSON/YAML-safe representation of an Agent model selection."""
 
     if isinstance(model, AgentModel):
-        return {"provider": model.provider, "name": model.name}
+        return {
+            "provider": model.provider,
+            "name": model.name,
+            "effort": model.effort,
+        }
     return None
 
 
@@ -60,9 +76,16 @@ def parse_agent_model(value: object) -> AgentModel | str | None:
     """Parse structured selections while retaining direct SDK string aliases."""
 
     if isinstance(value, Mapping):
-        if set(value) != {"provider", "name"}:
+        unknown = set(value) - {"provider", "name", "effort"}
+        if unknown:
+            raise ValueError("model contains unsupported fields")
+        if "provider" not in value or "name" not in value:
             raise ValueError("model must contain provider and name")
-        return AgentModel(provider=value["provider"], name=value["name"])
+        return AgentModel(
+            provider=value["provider"],
+            name=value["name"],
+            effort=value.get("effort", DEFAULT_MODEL_REASONING_EFFORT),
+        )
     if value is None:
         return None
     if isinstance(value, str):
@@ -124,8 +147,8 @@ class AgentSpec:
     permissions: Mapping[str, object] = field(default_factory=dict)
     plugins: tuple[str, ...] = ()
     # Runtime-only view of what the manifest declared.  ``materialize`` fills it
-    # in so prompt building can report declared-but-missing Powers; it is never
-    # persisted, because the stored spec *is* the declaration.
+    # in so callers can distinguish a declaration from the resolved Powers; it
+    # is never persisted, because the stored spec *is* the declaration.
     declared: AgentDeclaration | None = None
     # Runtime-only view of the Skills the user attached to one message.  They
     # also appear in ``skills`` so the run lease, ``skill_view`` and the tool

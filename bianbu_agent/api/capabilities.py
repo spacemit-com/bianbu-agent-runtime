@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 import shlex
 
@@ -28,7 +29,9 @@ router = APIRouter(prefix="/capabilities")
 _RESTART_REQUIRED = "Restart the session to activate this {kind}."
 
 
-def control_catalog_snapshot(runtime) -> dict[str, object]:
+def control_catalog_snapshot(
+    runtime, agent_id: str | None = None
+) -> dict[str, object]:
     """Read the installed, selectable catalog without starting plugin code.
 
     This is the Control-plane source of truth for expert configuration.  It
@@ -50,9 +53,34 @@ def control_catalog_snapshot(runtime) -> dict[str, object]:
     preset_skills = set(runtime.config.presets.skills)
     mcps: list[str] = []
     mcp_servers: list[dict[str, object]] = []
-    snapshot = _inventory_snapshot(runtime.config)
+    private = _private_resources(runtime, agent_id)
+    snapshot = _inventory_snapshot(runtime.config, private=private)
+    private_items = tuple(getattr(private, "items", ()))
+    private_ids = {
+        (item.source.kind, item.source.capability_id) for item in private_items
+    }
+    private_plugins = {
+        item.source.capability_id
+        for item in private_items
+        if item.source.kind is CapabilityKind.PLUGIN
+    }
+    private_plugin_owners = {
+        item.source.capability_id: str(item.source.metadata.get("owner_agent_id") or "")
+        for item in private_items
+        if item.source.kind is CapabilityKind.PLUGIN
+    }
     def add_capability(item, kind: CapabilityKind, root: Path, capability_id: str, *, plugin_id: str | None = None) -> None:
         source = item.source
+        metadata = dict(source.metadata)
+        owner_agent_id = str(metadata.get("owner_agent_id") or "") or None
+        is_private = (
+            (kind, capability_id) in private_ids
+            or (plugin_id is not None and plugin_id in private_plugins)
+        )
+        if is_private and plugin_id is not None:
+            owner_agent_id = (
+                private_plugin_owners.get(plugin_id) or owner_agent_id
+            )
         display_name = capability_id
         description = str(source.metadata.get("description") or "")
         name_zh = ""
@@ -88,6 +116,10 @@ def control_catalog_snapshot(runtime) -> dict[str, object]:
             ),
             "plugin_id": plugin_id if plugin_id is not None else source.plugin_id,
             "enabled": item.enabled,
+            # A private member is owned by the Agent package even when it is
+            # contributed by a Plugin or MCP tree inside that package.
+            "private": is_private,
+            "owner_agent_id": owner_agent_id,
             # Hooks are not an Agent-level selection: an Agent activates them by
             # selecting the Plugin that provides them.
             "assignable": kind is not CapabilityKind.HOOK,
@@ -109,6 +141,7 @@ def control_catalog_snapshot(runtime) -> dict[str, object]:
             'version': RUNTIME_VERSION,
             'origin': CapabilityOrigin.STANDALONE.value, 'plugin_id': None,
             'enabled': True, 'assignable': True, 'preset': name in preset_tools,
+            'private': False, 'owner_agent_id': None,
             'unavailable_reason': '',
         })
 
@@ -155,8 +188,14 @@ def control_catalog_snapshot(runtime) -> dict[str, object]:
             "tools": [],
             "source_kind": "system" if source.metadata.get("system_managed") else source.origin.value,
             "owner_plugin_id": source.plugin_id,
-            "removable": source.plugin_id is None and not source.metadata.get("system_managed", False),
+            "removable": (
+                source.plugin_id is None
+                and not source.metadata.get("system_managed", False)
+                and not source.metadata.get("agent_private")
+            ),
             "health_checked_at": None,
+            "private": bool(source.metadata.get("agent_private")),
+            "owner_agent_id": str(source.metadata.get("owner_agent_id") or "") or None,
         })
     # Worker ToolDirectoryCatalog loads builtins directly, independently of
     # the installed-capability inventory. Mirror that discovery using inspect
@@ -187,6 +226,19 @@ def control_catalog_snapshot(runtime) -> dict[str, object]:
                           if item.source.kind is CapabilityKind.PLUGIN and item.enabled),
         "mcp_servers": sorted(mcp_servers, key=lambda item: str(item["id"])),
     }
+
+
+def _private_resources(runtime, agent_id: str | None):
+    """Private capability trees of one Agent package, if this device has it."""
+
+    if not agent_id:
+        return None
+    package = runtime.agent_packages.inspect(str(agent_id))
+    if package is None:
+        return None
+    from bianbu_agent.agents.private_resources import discover_private_resources
+
+    return discover_private_resources(package.root, package.id)
 
 
 def _read_mcp_descriptor(path: Path) -> dict[str, str]:
@@ -306,11 +358,20 @@ async def _worker_catalog(runtime) -> dict[str, list[dict[str, object]]]:
     return snapshot["capabilities"]
 
 
+def _private_owner_map(runtime) -> dict[tuple[CapabilityKind, str], str]:
+    """Private capability IDs of this Worker's Agent, with their owner."""
+
+    catalog = runtime.plugin_runtime.current_generation.capability_catalog
+    owners = getattr(catalog, "private_owners", None)
+    return dict(owners) if isinstance(owners, Mapping) else {}
+
+
 def _tool_views(runtime) -> list[CapabilityView]:
     generation = runtime.plugin_runtime.current_generation
     catalog = generation.capability_catalog
     catalog_tools = {} if catalog is None else catalog.tools
     preset_tools = set(runtime.config.presets.tools)
+    private_owners = _private_owner_map(runtime)
     items: list[CapabilityView] = []
     for capability_id, contribution in catalog_tools.items():
         metadata = contribution.spec.metadata
@@ -330,6 +391,10 @@ def _tool_views(runtime) -> list[CapabilityView]:
                 plugin_id=source.plugin_id,
                 enabled=not unavailable_reason,
                 preset=capability_id in preset_tools,
+                private=(CapabilityKind.TOOL, capability_id) in private_owners,
+                owner_agent_id=private_owners.get(
+                    (CapabilityKind.TOOL, capability_id)
+                ),
                 unavailable_reason=unavailable_reason,
             )
         )
@@ -352,6 +417,10 @@ def _tool_views(runtime) -> list[CapabilityView]:
                 plugin_id=contribution.plugin_id,
                 enabled=True,
                 preset=capability_id in preset_tools,
+                private=(CapabilityKind.TOOL, capability_id) in private_owners,
+                owner_agent_id=private_owners.get(
+                    (CapabilityKind.TOOL, capability_id)
+                ),
                 unavailable_reason="",
             )
         )
@@ -364,6 +433,7 @@ def _skill_views(runtime) -> list[CapabilityView]:
     catalog = generation.capability_catalog
     catalog_skills = {} if catalog is None else catalog.skills
     preset_skills = set(runtime.config.presets.skills)
+    private_owners = _private_owner_map(runtime)
     items: list[CapabilityView] = []
     for capability_id, contribution in catalog_skills.items():
         source = catalog.sources[(CapabilityKind.SKILL, capability_id)]
@@ -382,6 +452,10 @@ def _skill_views(runtime) -> list[CapabilityView]:
                 plugin_id=source.plugin_id,
                 enabled=not unavailable_reason,
                 preset=capability_id in preset_skills,
+                private=(CapabilityKind.SKILL, capability_id) in private_owners,
+                owner_agent_id=private_owners.get(
+                    (CapabilityKind.SKILL, capability_id)
+                ),
                 unavailable_reason=unavailable_reason,
             )
         )
@@ -405,6 +479,10 @@ def _skill_views(runtime) -> list[CapabilityView]:
                 plugin_id=contribution.plugin_id,
                 enabled=not unavailable_reason,
                 preset=capability_id in preset_skills,
+                private=(CapabilityKind.SKILL, capability_id) in private_owners,
+                owner_agent_id=private_owners.get(
+                    (CapabilityKind.SKILL, capability_id)
+                ),
                 unavailable_reason=unavailable_reason,
             )
         )
@@ -457,12 +535,18 @@ def _hook_views(runtime) -> list[CapabilityView]:
 async def list_capabilities(
     kind: EffectiveCapabilityKind,
     request: Request,
+    agent_id: str | None = None,
 ) -> CapabilityCollectionEnvelope:
-    """Project the immutable active generation plus pending standalone packages."""
+    """Project the immutable active generation plus pending standalone packages.
+
+    ``agent_id`` narrows the catalog to one Expert's view.  Private capabilities
+    that live inside that Expert's package are reported as ``private`` so the
+    editor can show them without offering a toggle.
+    """
 
     runtime = request.app.state.runtime
     if getattr(runtime, "role", "worker") == "control":
-        catalog = control_catalog_snapshot(runtime)["capabilities"]
+        catalog = control_catalog_snapshot(runtime, agent_id)["capabilities"]
         items = [CapabilityView.model_validate(item) for item in catalog[kind]]
         return CapabilityCollectionEnvelope(data=sorted(items, key=lambda item: item.id))
     items = {

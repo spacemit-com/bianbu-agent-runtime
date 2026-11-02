@@ -34,8 +34,8 @@ def test_starter_agent_names_the_capabilities_it_ships_instead_of_a_wildcard() -
 
     A wildcard defers the meaning to whatever the Runtime happens to have
     installed, so every surface had to special-case it: the capability count on
-    the Expert card, the checked boxes in the editor, and the "use a skill
-    temporarily" menu, which can only offer what the Expert does not already
+    the Expert card, the checked boxes in the editor, and the skill picker,
+    which can only offer what the Expert does not already
     have. The declaration now reads as the concrete set this package ships, so
     each entry has to be a capability that exists in this checkout.
 
@@ -48,7 +48,7 @@ def test_starter_agent_names_the_capabilities_it_ships_instead_of_a_wildcard() -
     from bianbu_agent.tools.builtins import BUILTIN_MODULES
 
     agent = yaml.safe_load(
-        (PROJECT_ROOT / "resources" / "default-profile" / "starter-agent.yaml").read_text(
+        (PROJECT_ROOT / "resources" / "agents" / "com.bianbu.627d97ad908c" / "agent.yaml").read_text(
             encoding="utf-8"
         )
     )["agent"]
@@ -109,7 +109,7 @@ async def test_packaged_expert_materializes_the_mcps_its_plugins_own() -> None:
     """
 
     spec = AgentManifest.from_path(
-        PROJECT_ROOT / "resources" / "default-profile" / "starter-agent.yaml"
+        PROJECT_ROOT / "resources" / "agents" / "com.bianbu.627d97ad908c" / "agent.yaml"
     ).spec
     shipped = {
         f"{plugin.name}/{server.name}": SimpleNamespace(owner_plugin_id=plugin.name)
@@ -152,7 +152,6 @@ async def test_packaged_expert_materializes_the_mcps_its_plugins_own() -> None:
 def test_tracked_plugins_and_hooks_use_convention_only_definitions() -> None:
     plugins = PROJECT_ROOT / "resources" / "plugins"
     assert {path.name for path in plugins.iterdir() if path.is_dir()} == {
-        "bianbu.audit",
         "bianbu.bibit.intent",
         "bianbu.memory",
         "bianbu.security",
@@ -189,7 +188,6 @@ def test_tracked_project_home_contains_valid_actual_capability_definitions(tmp_p
     assert len(SkillPackageManager(home).list()) == len(skills)
     assert all(SkillPackageManager(home).verify(path.name) for path in skills)
     assert {plugin.id for plugin in plugins} == {
-        "bianbu.audit",
         "bianbu.bibit.intent",
         "bianbu.memory",
         "bianbu.security",
@@ -200,9 +198,6 @@ def test_tracked_project_home_contains_valid_actual_capability_definitions(tmp_p
         "bianbu.memory/memory.after_run",
         "bianbu.security/security.before_model",
         "bianbu.security/security.before_tool",
-        "bianbu.audit/audit.after_run",
-        "bianbu.audit/audit.after_tool",
-        "bianbu.audit/audit.on_error",
         "bianbu.bibit.intent/bibit-intent.before_run",
         "bianbu.memory/memory",
     } <= qualified
@@ -216,9 +211,9 @@ def test_tracked_project_home_contains_valid_actual_capability_definitions(tmp_p
 
 
 def test_tracked_starter_agent_template_is_valid() -> None:
-    manifest = AgentManifest.from_path(PROJECT_ROOT / "resources" / "default-profile" / "starter-agent.yaml")
+    manifest = AgentManifest.from_path(PROJECT_ROOT / "resources" / "agents" / "com.bianbu.627d97ad908c" / "agent.yaml")
 
-    assert manifest.spec.id == "starter-template"
+    assert manifest.spec.id == "com.bianbu.627d97ad908c"
     assert manifest.spec.name == "BibitEdgeAssistant"
     assert manifest.spec.name_zh == "Bibit端侧智能助手"
     # 默认专家点名它随包发布的每一项能力，而不是交给通配符展开。
@@ -233,12 +228,11 @@ def test_tracked_starter_agent_template_is_valid() -> None:
     assert manifest.spec.metadata.get("avatar") == "🤖"
 
 
-def test_memory_security_and_audit_have_no_top_level_home_directories() -> None:
+def test_memory_and_security_have_no_top_level_home_directories() -> None:
     home = AgentHome(PROJECT_ROOT / ".bianbu-agent")
 
     assert not (home.root / "memory").exists()
     assert not (home.root / "security").exists()
-    assert not (home.root / "audit").exists()
 
 
 @pytest.mark.asyncio
@@ -276,7 +270,6 @@ async def test_bundled_hooks_run_from_installed_plugin_members(
     async with sdk:
         generation = sdk.plugin_runtime.current_generation
         assert set(generation.plugins) == {
-            "bianbu.audit",
             "bianbu.bibit.intent",
             "bianbu.memory",
             "bianbu.security",
@@ -304,8 +297,5 @@ async def test_bundled_hooks_run_from_installed_plugin_members(
     data_root = home.workspace_dir / "plugin-data"
     assert "remember me" in (
         data_root / "bianbu.memory" / "data" / "memory.jsonl"
-    ).read_text(encoding="utf-8")
-    assert "tool.completed" in (
-        data_root / "bianbu.audit" / "data" / "audit.jsonl"
     ).read_text(encoding="utf-8")
     assert not (home.plugins_dir / "bianbu.memory" / "data").exists()

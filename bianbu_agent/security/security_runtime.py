@@ -387,24 +387,6 @@ class SecurityRuntimeClient:
             raise SecurityRuntimeUnavailable("optional 模式不能获取 sandbox policy")
         return _normalise_result(result)
 
-    async def record_network_learning_event(
-        self, agent_id: str, instance_id: str, lease_id: str, pid: int,
-        event: Mapping[str, Any],
-    ) -> bool:
-        result = await self._call(
-            "record_network_learning_event", str(agent_id), str(instance_id),
-            str(lease_id), int(pid), dict(event))
-        return bool(result)
-
-    async def report_network_learning_collector(
-        self, agent_id: str, instance_id: str, lease_id: str, pid: int,
-        state: str, reason: str = "",
-    ) -> bool:
-        result = await self._call(
-            "report_network_learning_collector", str(agent_id), str(instance_id),
-            str(lease_id), int(pid), str(state), str(reason))
-        return bool(result)
-
     async def commit_start(self, lease_id: str, instance_id: str, pid: int,
                            cgroup_path: str, attestation: Mapping[str, Any]) -> dict[str, Any] | None:
         try:
@@ -446,6 +428,27 @@ class SecurityRuntimeClient:
     async def state(self, agent_id: str) -> dict[str, Any]:
         result = await self._call("get_runtime_state", agent_id)
         return {} if result is None else _normalise_result(result)
+
+    async def get_syscall_policy(self, agent_id: str, arch: str) -> dict[str, Any] | None:
+        """Read the versioned syscall denylist owned by securityd.
+
+        The control plane uses this before dispatching a Run to detect a policy
+        version that the long-lived Worker has not loaded yet.  Optional mode
+        returns ``None`` when securityd is unavailable; required mode raises so
+        the caller can fail closed instead of silently running stale policy.
+        """
+        result = await self._call("get_syscall_policy", str(agent_id), str(arch))
+        return None if result is None else _normalise_result(result)
+
+    async def get_network_policy(self, agent_id: str) -> dict[str, Any] | None:
+        """Read the saved network policy and its version from securityd.
+
+        The Worker compiles its egress filter at launch, so the control plane
+        compares this version with the one the running Worker attested against.
+        Optional mode returns ``None`` when securityd is unavailable.
+        """
+        result = await self._call("get_network_policy", str(agent_id))
+        return None if result is None else _normalise_result(result)
 
     async def audit_event(self, agent_id: str, event: str, target: str,
                           result: str) -> int | None:

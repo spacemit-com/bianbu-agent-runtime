@@ -8,7 +8,8 @@
           {
             "type": "command",
             "command": "exec \"${RUNTIME_PYTHON}\" \"$PLUGIN_ROOT/scripts/before_tool.py\"",
-            "timeout": 5
+            "timeout": 5,
+            "mode": "resident"
           }
         ]
       },
@@ -18,17 +19,12 @@
           {
             "type": "command",
             "command": "exec \"${RUNTIME_PYTHON}\" \"$PLUGIN_ROOT/scripts/before_tool.py\"",
-            "timeout": 5
+            "timeout": 5,
+            "mode": "resident"
           }
         ]
       }
     ]
   },
-  "priority": 200,
-  "metadata": {
-    "agent_selectable": true,
-    "display_name": "Bibit ambiguous adjustment guard",
-    "description": "Reject volume/brightness MCP calls when the user request does not name the target setting."
-  },
-  "parallel": true
+  "priority": 200
 }

@@ -52,6 +52,9 @@ class RunContext:
     response: str = ""
     status: str = ""
     account_id: str = DEFAULT_ACCOUNT_ID
+    #: Explicit lifecycle termination.  A Run ending is not Session
+    #: termination, so DLP state is only dropped for these reasons.
+    exit_reason: str = ""
 
     def __post_init__(self) -> None:
         for name in ("run_id", "session_id", "agent_id", "account_id"):
@@ -60,6 +63,7 @@ class RunContext:
         object.__setattr__(self, "metadata", _mapping(self.metadata))
         object.__setattr__(self, "response", str(self.response))
         object.__setattr__(self, "status", str(self.status).strip())
+        object.__setattr__(self, "exit_reason", str(self.exit_reason).strip())
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,14 +71,45 @@ class ContextPatch:
     context_sections: tuple[str, ...] = ()
     metadata: Mapping[str, object] = field(default_factory=dict)
     direct_reply: str | None = None
+    approval: Mapping[str, object] | None = field(default=None, repr=False)
+    # Private tool-argument rewrite for Hook-driven DLP.  It is deliberately
+    # separate from ``metadata``: metadata is projected into run results and
+    # observability surfaces, while this field may contain restored plaintext
+    # that must only reach the tool invocation.
+    tool_arguments: Mapping[str, object] | None = field(default=None, repr=False)
+    #: Text the user is allowed to see after DLP restoration.  Hooks keep the
+    #: stand-in map, so only they can turn `[PII-…]`/natural stand-ins back into
+    #: the original values.  This field carries that result to the Run's
+    #: user-visible content without exposing the map itself.
+    user_visible_text: str | None = field(default=None, repr=False)
+    #: Session stand-in map for restoring streamed deltas before publication.
+    #: It stays inside the Run: never merged into ``metadata``, events or logs.
+    stream_stand_ins: Mapping[str, str] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
+        if self.approval is not None:
+            if not isinstance(self.approval, Mapping) or self.approval.get("kind") != "disable_ntp_and_set_time":
+                raise ValueError("Unsupported BeforeRun approval")
+            object.__setattr__(self, "approval", _mapping(self.approval))
         object.__setattr__(
             self,
             "context_sections",
             tuple(str(item) for item in self.context_sections if str(item)),
         )
         object.__setattr__(self, "metadata", _mapping(self.metadata))
+        if self.tool_arguments is not None:
+            if not isinstance(self.tool_arguments, Mapping):
+                raise ValueError("tool_arguments must be an object")
+            object.__setattr__(self, "tool_arguments", _mapping(self.tool_arguments))
+        if self.user_visible_text is not None:
+            object.__setattr__(self, "user_visible_text", str(self.user_visible_text))
+        if self.stream_stand_ins is not None:
+            if not isinstance(self.stream_stand_ins, Mapping) or any(
+                not isinstance(key, str) or not isinstance(value, str)
+                for key, value in self.stream_stand_ins.items()
+            ):
+                raise ValueError("stream_stand_ins must map strings to strings")
+            object.__setattr__(self, "stream_stand_ins", _mapping(self.stream_stand_ins))
         if self.direct_reply is None:
             normalized_reply = None
         else:
@@ -265,15 +300,12 @@ class HookContribution:
     timeout_seconds: float = 5.0
     id: str | None = None
     metadata: Mapping[str, object] = field(default_factory=dict)
-    # Hooks that declare themselves order-independent may overlap with the
-    # other parallel Hooks of the same point.  The merged patch keeps the
-    # (priority, hook id) order either way, so opting in changes latency only.
-    parallel: bool = False
-    # Hook ids (``<plugin>/<hook>``, globbed) that must finish before this one
-    # starts.  Only Hooks that sort earlier can be waited for; everything else
-    # still overlaps.  A device-side Hook needs this to run after the Security
-    # decision without also queueing behind best-effort Hooks.
-    waits_for: tuple[str, ...] = ()
+    #: Optional start-up work owned by the Plugin (for example spawning a
+    #: resident command Hook).  The host runs it in the background while the
+    #: rest of the generation starts, and a failure never affects the Run.
+    prewarm: Callable[[], Awaitable[None]] | None = field(
+        default=None, repr=False, compare=False,
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "plugin_id", _plugin(self.plugin_id))
@@ -287,16 +319,9 @@ class HookContribution:
             raise TypeError("hook handler must be callable")
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
-        if not isinstance(self.parallel, bool):
-            raise TypeError("parallel must be a boolean")
-        waits_for = tuple(self.waits_for)
-        if waits_for and not self.parallel:
-            raise ValueError("waits_for requires parallel=True")
-        for pattern in waits_for:
-            if not isinstance(pattern, str) or not pattern or len(pattern) > 512:
-                raise ValueError("waits_for entries must be nonempty globs")
-        object.__setattr__(self, "waits_for", waits_for)
         object.__setattr__(self, "metadata", _mapping(self.metadata))
+        if self.prewarm is not None and not callable(self.prewarm):
+            raise TypeError("hook prewarm must be callable")
 
 
 @dataclass(frozen=True, slots=True)

@@ -44,6 +44,59 @@ async def test_command_hook_deny_and_timeout_are_closed(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('event', ['BeforeRun', 'AfterContext', 'PreToolUse',
+                                   'PostToolUse', 'BeforeModel', 'AfterModel',
+                                   'AfterRun', 'OnError'])
+async def test_command_hook_may_deny_at_every_event(tmp_path, event):
+    """Event points say when a Hook runs, not whether it may veto."""
+
+    hook = load(tmp_path, 'print(\'{"decision":"deny","reason":"blocked"}\')',
+                event=event)
+    with pytest.raises(PermissionError, match='blocked'):
+        await hook.handler(RunContext('r', 's', 'a', 'terminal',
+                                      metadata={'tool': 'terminal'}))
+
+
+@pytest.mark.asyncio
+async def test_failing_hook_fails_closed_at_every_event(tmp_path):
+    """A Hook that cannot decide must not silently allow the Run."""
+
+    for event in ('AfterContext', 'AfterModel', 'AfterRun', 'OnError'):
+        hook = load(tmp_path / event, 'raise SystemExit(3)', event=event)
+        with pytest.raises(PermissionError, match='exited with status 3'):
+            await hook.handler(RunContext('r', 's', 'a', 'terminal',
+                                          metadata={'tool': 'terminal'}))
+
+
+@pytest.mark.asyncio
+async def test_failing_gate_hook_records_stderr_for_diagnosis(tmp_path, caplog):
+    # A Hook that dies before printing JSON leaves only its exit status on the
+    # PermissionError; the cause is on stderr and used to be discarded, which
+    # made a board-side failure indistinguishable from an intentional denial.
+    hook = load(tmp_path, 'import sys\nprint("boom: cannot import lib", file=sys.stderr)\nsys.exit(1)\n')
+    with caplog.at_level('ERROR', logger='bianbu_agent.hooks.command'):
+        with pytest.raises(PermissionError, match='exited with status 1'):
+            await hook.handler(RunContext('r','s','a','terminal',metadata={'tool':'terminal'}))
+    record = next(r for r in caplog.records if r.getMessage().startswith('Hook command exited'))
+    assert record.__dict__['event'] == 'hook_command_failed'
+    assert 'boom: cannot import lib' in record.getMessage()
+    # The Run's own error must stay generic: Hook stderr can echo prompt text.
+    with pytest.raises(PermissionError) as failure:
+        await hook.handler(RunContext('r','s','a','terminal',metadata={'tool':'terminal'}))
+    assert 'boom' not in str(failure.value)
+
+
+@pytest.mark.asyncio
+async def test_failing_gate_hook_without_stderr_still_records(tmp_path, caplog):
+    hook = load(tmp_path, 'raise SystemExit(3)\n')
+    with caplog.at_level('ERROR', logger='bianbu_agent.hooks.command'):
+        with pytest.raises(PermissionError, match='exited with status 3'):
+            await hook.handler(RunContext('r','s','a','terminal',metadata={'tool':'terminal'}))
+    record = next(r for r in caplog.records if r.getMessage().startswith('Hook command exited'))
+    assert '(no stderr output)' in record.getMessage()
+
+
+@pytest.mark.asyncio
 async def test_gate_hook_timeout_names_hook_and_budget(tmp_path):
     hook = load(tmp_path, 'import time\ntime.sleep(30)\n', timeout=0.4)
     with pytest.raises(PermissionError) as failure:
@@ -344,13 +397,16 @@ async def test_command_state_is_private_to_one_plugin(tmp_path):
     assert again.metadata == {'seen': {'first': 1}}
 
 
-def test_command_hook_rejects_non_boolean_parallel(tmp_path):
+@pytest.mark.parametrize('key, value', [('parallel', True), ('waits_for', ['*'])])
+def test_command_hook_rejects_scheduling_keys(tmp_path, key, value):
+    """Hooks all run concurrently, so scheduling is not part of the contract."""
+
     plugin = tmp_path / 'example.commands'
     root = plugin / 'hooks' / 'example.check'
     root.mkdir(parents=True)
     (plugin / 'scripts').mkdir()
     (plugin / 'scripts' / 'check.py').write_text('print("{}")')
-    (root / 'hook.json').write_text(json.dumps({'schema_version': 1, 'parallel': 'yes',
+    (root / 'hook.json').write_text(json.dumps({'schema_version': 1, key: value,
         'hooks': {'PreToolUse': [{'hooks': [
             {'type': 'command', 'command': 'python3 x.py'}]}]}}))
     with pytest.raises(ValueError):

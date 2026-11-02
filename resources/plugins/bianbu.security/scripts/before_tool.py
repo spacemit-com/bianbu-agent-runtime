@@ -73,6 +73,24 @@ async def before_tool(run: dict) -> dict | None:
     if not tool:
         return None
 
+    # The model only ever saw opaque DLP handles.  Resolve them inside this
+    # trusted Hook process so the tool receives the original values.  This is
+    # deliberately a private ContextPatch field, not run metadata: metadata is
+    # projected to API/observability, while tool arguments must not be.
+    restore = getattr(bridge, "restore_placeholders", None)
+    if callable(restore):
+        restored_args, restored_n = restore(
+            str(run.get("session_id") or ""), dict(args))
+    else:  # test doubles and older bridges
+        restored_args, restored_n = dict(args), 0
+
+    def _result(payload: dict) -> dict:
+        if restored_n:
+            payload["dlp_restored_placeholders"] = restored_n
+            return dict(metadata={"securityd": payload},
+                        tool_arguments=restored_args)
+        return dict(metadata={"securityd": payload})
+
     resolved = resolve_capability(
         tool, args, client_provider=provider,
         tool_metadata=(dict(tool_metadata) if isinstance(tool_metadata, Mapping) else {}),
@@ -100,19 +118,19 @@ async def before_tool(run: dict) -> dict | None:
             # HITL 通道弹审批。真正的审批发生在中间件的
             # securityd_requires_confirm（after_model 阶段，早于本 hook）。
             payload["requires_approval"] = True
-        return dict(metadata={"securityd": payload})
+        return _result(payload)
 
     capability, scope = resolved
     if not capability:
-        return None  # 显式免判权（如 clarify）
+        # 显式免判权（如 clarify）仍要还原句柄，否则工具拿不到原值。
+        return (dict(tool_arguments=restored_args) if restored_n else None)
 
     agent_id = resolve_agent_id(run["agent_id"], client_provider=provider)
 
     if not bridge.available:
         bridge.degrade(tool, capability, bridge.reason)  # 高危抛，低危放行
-        return dict(metadata={
-            "securityd": {"decision": "ALLOW", "degraded": True,
-                          "capability": capability, "tool": tool}})
+        return _result({"decision": "ALLOW", "degraded": True,
+                        "capability": capability, "tool": tool})
 
     try:
         # D-9：远端 MCP 的参数会发给第三方服务器，DLP 要据此提一档
@@ -132,10 +150,9 @@ async def before_tool(run: dict) -> dict | None:
             run_id=run["run_id"])
     except Exception as e:  # noqa: BLE001 — 总线/框架异常走 fail 分档
         bridge.degrade(tool, capability, e)
-        return dict(metadata={
-            "securityd": {"decision": "ALLOW", "degraded": True,
-                          "capability": capability, "tool": tool,
-                          "error": str(e)}})
+        return _result({"decision": "ALLOW", "degraded": True,
+                        "capability": capability, "tool": tool,
+                        "error": str(e)})
 
     decision = result.decision.value
     meta = dict(result.metadata or {})
@@ -155,13 +172,12 @@ async def before_tool(run: dict) -> dict | None:
         # 明确拒绝 → 直接抛；不可达 → 走 fail 分档（低危放行、高危才抛）。
         # 干预点框架对 handler 异常/超时（reason=handler_error/handler_timeout）
         # 的 fail-closed BLOCK 也是硬拒绝，不能落入"不可达降级"再被低危放行。
-        if (meta.get("dlp_action") != "block"
+        if (meta.get("dlp_action") != "deny"
                 and meta.get("reason") not in {"denied", "handler_error", "handler_timeout"}):
             bridge.degrade(tool, capability, result.message or "securityd 不可达")
-            return dict(metadata={
-                "securityd": {"decision": "ALLOW", "degraded": True,
-                              "capability": capability, "tool": tool,
-                              "error": result.message}})
+            return _result({"decision": "ALLOW", "degraded": True,
+                            "capability": capability, "tool": tool,
+                            "error": result.message})
         # YOLO 能力旁路由 securityd 判权完成；最终 BLOCK 仍是强制约束。
         raise SecurityDenied(
             tool=tool, capability=capability,
@@ -182,10 +198,17 @@ async def before_tool(run: dict) -> dict | None:
         payload["dlp_masked_args"] = (
             modified.get("args") if isinstance(modified, dict) else modified)
 
-    return dict(metadata={"securityd": payload})
+    return _result(payload)
+
+
+def _warmup():
+    _bootstrap()
+    from lib import warm_bridge
+
+    warm_bridge()
 
 
 if __name__ == "__main__":
     from protocol import main
 
-    main(before_tool)
+    main(before_tool, warmup=_warmup)

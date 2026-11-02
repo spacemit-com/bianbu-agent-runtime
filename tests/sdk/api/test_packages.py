@@ -82,6 +82,7 @@ async def test_typed_package_dispatch_installs_inspects_verifies_and_deletes_eac
                 assert view["agent"]["model"] == {
                     "provider": "fixture",
                     "name": "fixture-model",
+                    "effort": "low",
                 }
                 assert view["agent"]["mcps"] == ["mcp.weather"]
 
@@ -286,6 +287,26 @@ async def test_plugin_resources_expose_members_and_preserve_package_lifecycle(
         assert (
             await client.get("/api/v1/plugins/vendor.bundle")
         ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_private_plugin_cannot_be_deleted_as_a_device_package(
+    tmp_path: Path,
+) -> None:
+    """A Plugin shipped inside an Expert belongs to that package, not the device."""
+
+    async with _api(tmp_path / "runtime") as (client, runtime):
+        expert = runtime.agent_packages.create(
+            AgentSpec(id="expert", name="Expert")
+        )
+        private = _plugin(expert.root / "plugins")
+        assert private.is_dir()
+
+        response = await client.delete("/api/v1/plugins/vendor.bundle")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "plugin_private"
+    assert private.is_dir()
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,16 @@ def test_package_root_contains_only_stable_facade_and_configuration_modules() ->
     }
 
 
+def test_first_install_requests_a_mode_reset_but_reinstalls_do_not() -> None:
+    repository = Path(__file__).resolve().parents[2]
+    postinst = (repository / "debian" / "postinst").read_text(encoding="utf-8")
+
+    assert "mark_package_first_install" in postinst
+    assert "/run/agent-runtime/package-first-install" in postinst
+    assert 'if [ -z "$previous_version" ]' in postinst
+    assert "systemctl restart bianbu-agent-runtime.service" in postinst
+
+
 def test_security_implementation_is_owned_by_security_package() -> None:
     security_root = PACKAGE_ROOT / "security"
     assert security_root.is_dir()
@@ -28,11 +38,14 @@ def test_security_implementation_is_owned_by_security_package() -> None:
         path.name for path in security_root.glob("*.py")
     } == {
         "__init__.py",
+        "agent_deletion.py",
+        "agent_reconciliation.py",
         "agent_registration.py",
+        "audit_view.py",
+        "capability_declarations.py",
         "dbus_client_helper.py",
+        "enablement.py",
         "execution_runtime.py",
-        "network_learning_collector.py",
-        "network_learning_privileged.py",
         "security_codesign.py",
         "security_errors.py",
         "security_dlp.py",

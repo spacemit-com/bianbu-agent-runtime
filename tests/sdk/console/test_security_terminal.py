@@ -34,7 +34,7 @@ async def test_security_error_survives_incremental_tool_bubble_update(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_pause_action_reports_request_only(tmp_path):
+async def test_unregister_action_confirms_and_refreshes(tmp_path):
     async with _running_console(tmp_path) as (base_url, _):
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=True)
@@ -43,15 +43,23 @@ async def test_pause_action_reports_request_only(tmp_path):
                 await page.goto(base_url + '/chat', wait_until='domcontentloaded')
                 await page.wait_for_function('() => agentsLoaded')
                 await page.evaluate('''async () => {
-                    securityInvoke = async op => op === 'agents.list.v1'
-                        ? {agents:[{agent_id:'acceptance',name:'Acceptance'}]} : {ok:true};
+                    window.unregisterCalls=[];
+                    window.listCalls=0;
+                    securityInvoke = async (op, params={}) => {
+                        if(op === 'agents.list.v1') { listCalls += 1; return {agents:[{agent_id:'acceptance',name:'Acceptance'}]}; }
+                        if(op === 'agents.unregister.v1') unregisterCalls.push(params.agent_id);
+                        return {ok:true};
+                    };
                     window.pauseAlerts=[]; window.alert=text=>pauseAlerts.push(text);
+                    window.confirm=text=>{ pauseAlerts.push(text); return true; };
                     await loadSecurityOtherView('agents');
-                    document.querySelector('.security-agent-suspend').click();
+                    document.querySelector('.security-agent-unregister').click();
                 }''')
                 await page.wait_for_function('() => pauseAlerts.length > 0')
-                assert await page.locator('.security-agent-suspend').text_content() == '发送暂停请求'
-                assert '未停止' in (await page.evaluate('pauseAlerts[0]'))
+                assert await page.evaluate('unregisterCalls') == ['acceptance']
+                assert await page.evaluate('listCalls') == 2
+                assert '注销' in (await page.evaluate('pauseAlerts[0]'))
+                assert '不可撤销' in (await page.evaluate('pauseAlerts[0]'))
             finally:
                 await browser.close()
 
@@ -72,7 +80,7 @@ async def test_tool_policy_change_persists_and_refreshes(tmp_path):
                     securityInvoke = async (op, params={}) => {
                         if(op==='agents.list.v1') return {agents:[{agent_id:'acceptance',name:'Acceptance'}]};
                         if(op==='capabilities.update.v1') policyCalls.push([params.tool, params.policy]);
-                        if(op==='agents.security-mode.get.v1') return {mode:'normal'};
+                        if(op==='agents.security-mode.get.v1') return {mode:'safe'};
                         if(op==='agents.get.v1') return {agent_id:'acceptance', capabilities:[{tool:'terminal',policy:'ask'}]};
                         if(op==='capabilities.catalog.v1') return {capabilities:[
                             {tool:'terminal',policy:'ask',default_policy:'ask',framework:'runtime',summary:'运行命令'},

@@ -7,11 +7,11 @@
           {
             "type": "command",
             "command": "exec \"${RUNTIME_PYTHON}\" \"$PLUGIN_ROOT/scripts/before_tool.py\"",
-            "timeout": 35.0
+            "timeout": 35.0,
+            "mode": "resident"
           }
         ]
       }
     ]
-  },
-  "parallel": true
+  }
 }

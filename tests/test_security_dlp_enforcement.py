@@ -1,7 +1,9 @@
-"""Normal-mode DLP BLOCK terminates even low-risk tool calls.
+"""DLP DENY terminates the Run at every Hook event.
 
-YOLO skips the scanner in SecurityBridge before any policy handler runs;
-that contract is covered in test_security_bridge_discovery.
+Every event point may veto: a denial never degrades into a metadata flag that
+some other Hook has to notice.  YOLO skips the scanner in SecurityBridge
+before any policy handler runs; that contract is covered in
+test_security_bridge_discovery.
 """
 import importlib.util
 from pathlib import Path
@@ -14,7 +16,7 @@ ROOT = Path(__file__).parents[1] / 'resources/plugins/bianbu.security'
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mode', ['normal'])
+@pytest.mark.parametrize('mode', ['safe'])
 @pytest.mark.parametrize('stage', ['before_run', 'before_model', 'after_context', 'after_model', 'after_tool', 'before_tool'])
 async def test_dlp_block_is_not_a_capability_override(monkeypatch, mode, stage):
     saved_modules = {k: v for k, v in sys.modules.items() if k == "lib" or k.startswith("lib.")}
@@ -24,7 +26,7 @@ async def test_dlp_block_is_not_a_capability_override(monkeypatch, mode, stage):
     try:
         import lib
         result = SimpleNamespace(decision=SimpleNamespace(value='BLOCK'),
-                                 metadata={'dlp_action': 'block', 'max_risk': 'L2'},
+                                 metadata={'dlp_action': 'deny', 'max_risk': 'L2'},
                                  message='synthetic phone blocked', modified_data=None)
         class Bridge:
             available = True
@@ -45,13 +47,8 @@ async def test_dlp_block_is_not_a_capability_override(monkeypatch, mode, stage):
         run = dict(run_id='r', session_id='s', agent_id='a', request='13824681357',
                    metadata={'tool': 'read_file', 'arguments': {'path': '13824681357'},
                              'response': '13824681357', 'result': '13824681357'})
-        if stage in {'before_run', 'before_model', 'before_tool'}:
-            with pytest.raises(PermissionError, match='synthetic phone blocked'):
-                await getattr(module, stage)(run)
-        else:
-            patch = await getattr(module, stage)(run)
-            flag = {'after_context': 'deny_run', 'after_model': 'output_blocked', 'after_tool': 'result_blocked'}[stage]
-            assert patch['metadata']['securityd'].get(flag) is True
+        with pytest.raises(PermissionError, match='synthetic phone blocked'):
+            await getattr(module, stage)(run)
     finally:
         sys.path.remove(str(ROOT))
         for key in list(sys.modules):

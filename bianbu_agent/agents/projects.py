@@ -274,11 +274,9 @@ allow_unmanaged_capabilities: true
 
 runtime:
   control:
-    execution:
-      requested_mode: host
+    handshake_timeout_seconds: 60
   worker:
-    execution:
-      requested_mode: host
+    max_concurrent_runs: 4
 
 security:
   required: false

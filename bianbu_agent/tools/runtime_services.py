@@ -6,15 +6,15 @@ import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
-
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.tools import BaseTool
-from langgraph.types import interrupt
+from typing import TYPE_CHECKING, Any
 
 from bianbu_agent.sessions.log_store import transcript_run_records
 from bianbu_agent.sessions.projection import read_projection, record_from
 from bianbu_agent.tools.state import ConsoleState
+
+if TYPE_CHECKING:
+    from langchain_core.language_models.chat_models import BaseChatModel
+    from langchain_core.tools import BaseTool
 
 
 class _GenerationRuntimeServices:
@@ -171,6 +171,10 @@ class RuntimeServices:
 
     @staticmethod
     def interrupt(payload: dict[str, object]) -> object:
+        # Prompt-time only: importing langgraph.types here keeps the Worker
+        # startup path free of the graph runtime.
+        from langgraph.types import interrupt
+
         return interrupt(payload)
 
     def records(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

@@ -9,191 +9,12 @@ from fastapi import HTTPException
 from bianbu_agent.api import security
 
 
-def test_network_learning_operations_forward_exact_parameters(monkeypatch):
-    calls = []
-    events = {
-        "agent_id": "agent.demo",
-        "events": [{"event_type": "dns_query", "domain": "api.example.com"}],
-        "total": 1,
-        "next_cursor": None,
-    }
-
-    def call(method, *args, **kwargs):
-        calls.append((method, args, kwargs))
-        return {
-            "get_network_learning_events": events,
-            "get_network_learning_status": {
-                "agent_id": "agent.demo", "state": "active", "reason": "",
-            },
-            "clear_network_learning_events": True,
-        }[method]
-
-    monkeypatch.setattr(security, "_call_client", call)
-    assert security._invoke_sync(
-        "network-learning.events.v1",
-        {"agent_id": "agent.demo", "limit": 20, "cursor": 4},
-    ) == events
-    assert security._invoke_sync(
-        "network-learning.status.v1", {"agent_id": "agent.demo"},
-    )["state"] == "active"
-    assert security._invoke_sync(
-        "network-learning.clear.v1", {"agent_id": "agent.demo"},
-    ) == {"ok": True}
-    assert calls == [
-        ("get_network_learning_events", ("agent.demo", 20, 4), {}),
-        ("get_network_learning_status", ("agent.demo",), {}),
-        ("clear_network_learning_events", ("agent.demo",), {}),
-    ]
-
-
-@pytest.mark.parametrize(
-    "params,error",
-    [
-        ({"agent_id": "", "limit": 20, "cursor": 0}, "agent_id"),
-        ({"agent_id": "agent.demo", "limit": 0, "cursor": 0}, "limit"),
-        ({"agent_id": "agent.demo", "limit": 201, "cursor": 0}, "limit"),
-        ({"agent_id": "agent.demo", "limit": 20, "cursor": -1}, "cursor"),
-        ({"agent_id": "agent.demo", "limit": "many", "cursor": 0}, "limit"),
-    ],
-)
-def test_network_learning_events_rejects_invalid_pagination_before_client(
-    monkeypatch, params, error,
-):
-    monkeypatch.setattr(
-        security, "_call_client",
-        lambda *args, **kwargs: pytest.fail("invalid request reached securityd"),
-    )
-    with pytest.raises(ValueError, match=error):
-        security._invoke_sync("network-learning.events.v1", params)
-
-
-@pytest.mark.asyncio
-async def test_old_security_learning_api_returns_incompatible_envelope(monkeypatch):
-    monkeypatch.setattr(security, "_client", lambda: SimpleNamespace())
-    from starlette.requests import Request
-    scope = {"type": "http", "method": "POST", "path": "/security-api/invoke",
-             "headers": [(b"content-type", b"application/json")],
-             "query_string": b"", "server": ("test", 80),
-             "client": ("test", 1), "scheme": "http"}
-    body = (
-        b'{"protocolVersion":1,"serviceId":"security","requestId":"req-learning",'
-        b'"operationId":"network-learning.status.v1",'
-        b'"params":{"agent_id":"agent.demo"}}'
-    )
-    sent = False
-
-    async def receive():
-        nonlocal sent
-        if sent:
-            return {"type": "http.disconnect"}
-        sent = True
-        return {"type": "http.request", "body": body, "more_body": False}
-
-    response = await security.invoke_security(Request(scope, receive))
-    assert response["ok"] is False
-    assert response["error"]["code"] == "incompatible"
-    assert response["error"]["retryable"] is False
-
-
-@pytest.mark.asyncio
-async def test_network_policy_learning_requires_agent_restart(monkeypatch):
-    from starlette.requests import Request
-
-    calls = []
-
-    class Runtime:
-        async def apply_network_learning_policy(self, agent_id, mode, version):
-            calls.append((agent_id, mode, version))
-            return {"active_instances": 1, "collectors_started": 1,
-                    "collectors_stopped": 0, "degraded_instances": 0}
-
-    monkeypatch.setattr(
-        security, "_invoke_sync",
-        lambda operation, params: {
-            "ok": True, "agent_id": params["agent_id"],
-            "mode": params["mode"], "version": 7, "domains": [],
-        },
-    )
-    scope = {"type": "http", "method": "POST", "path": "/security-api/invoke",
-             "headers": [(b"content-type", b"application/json")],
-             "query_string": b"", "server": ("test", 80),
-             "client": ("test", 1), "scheme": "http",
-             "app": SimpleNamespace(state=SimpleNamespace(runtime=Runtime()))}
-    body = (
-        b'{"protocolVersion":1,"serviceId":"security","requestId":"req-policy",'
-        b'"operationId":"network-policy.update.v1",'
-        b'"params":{"agent_id":"agent.demo","mode":"learning",'
-        b'"domains":[]}}'
-    )
-    sent = False
-
-    async def receive():
-        nonlocal sent
-        if sent:
-            return {"type": "http.disconnect"}
-        sent = True
-        return {"type": "http.request", "body": body, "more_body": False}
-
-    response = await security.invoke_security(Request(scope, receive))
-
-    assert response["ok"] is True
-    assert response["result"]["runtime_learning"] == {
-        "restart_required": True, "instances": 0,
-    }
-    assert calls == []
-
-
-@pytest.mark.asyncio
-async def test_bwrap_restart_required_skips_runtime_hot_apply(monkeypatch):
-    from starlette.requests import Request
-
-    class Runtime:
-        async def apply_network_learning_policy(self, *args):
-            pytest.fail("bwrap pending-restart policy must not be hot-applied")
-
-    monkeypatch.setattr(
-        security, "_invoke_sync",
-        lambda operation, params: {
-            "ok": True, "agent_id": params["agent_id"],
-            "mode": params["mode"], "version": 8, "domains": [],
-            "apply": {"restart_required": True,
-                      "restart_required_instances": 2},
-        },
-    )
-    scope = {"type": "http", "method": "POST", "path": "/security-api/invoke",
-             "headers": [(b"content-type", b"application/json")],
-             "query_string": b"", "server": ("test", 80),
-             "client": ("test", 1), "scheme": "http",
-             "app": SimpleNamespace(state=SimpleNamespace(runtime=Runtime()))}
-    body = (
-        b'{"protocolVersion":1,"serviceId":"security","requestId":"req-bwrap",'
-        b'"operationId":"network-policy.update.v1",'
-        b'"params":{"agent_id":"com.bianbu.runtime","mode":"learning",'
-        b'"domains":[]}}'
-    )
-    sent = False
-
-    async def receive():
-        nonlocal sent
-        if sent:
-            return {"type": "http.disconnect"}
-        sent = True
-        return {"type": "http.request", "body": body, "more_body": False}
-
-    response = await security.invoke_security(Request(scope, receive))
-
-    assert response["ok"] is True
-    assert response["result"]["runtime_learning"] == {
-        "restart_required": True, "instances": 2,
-    }
-
-
 def test_security_mode_get_operation_calls_securityd_client(monkeypatch):
     calls = []
     monkeypatch.setattr(
         security, "_call_client",
         lambda method, *args, **kwargs: calls.append((method, args)) or {
-            "agent_id": args[0], "mode": "normal"
+            "agent_id": args[0], "mode": "safe"
         },
     )
 
@@ -201,7 +22,7 @@ def test_security_mode_get_operation_calls_securityd_client(monkeypatch):
         "agents.security-mode.get.v1", {"agent_id": "agent.demo"}
     )
 
-    assert result == {"agent_id": "agent.demo", "mode": "normal"}
+    assert result == {"agent_id": "agent.demo", "mode": "safe"}
     assert calls == [("get_agent_security_mode", ("agent.demo",))]
 
 
@@ -210,7 +31,7 @@ def test_security_mode_update_operation_calls_securityd_client(monkeypatch):
     monkeypatch.setattr(
         security, "_call_client",
         lambda method, *args, **kwargs: calls.append((method, args)) or {
-            "agent_id": args[0], "old_mode": "normal", "mode": args[1]
+            "agent_id": args[0], "old_mode": "safe", "mode": args[1]
         },
     )
 
@@ -287,15 +108,45 @@ def test_audit_query_does_not_fall_back_on_old_security(monkeypatch):
         security._invoke_sync("audit.query.v1", {"agent_id": "a1"})
 
 
-def test_audit_verification_remains_explicit(monkeypatch):
+def test_audit_view_enriches_the_bounded_page(monkeypatch):
     calls = []
-    def call(method, *args):
-        calls.append((method, args))
-        return "/tmp/audit-export.json" if method == "export_audit" else True
+    page = {
+        "records": [
+            {"seq": 2, "ts": "2026-10-23T09:00:00+00:00",
+             "agent_id": "a1", "op_type": "check_permission",
+             "target": "terminal:", "result": "deny"},
+            {"seq": 1, "ts": "2026-10-23T09:00:00+00:00",
+             "agent_id": "a1", "op_type": "bind_caller",
+             "target": ":1.2", "result": "success"},
+        ],
+        "snapshot_seq": 20, "has_more": True, "next_cursor": 1,
+    }
+
+    def call(method, query):
+        assert method == "query_audit"
+        request = security.json.loads(query)
+        calls.append(request)
+        rows = [row for row in page["records"]
+                if not request["cursor"] or row["seq"] < request["cursor"]]
+        return {**page, "records": rows, "has_more": bool(rows),
+                "next_cursor": rows[-1]["seq"] if rows else None}
+
     monkeypatch.setattr(security, "_call_client", call)
-    assert security._invoke_sync("audit.verify.v1", {"agent_id": "a1"}) == {"intact": True}
-    assert [method for method, _ in calls] == ["export_audit", "verify_audit_chain"]
-    assert security.json.loads(calls[0][1][0]) == {"agent_id": "a1"}
+    query = {"agent_id": "a1", "filter": "all", "limit": 10,
+             "cursor": 5, "snapshot_seq": 20,
+             "from": "2026-10-23T00:00:00+00:00",
+             "to": "2026-10-23T23:59:59+00:00"}
+    result = security._invoke_sync("audit.view.v1", query)
+    assert calls[0] == {**query, "limit": 200}
+    assert result["snapshot_seq"] == 20
+    assert result["summary"]["total"] == 2
+    assert result["summary"]["attention"] == 1
+    assert result["records"][0]["category"] == "decision"
+    assert result["records"][0]["severity"] == "critical"
+    assert "被拒绝使用 terminal" in result["records"][0]["title"]
+    assert result["records"][1]["category"] == "identity"
+    assert result["records"][1]["attention"] is False
+
 
 def test_capability_catalog_uses_authoritative_client(monkeypatch):
     calls=[]
@@ -334,7 +185,7 @@ def test_security_mode_update_rejects_values_outside_closed_enum(monkeypatch, mo
         lambda *args, **kwargs: pytest.fail("invalid mode reached securityd client"),
     )
 
-    with pytest.raises(ValueError, match="normal|yolo"):
+    with pytest.raises(ValueError, match="safe|yolo"):
         security._invoke_sync(
             "agents.security-mode.update.v1",
             {"agent_id": "agent.demo", "mode": mode},
@@ -418,6 +269,39 @@ async def test_capability_update_registers_tool_policy(monkeypatch):
     })
     assert result['ok'] is True
     assert calls == [('agent', [{'tool': 'terminal', 'policy': 'deny', 'framework': 'runtime'}])]
+
+
+@pytest.mark.asyncio
+async def test_capability_policy_change_does_not_touch_the_worker(monkeypatch):
+    """allow/ask/deny is one policy row; it must not rebuild the sandbox."""
+
+    calls = []
+
+    class Client:
+        def set_capability_policy(self, agent_id, tool, policy):
+            calls.append((agent_id, tool, policy))
+            return True
+
+    monkeypatch.setattr(
+        security, '_call_client',
+        lambda method, *args, **kwargs: getattr(Client(), method)(*args, **kwargs),
+    )
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("a policy row must not restart the Worker")
+
+    monkeypatch.setattr(security, '_update_security_mode', forbidden)
+
+    for operation in ('capabilities.policy.v1', 'capabilities.grant.v1'):
+        result = await _invoke_envelope(operation, {
+            'agent_id': 'agent', 'tool': 'terminal', 'policy': 'allow',
+        })
+        assert result['ok'] is True
+
+    assert calls == [
+        ('agent', 'terminal', 'allow'),
+        ('agent', 'terminal', 'allow'),
+    ]
 
 
 @pytest.mark.asyncio

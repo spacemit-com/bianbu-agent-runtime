@@ -16,10 +16,17 @@ from bianbu_agent.mcp.credentials import load_environment
 
 _PLACEHOLDER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*|workspace)\}")
 _COMMON_KEYS = frozenset(
-    {"display_name", "transport", "timeout_seconds", "startup_timeout_seconds"}
+    {
+        "schema_version",
+        "display_name",
+        "transport",
+        "timeout_seconds",
+        "startup_timeout_seconds",
+    }
 )
 _STDIO_KEYS = _COMMON_KEYS | {"command", "args", "env"}
 _HTTP_KEYS = _COMMON_KEYS | {"url", "headers"}
+SUPPORTED_MCP_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +135,18 @@ def _load_mcp_config_bytes(
         raise ValueError("mcp.json must contain an object")
     if not all(isinstance(key, str) for key in document):
         raise ValueError("mcp.json keys must be strings")
+    if "definition" in document:
+        document = _apm_definition(document)
+
+    # An absent key is an unversioned document; an explicit value, including
+    # null, must name a version this Runtime understands.
+    if "schema_version" in document:
+        schema_version = document["schema_version"]
+        if schema_version != SUPPORTED_MCP_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported_schema_version: {schema_version!r} "
+                f"(supported: {SUPPORTED_MCP_SCHEMA_VERSION})"
+            )
 
     transport = document.get("transport")
     if transport not in {"stdio", "streamable-http", "sse"}:
@@ -197,6 +216,44 @@ def _load_mcp_config_bytes(
     )
 
 
+_APM_MCP_KEYS = frozenset(
+    {
+        "schema_version",
+        "name",
+        "name_zh",
+        "name_en",
+        "version",
+        "description",
+        "description_zh",
+        "definition",
+    }
+)
+
+
+def _apm_definition(document: dict) -> dict:
+    """Unwrap the APM submission form carried by an Agent package.
+
+    APM publishes an MCP Power as metadata plus a ``definition`` object.  The
+    Runtime's installed form is that object alone, so flatten it here instead
+    of keeping two parsers.
+    """
+
+    definition = document.get("definition")
+    if not isinstance(definition, dict):
+        raise ValueError("definition must be an object")
+    unknown = sorted(set(document) - _APM_MCP_KEYS)
+    if unknown:
+        label = "key" if len(unknown) == 1 else "keys"
+        raise ValueError(f"unknown mcp.json {label}: {', '.join(unknown)}")
+    if document.get("schema_version") != 2:
+        raise ValueError("mcp.json schema_version must be 2")
+    flattened = dict(definition)
+    display_name = document.get("name_en") or document.get("name")
+    if isinstance(display_name, str) and display_name.strip():
+        flattened.setdefault("display_name", display_name.strip())
+    return flattened
+
+
 def _positive_seconds(value: object, name: str) -> float:
     if (
         isinstance(value, bool)
@@ -250,6 +307,7 @@ def _expand(
 
 __all__ = [
     "MCPServerConfig",
+    "SUPPORTED_MCP_SCHEMA_VERSION",
     "load_mcp_config",
     "validate_mcp_config",
     "validate_mcp_config_bytes",

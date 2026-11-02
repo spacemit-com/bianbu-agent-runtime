@@ -49,6 +49,7 @@ python3 scripts/create_expert.py \
   --description-zh "中英双向翻译专家" \
   --soul "忠实翻译，不增删原意；保留术语、语气和格式。" \
   --provider <provider> --model <model> \
+  [--effort off|low|high|max] \
   [--tool <tool-id>] [--skill <skill-id>] [--mcp <mcp-id>] [--plugin <plugin-id>] \
   [--avatar 译]
 ```
@@ -57,6 +58,8 @@ python3 scripts/create_expert.py \
 Console and Bibit show for their own language, and `description_zh` is the
 Chinese summary. Never invent display text: ask the user for the wording, or
 report the field that is still missing.
+`--effort` selects reasoning intensity; omit it to use `low`, or pass `off`,
+`high`, or `max` when the user asked for a different level.
 
 It prints one JSON summary, for example
 `{"expert_id": "com.bianbu.1a2b3c4d5e6f", "name": "TranslationExpert",
@@ -80,9 +83,8 @@ bianbu-agent --config ~/.bianbu-agent/config.yaml agent verify <EXPERT_ID>
 
 Stop with the Runtime's own message when the request is rejected, or when the
 created expert reports `available: false` or a non-empty `unavailable_reason`. A
-non-empty `missing_powers` is a gap, not a failure: the Runtime exposes it in the
-expert's `## Power Dependencies` context and the expert closes it through the
-bundled `using-apm` handbook.
+non-empty `missing_powers` is a gap, not a failure: the verified declaration
+reports it, and the expert closes it through the bundled `using-apm` handbook.
 
 Updating an existing expert needs the user to name it: read it with `agent show`,
 then re-run the script with `--update <EXPERT_ID>` and *only* the fields the user

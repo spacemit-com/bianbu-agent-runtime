@@ -51,14 +51,7 @@ async def agent_top(request: Request) -> AgentTopEnvelope:
     runtime = request.app.state.runtime
     agents = await runtime.agents.list()
     sessions = await runtime.sessions.list()
-    runs = [
-        run
-        for run in await runtime.runs.list()
-        if dict(getattr(run, "request", {}) or {}).get("metadata", {}).get(
-            "console_operation"
-        )
-        != "generate_title"
-    ]
+    runs = await runtime.runs.list()
     providers = {
         item.id: item for item in await runtime.model_configs.list_providers()
     }

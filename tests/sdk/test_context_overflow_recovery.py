@@ -145,12 +145,18 @@ def _messages_text(messages) -> str:
     return "\n".join(str(getattr(message, "content", "")) for message in messages)
 
 
+def _model_events(events) -> list:
+    """Engine events other than the leading request record."""
+
+    return [event for event in events if event.kind != "request_context"]
+
+
 @pytest.mark.asyncio
 async def test_engine_places_trusted_account_in_tool_config() -> None:
     graph = RecordingConfigGraph()
     engine = LangGraphEngine(graph)
 
-    events = [
+    events = _model_events([
         event
         async for event in engine.stream(
             "hello",
@@ -158,7 +164,7 @@ async def test_engine_places_trusted_account_in_tool_config() -> None:
             account_id="system-user-42",
             control=RunControl(request_id="run", session_id="session"),
         )
-    ]
+    ])
 
     assert [event.payload.get("text") for event in events] == ["done"]
     assert graph.config["configurable"]["account_id"] == "system-user-42"
@@ -170,14 +176,14 @@ async def test_overflow_compacts_the_folded_input_without_duplicate_input() -> N
     graph = OverflowOnceGraph([])
     engine = LangGraphEngine(graph, transcript_provider=provider)
 
-    events = [
+    events = _model_events([
         event
         async for event in engine.stream(
             "continue",
             session_id="polluted-thread",
             control=RunControl(request_id="recovery-run", session_id="session"),
         )
-    ]
+    ])
 
     assert len(graph.inputs) == 2
     retry = graph.inputs[1]
@@ -232,7 +238,7 @@ async def test_second_context_overflow_is_propagated_without_a_third_attempt() -
     assert isinstance(retry, dict)
     assert payload not in _messages_text(retry["messages"])
     assert graph.updates == []
-    assert [event.kind for event in events] == ["context_compression"]
+    assert [event.kind for event in _model_events(events)] == ["context_compression"]
 
 
 @pytest.mark.asyncio

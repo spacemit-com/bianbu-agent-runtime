@@ -77,7 +77,7 @@ wheels = [
 
 [[package]]
 name = "bianbu-agent"
-version = "0.1.162"
+version = "0.1.221"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite", version = "0.21.0", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "platform_machine == 'riscv64' and sys_platform == 'linux'" },

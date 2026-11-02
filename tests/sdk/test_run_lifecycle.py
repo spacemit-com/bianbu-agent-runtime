@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -34,7 +35,10 @@ from bianbu_agent.plugins import (
     SkillSpec,
 )
 from bianbu_agent.engines.langgraph.plugin_tools import build_plugin_tools
+from bianbu_agent.hooks import HookDenied
 from bianbu_agent.models import OpenAICompatibleModel
+from bianbu_agent.observability import RuntimeLogStore
+from bianbu_agent.runs.manager import _prepare_prompt
 from bianbu_agent.runs.stores.sqlite import SQLiteRunStore
 from bianbu_agent.sessions.log_store import SessionLogStore
 from bianbu_agent.sessions import SessionInboxMessage
@@ -385,50 +389,6 @@ async def test_run_manager_flushes_request_before_model_stream(
     await store.close()
 
 
-@pytest.mark.asyncio
-async def test_run_manager_logs_only_changed_model_request_context(
-    tmp_path: Path,
-) -> None:
-    store = SessionLogStore(tmp_path / "sessions")
-    await store.open()
-    generation = type("Generation", (), {"id": 5, "tools": {}, "skills": {}})()
-    prompts = iter(("system one", "system one", "system two"))
-    manager = RunManager(
-        plugin_manager=Plugins(generation, []),
-        agent_manager=Agents(),
-        model_registry=ModelRegistry(
-            default_model=Model("local", "bibit"),
-            models={"fast": Model("local", "bibit")},
-        ),
-        engine_builder=lambda *_args: ObservableEngine(next(prompts)),
-        store=store,
-    )
-
-    for index in range(3):
-        handle = await manager.run(
-            "session-a",
-            f"message {index}",
-            request_id=f"run-{index}",
-        )
-        assert (await handle.wait()).status == "completed"
-
-    contexts = [
-        event
-        for event in await store.read_session_events("session-a")
-        if event.type == "request/context"
-    ]
-    assert [event.run_id for event in contexts] == ["run-0", "run-2"]
-    assert [event.data["reason"] for event in contexts] == ["initial", "change"]
-    assert contexts[0].data["system_prompt"] == "system one"
-    assert contexts[0].data["provider"] == "bibit"
-    assert contexts[0].data["model"] == "local"
-    assert contexts[1].data["system_prompt"] == "system two"
-
-    await manager.close()
-    await store.close()
-
-
-@pytest.mark.asyncio
 async def test_run_manager_flushes_tool_call_and_result_before_advancing(
     tmp_path: Path,
 ) -> None:
@@ -512,6 +472,46 @@ class DirectReplyEngine:
         self.stream_calls += 1
         raise AssertionError("direct reply must not stream the model")
         yield
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["approve", "reject"])
+async def test_time_confirmation_parks_before_run_without_model(tmp_path, monkeypatch, decision):
+    from bianbu_agent.runs import time_confirmation
+
+    ticket = {"kind": "disable_ntp_and_set_time", "id": "backend-id", "token": "private-token",
+              "datetime": "14:30:00", "description": "Disable NTP and continue"}
+    generation = SimpleNamespace(id=12, tools={}, skills={})
+
+    async def run_hooks(point, context):
+        return ContextPatch(direct_reply="Confirm", approval=ticket) if point is HookPoint.BEFORE_RUN else ContextPatch()
+
+    calls = []
+
+    async def complete(request, session_id, resolved):
+        calls.append(resolved)
+        return {"ok": True, "reply": "applied" if resolved == "approve" else "cancelled"}
+
+    monkeypatch.setattr(time_confirmation, "_complete", complete)
+    generation.run_hooks = run_hooks
+    engine = DirectReplyEngine()
+    store = SQLiteRunStore(tmp_path / "time.sqlite3")
+    await store.open()
+    manager = RunManager(plugin_manager=Plugins(generation, []), agent_manager=Agents(),
+                         model_registry=ModelRegistry(default_model=Model("default"), models={"fast": Model("fast")}),
+                         engine_builder=lambda *args: engine, store=store)
+    handle = await manager.run("session", "set time to 14:30", request_id="ntp-run")
+    event = await _wait_for_run_event(store, "ntp-run", "approval_required")
+    assert calls == []
+    assert not await handle.approve("wrong-approval")
+    assert await getattr(handle, decision)(event.payload["approval_id"])
+    result = await handle.wait()
+    assert result.status == "completed" and result.content == ("applied" if decision == "approve" else "cancelled")
+    assert calls == [decision] and engine.stream_calls == 0
+    record = await store.get("ntp-run")
+    assert "private-token" not in repr(record) and "backend-id" not in repr(record)
+    assert not await handle.approve(event.payload["approval_id"])
+    await store.close()
 
 
 async def _wait_for_run_event(
@@ -793,6 +793,7 @@ async def test_run_manager_resolves_each_agents_remote_model(tmp_path: Path) -> 
     assert stored.request["model"] == {
         "provider": "shared",
         "name": "model-first",
+        "effort": "low",
     }
     await store.close()
 
@@ -843,7 +844,8 @@ async def test_run_manager_explains_provider_connection_blocked_by_agent_policy(
         message=(
             "无法连接到模型服务：当前 Agent 只允许访问指定网站，但模型服务 "
             "api.rvcompute.com 不在白名单中。下一步：打开“安全控制中心 → 配置中心 → "
-            "网络策略”，将该域名加入白名单；保存后重启此 Agent 再重试。"
+            "网络策略”，将该域名加入白名单；保存后下次请求会自动重启此 Agent 并生效，"
+            "再重试即可。"
         ),
         details={
             "agent_id": "agent.demo",
@@ -1379,6 +1381,27 @@ async def test_run_manager_persists_effects_for_plugin_hook_selection(
     await store.close()
 
 
+def test_prepare_prompt_marks_the_current_request_for_message_lists() -> None:
+    """Injected context must not swallow the user's own words (issue 7130683657)."""
+
+    injected = "- [profile rev=1] 我最喜欢的运动是羽毛球"
+    message = SessionInboxMessage("message-a", "我不喜欢吃辣")
+    boundary = f"{injected}\n\n## 当前请求\n我不喜欢吃辣"
+
+    prepared = _prepare_prompt((message,), [injected])
+    assert isinstance(prepared, list)
+    assert prepared[0].content == boundary
+    assert prepared[0].message_id == "message-a"
+
+    # A str prompt and a message list must describe the same boundary.
+    assert _prepare_prompt("我不喜欢吃辣", [injected]) == boundary
+
+    # Nothing is injected, so there is nothing to delimit.
+    plain = _prepare_prompt((message,), [])
+    assert isinstance(plain, list)
+    assert [item.content for item in plain] == ["我不喜欢吃辣"]
+
+
 @pytest.mark.asyncio
 async def test_paused_run_nested_tool_hooks_keep_initial_agent_snapshot_after_patch(
     tmp_path: Path,
@@ -1722,6 +1745,56 @@ async def test_real_generation_runs_only_selected_on_error_hook(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_failed_run_persists_the_exception_in_the_operational_log(
+    tmp_path: Path,
+) -> None:
+    """Field diagnosis needs the exception, not just `run_terminal: failed`."""
+
+    class FailingEngine:
+        async def stream(self, _prompt, **_kwargs):
+            raise RuntimeError("ahandle_event() argument after ** must be a mapping")
+            yield
+
+    store = SQLiteRunStore(tmp_path / "runs.sqlite3")
+    await store.open()
+    log_store = RuntimeLogStore(tmp_path / "runtime.jsonl")
+    run_logger = logging.getLogger("bianbu_agent.runs.manager")
+    run_logger.addHandler(log_store.handler)
+    manager = RunManager(
+        plugin_manager=Plugins(
+            type("Generation", (), {"id": 23, "tools": {}, "skills": {}})(), []
+        ),
+        agent_manager=Agents(),
+        model_registry=ModelRegistry(
+            default_model=Model("default"), models={"fast": Model("fast")}
+        ),
+        engine_builder=lambda *_args: FailingEngine(),
+        store=store,
+    )
+    try:
+        result = await (
+            await manager.run("session", "hello", request_id="run-failing")
+        ).wait()
+    finally:
+        run_logger.removeHandler(log_store.handler)
+        await manager.close()
+        await store.close()
+        log_store.close()
+
+    assert result.status == "failed"
+    failures = [
+        record
+        for record in log_store.query(run_id="run-failing", limit=20)
+        if record.get("event") == "run_failure"
+    ]
+    assert len(failures) == 1
+    assert failures[0]["exception"] == (
+        "RuntimeError: ahandle_event() argument after ** must be a mapping"
+    )
+    assert failures[0]["session_id"] == "session"
+
+
+@pytest.mark.asyncio
 async def test_direct_reply_persists_and_short_circuits_model_hooks(
     tmp_path: Path,
 ) -> None:
@@ -1772,6 +1845,72 @@ async def test_direct_reply_persists_and_short_circuits_model_hooks(
     assert hook_contexts[-1].response == "hello"
     assert hook_contexts[-1].status == "completed"
     await store.close()
+
+
+@pytest.mark.asyncio
+async def test_direct_reply_does_not_wait_for_an_unused_engine_build(
+    tmp_path: Path,
+) -> None:
+    """A Hook that answers the turn itself must not pay for the engine build.
+
+    The build overlaps BEFORE_RUN, so a caller that lets the Hook answer would
+    otherwise hold the reply behind a graph the Run never uses.  On K3 that
+    build is about a second of the "打开终端" latency.
+    """
+
+    build_started = asyncio.Event()
+    build_release = asyncio.Event()
+
+    async def builder(*_args):
+        build_started.set()
+        await build_release.wait()
+        return DirectReplyEngine()
+
+    hook_points: list[HookPoint] = []
+    generation = type("Generation", (), {"id": 21, "tools": {}, "skills": {}})()
+
+    async def run_hooks(point, context):
+        hook_points.append(point)
+        # Yield so the overlapping build genuinely starts: the test has to
+        # detach a build that is in flight, not one that never ran.
+        await asyncio.sleep(0)
+        return ContextPatch(
+            direct_reply="已启动应用: 终端" if point is HookPoint.BEFORE_RUN else None
+        )
+
+    generation.run_hooks = run_hooks
+    store = SQLiteRunStore(tmp_path / "runs.sqlite3")
+    await store.open()
+    manager = RunManager(
+        plugin_manager=Plugins(generation, []),
+        agent_manager=Agents(),
+        model_registry=ModelRegistry(
+            default_model=Model("default"), models={"fast": Model("fast")}
+        ),
+        engine_builder=builder,
+        store=store,
+    )
+    try:
+        handle = await manager.run(
+            "product-session",
+            "打开终端",
+            request_id="direct-fast",
+            thread_id="internal-thread",
+        )
+
+        async def collect():
+            return [event async for event in handle]
+
+        events = await asyncio.wait_for(collect(), timeout=2.0)
+        await asyncio.wait_for(build_started.wait(), timeout=1.0)
+        assert not build_release.is_set()
+        assert events == [RunEvent("token", {"text": "已启动应用: 终端"})]
+        assert (await handle.wait()).status == "completed"
+        assert hook_points == [HookPoint.BEFORE_RUN, HookPoint.AFTER_RUN]
+    finally:
+        build_release.set()
+        await manager.close()
+        await store.close()
 
 
 @pytest.mark.asyncio
@@ -1901,3 +2040,306 @@ async def test_dlp_mask_reaches_engine_and_preserves_message_identity(tmp_path, 
     finally:
         await manager.close()
         await store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal", ["cancelled", "failed", "completed"])
+async def test_terminal_hook_receives_status_and_compression(tmp_path, terminal):
+    calls = []
+    async def after(context):
+        calls.append(context)
+        return ContextPatch()
+    class TerminalEngine:
+        async def stream(self, prompt, **kwargs):
+            yield RunEvent("context_compression", {"compressed":True,"compression_id":"test-compress","summary":"bounded summary"})
+            if terminal == "cancelled": raise asyncio.CancelledError
+            if terminal == "failed": raise RuntimeError("test failure")
+            yield RunEvent("token", {"text":"done"})
+    generation = type("Generation", (), {"id":91,"tools":{},"skills":{}})()
+    async def run_hooks(point, context):
+        if point is HookPoint.AFTER_RUN:
+            return await after(context)
+        return ContextPatch()
+    generation.run_hooks = run_hooks
+    store = SQLiteRunStore(tmp_path / "runs.sqlite3")
+    await store.open()
+    manager = RunManager(plugin_manager=Plugins(generation, []),agent_manager=Agents(),
+        model_registry=ModelRegistry(default_model=Model("default"),models={"fast":Model("fast")}),
+        engine_builder=lambda *_args:TerminalEngine(),store=store)
+    try:
+        result = await (await manager.run("session", "test", metadata={
+            "context_compressions": [{"summary": "untrusted request summary"}]
+        })).wait()
+        assert result.status == terminal
+        assert len(calls) == 1
+        assert calls[0].status == terminal
+        assert calls[0].metadata["context_compressions"][0]["summary"] == "bounded summary"
+        assert len(calls[0].metadata["context_compressions"]) == 1
+        assert "context_compressions" not in result.metadata
+    finally:
+        await manager.close()
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_terminal_hook_denial_outranks_the_completed_result(
+    tmp_path: Path,
+) -> None:
+    """A veto at AFTER_RUN terminates the Run instead of being swallowed."""
+
+    class TerminalEngine:
+        async def stream(self, prompt, **kwargs):
+            del prompt, kwargs
+            yield RunEvent("token", {"text": "done"})
+
+    generation = type("Generation", (), {"id": 92, "tools": {}, "skills": {}})()
+    async def run_hooks(point, context):
+        if point is HookPoint.AFTER_RUN:
+            raise HookDenied("final output denied")
+        return ContextPatch()
+    generation.run_hooks = run_hooks
+    store = SQLiteRunStore(tmp_path / "runs.sqlite3")
+    await store.open()
+    manager = RunManager(
+        plugin_manager=Plugins(generation, []),
+        agent_manager=Agents(),
+        model_registry=ModelRegistry(
+            default_model=Model("default"), models={"fast": Model("fast")}
+        ),
+        engine_builder=lambda *_args: TerminalEngine(),
+        store=store,
+    )
+    try:
+        result = await (await manager.run("session", "test")).wait()
+    finally:
+        await manager.close()
+        await store.close()
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.code == "security_denied"
+    assert "final output denied" in result.error.message
+
+
+@pytest.mark.asyncio
+async def test_on_error_hook_denial_outranks_the_original_failure(
+    tmp_path: Path,
+) -> None:
+    """A veto while handling a failure is still a security denial."""
+
+    class FailingEngine:
+        async def stream(self, prompt, **kwargs):
+            del prompt, kwargs
+            raise RuntimeError("engine failure")
+            yield  # pragma: no cover - makes this an async generator
+
+    generation = type("Generation", (), {"id": 93, "tools": {}, "skills": {}})()
+
+    async def run_hooks(point, context):
+        if point is HookPoint.ON_ERROR:
+            raise HookDenied("error output denied")
+        return ContextPatch()
+
+    generation.run_hooks = run_hooks
+    store = SQLiteRunStore(tmp_path / "runs.sqlite3")
+    await store.open()
+    manager = RunManager(
+        plugin_manager=Plugins(generation, []),
+        agent_manager=Agents(),
+        model_registry=ModelRegistry(
+            default_model=Model("default"), models={"fast": Model("fast")}
+        ),
+        engine_builder=lambda *_args: FailingEngine(),
+        store=store,
+    )
+    try:
+        result = await (await manager.run("session", "test")).wait()
+    finally:
+        await manager.close()
+        await store.close()
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.code == "security_denied"
+    assert "error output denied" in result.error.message
+
+
+@pytest.mark.asyncio
+async def test_cancelled_run_still_records_after_run_hook_results(
+    tmp_path: Path,
+) -> None:
+    """A cancelled Run must not leave Hook rows that never finish.
+
+    ``AFTER_RUN`` Hooks are started while the Run is still being cancelled, so
+    their ``invoked`` facts are already persisted.  If the cancellation then
+    propagates into the batch before the merge, the Trajectory shows those
+    Hooks as forever ``running`` and the audit row never explains itself.
+    """
+
+    store = SQLiteRunStore(tmp_path / "runs.sqlite3")
+    await store.open()
+    started = asyncio.Event()
+
+    class WaitingEngine:
+        async def stream(self, prompt, *, control, **kwargs):
+            del prompt, kwargs
+            started.set()
+            await control.cancelled.wait()
+            return
+            yield RunEvent("token", {"text": "never"})
+
+    class SlowAuditHook:
+        async def __call__(self, _context):
+            await asyncio.sleep(0.2)
+            return ContextPatch(metadata={"audit": {"recorded": "run.cancelled"}})
+
+    generation = PluginGeneration(
+        id=5,
+        plugins={
+            "test.audit": PluginRuntime(
+                plugin_id="test.audit",
+                instance=object(),
+                config={},
+                contributions=PluginContributions(
+                    hooks=(
+                        HookContribution(
+                            "test.audit",
+                            HookPoint.AFTER_RUN,
+                            SlowAuditHook(),
+                            id="audit.after_run",
+                            metadata={
+                                "qualified_id": "test.audit/audit.after_run"
+                            },
+                        ),
+                    ),
+                ),
+            ),
+        },
+        statuses={},
+    )
+    class AuditAgents(Agents):
+        async def materialize(self, agent_id, generation, **kwargs):
+            del generation, kwargs
+            return AgentSpec(
+                id=agent_id or "default",
+                name="Agent",
+                model="fast",
+                hooks=("test.audit/audit.after_run",),
+            )
+
+    manager = RunManager(
+        plugin_manager=Plugins(generation, []),
+        agent_manager=AuditAgents(),
+        model_registry=ModelRegistry(
+            default_model=Model("default"), models={"fast": Model("fast")}
+        ),
+        engine_builder=lambda *_args: WaitingEngine(),
+        store=store,
+    )
+
+    handle = await manager.run("session", "hi", request_id="run-cancel")
+    await asyncio.wait_for(started.wait(), timeout=2)
+    assert await handle.cancel() is True
+    result = await asyncio.wait_for(handle.wait(), timeout=5)
+    assert result.status == "cancelled"
+
+    await asyncio.wait_for(manager._tasks.get("run-cancel", asyncio.sleep(0)), timeout=5)
+    record = await store.get("run-cancel")
+    invoked = [event for event in record.events if event.kind == "hook_invoked"]
+    results = [event for event in record.events if event.kind == "hook_result"]
+    assert len(invoked) == 1
+    assert len(results) == 1, f"Hook row never finished: {[e.kind for e in record.events]}"
+    assert results[0].payload["status"] == "completed"
+
+    await manager.close()
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancellation_finishes_terminal_hooks(tmp_path: Path) -> None:
+    """Worker shutdown cancels the Run Task itself, not only the control.
+
+    ``ControlRunManager.close()`` cancels the Task and then marks the Run
+    cancelled.  Before the terminal work was shielded, that cancellation
+    unwound the batch of ``AFTER_RUN`` Hooks after they had already published
+    ``invoked``, leaving rows stuck at ``running`` forever.
+    """
+
+    store = SQLiteRunStore(tmp_path / "runs.sqlite3")
+    await store.open()
+    started = asyncio.Event()
+
+    class WaitingEngine:
+        async def stream(self, prompt, *, control, **kwargs):
+            del prompt, kwargs
+            started.set()
+            await control.cancelled.wait()
+            return
+            yield RunEvent("token", {"text": "never"})
+
+    class SlowAuditHook:
+        async def __call__(self, _context):
+            await asyncio.sleep(0.2)
+            return ContextPatch(metadata={"recorded": "run.cancelled"})
+
+    generation = PluginGeneration(
+        id=5,
+        plugins={
+            "test.audit": PluginRuntime(
+                plugin_id="test.audit",
+                instance=object(),
+                config={},
+                contributions=PluginContributions(
+                    hooks=(
+                        HookContribution(
+                            "test.audit",
+                            HookPoint.AFTER_RUN,
+                            SlowAuditHook(),
+                            id="audit.after_run",
+                            metadata={
+                                "qualified_id": "test.audit/audit.after_run"
+                            },
+                        ),
+                    ),
+                ),
+            ),
+        },
+        statuses={},
+    )
+
+    class AuditAgents(Agents):
+        async def materialize(self, agent_id, generation, **kwargs):
+            del generation, kwargs
+            return AgentSpec(
+                id=agent_id or "default",
+                name="Agent",
+                model="fast",
+                hooks=("test.audit/audit.after_run",),
+            )
+
+    manager = RunManager(
+        plugin_manager=Plugins(generation, []),
+        agent_manager=AuditAgents(),
+        model_registry=ModelRegistry(
+            default_model=Model("default"), models={"fast": Model("fast")}
+        ),
+        engine_builder=lambda *_args: WaitingEngine(),
+        store=store,
+    )
+
+    await manager.run("session", "hi", request_id="run-shutdown")
+    await asyncio.wait_for(started.wait(), timeout=2)
+    task = manager._tasks["run-shutdown"]
+    task.cancel()
+    await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=5)
+
+    record = await store.get("run-shutdown")
+    invoked = [event for event in record.events if event.kind == "hook_invoked"]
+    results = [event for event in record.events if event.kind == "hook_result"]
+    assert len(invoked) == 1
+    assert len(results) == 1, f"Hook row never finished: {[e.kind for e in record.events]}"
+    assert results[0].payload["status"] == "completed"
+    assert results[0].payload["metadata"] == {"recorded": "run.cancelled"}
+
+    await manager.close()
+    await store.close()

@@ -37,7 +37,9 @@ def test_system_publisher_preserves_id_and_leaves_sessions_untouched(tmp_path, m
     agent_id = "com.bianbu.012345abcdef"
     assert provisioning.publish_system_starter(data, template, agent_id) == agent_id
     manifest = system_paths.system_agent_directory(data) / agent_id / "agent.yaml"
-    assert yaml.safe_load(manifest.read_text())["agent"]["id"] == agent_id
+    published = yaml.safe_load(manifest.read_text())["agent"]
+    assert published["id"] == agent_id
+    assert "execution" not in published.get("metadata", {})
     assert manifest.stat().st_mode & 0o777 == 0o644
     assert manifest.parent.stat().st_mode & 0o777 == 0o755
     assert manifest.stat().st_uid == data.stat().st_uid
@@ -297,6 +299,119 @@ def test_publish_removes_a_declaration_a_retired_runtime_left_behind(tmp_path, m
     assert sorted(item.name for item in system.iterdir()) == [agent_id]
     assert not (system.parent / 'legacy-user-agents').exists()
     assert not (data / 'agents').exists()
+
+
+def test_user_publication_follows_initial_agent_instead_of_the_old_marker(tmp_path, monkeypatch):
+    """An upgraded device publishes the configured default Expert.
+
+    The device keeps its system starter ID so existing sessions stay bound, but
+    a profile that still names an older packaged default must not decide which
+    template gets published.
+    """
+
+    import importlib.util
+    import sys
+
+    script = Path(__file__).resolve().parents[2] / "scripts" / "provision-system-agent.py"
+    spec = importlib.util.spec_from_file_location("user_starter", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(system_paths, "SYSTEM_PROFILE_ROOT", tmp_path / "profiles")
+    monkeypatch.setattr(module, "_privileged", lambda: True)
+    monkeypatch.setattr(provisioning, "SYSTEM_OWNER_UID", Path(tmp_path).stat().st_uid)
+    monkeypatch.setattr(module, "pwd", type("Accounts", (), {
+        "getpwnam": staticmethod(lambda _: type("Account", (), {"pw_dir": str(tmp_path / "home")})),
+    }))
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    (resources / "debian").mkdir()
+    (resources / "debian" / "render-starter-agent.py").write_text(
+        "def render_starter_agent(source, destination):\n"
+        "    destination.write_bytes(source.read_bytes())\n",
+        encoding="utf-8",
+    )
+    agents = resources / "agents"
+    agents.mkdir()
+    current = "com.bianbu.627d97ad908c"
+    (agents / current).mkdir()
+    (agents / current / "agent.yaml").write_text(
+        "schema_version: 1\nagent:\n  id: " + current + "\n  version: 1.0.0\n"
+        "  name: BibitEdgeAssistant\n",
+        encoding="utf-8",
+    )
+    (resources / "config.yaml").write_text(
+        f"data_dir: ~/.bianbu-agent\ninitial_agent: {current}\n", encoding="utf-8"
+    )
+    data = tmp_path / "home" / ".bianbu-agent"
+    data.mkdir(parents=True)
+    old_id = "com.bianbu.278200e1617c"
+    (data / "config.yaml").write_text(
+        f"data_dir: ~/.bianbu-agent\ninitial_agent: {old_id}\n", encoding="utf-8"
+    )
+    (agents / old_id).mkdir()
+    (agents / old_id / "agent.yaml").write_text(
+        "schema_version: 1\nagent:\n  id: " + old_id + "\n  version: 1.0.0\n"
+        "  name: BibiEdgeAssistant\n",
+        encoding="utf-8",
+    )
+    provisioning.publish_system_starter(data, agents / old_id / "agent.yaml", old_id)
+    assert provisioning.system_starter_id(data) == old_id
+
+    monkeypatch.setattr(sys, "argv", [
+        str(script), "--user", "bianbu", "--template", str(agents / current / "agent.yaml"),
+    ])
+
+    assert module.main() == 0
+    assert provisioning.system_starter_id(data) == current
+    published = system_paths.system_agent_directory(data) / current / "agent.yaml"
+    assert yaml.safe_load(published.read_text())["agent"]["id"] == current
+
+
+def test_user_publication_keeps_an_already_adopted_starter_id(tmp_path, monkeypatch):
+    import importlib.util
+    import sys
+
+    script = Path(__file__).resolve().parents[2] / "scripts" / "provision-system-agent.py"
+    spec = importlib.util.spec_from_file_location("adopted_starter", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(system_paths, "SYSTEM_PROFILE_ROOT", tmp_path / "profiles")
+    monkeypatch.setattr(provisioning, "SYSTEM_OWNER_UID", Path(tmp_path).stat().st_uid)
+    monkeypatch.setattr(module, "_privileged", lambda: True)
+    monkeypatch.setattr(module, "pwd", type("Accounts", (), {
+        "getpwnam": staticmethod(lambda _: type("Account", (), {"pw_dir": str(tmp_path / "home")})),
+    }))
+    resources = tmp_path / "resources"
+    agents = resources / "agents"
+    agents.mkdir(parents=True)
+    (resources / "debian").mkdir()
+    (resources / "debian" / "render-starter-agent.py").write_text(
+        "def render_starter_agent(source, destination):\n"
+        "    destination.write_bytes(source.read_bytes())\n",
+        encoding="utf-8",
+    )
+    agent_id = "com.bianbu.627d97ad908c"
+    (agents / agent_id).mkdir()
+    (agents / agent_id / "agent.yaml").write_text(
+        "schema_version: 1\nagent:\n  id: " + agent_id + "\n  version: 1.0.0\n"
+        "  name: BibitEdgeAssistant\n",
+        encoding="utf-8",
+    )
+    (resources / "config.yaml").write_text(
+        f"data_dir: ~/.bianbu-agent\ninitial_agent: {agent_id}\n", encoding="utf-8"
+    )
+    data = tmp_path / "home" / ".bianbu-agent"
+    data.mkdir(parents=True)
+    (data / "config.yaml").write_text(
+        f"data_dir: ~/.bianbu-agent\ninitial_agent: {agent_id}\n", encoding="utf-8"
+    )
+    provisioning.publish_system_starter(data, agents / agent_id / "agent.yaml", agent_id)
+    monkeypatch.setattr(sys, "argv", [
+        str(script), "--user", "bianbu", "--template", str(agents / agent_id / "agent.yaml"),
+    ])
+
+    assert module.main() == 0
+    assert provisioning.system_starter_id(data) == agent_id
 
 
 def test_system_publication_root_stays_readable_for_the_runtime_user():
